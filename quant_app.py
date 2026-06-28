@@ -324,6 +324,238 @@ def get_stock_titan_data(ticker: str) -> list:
         return []
 
 # ════════════════════════════════════════════════════════════════
+# 소셜 미디어 — StockTwits & Reddit
+# ════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_stocktwits(ticker: str) -> dict:
+    """
+    StockTwits 공개 스트림 API.
+    반환: { "bull": int, "bear": int, "messages": list[dict] }
+    """
+    url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Referer": "https://stocktwits.com/",
+        }
+        resp = requests.get(url, headers=headers, timeout=8)
+        if resp.status_code != 200:
+            return {}
+        data = resp.json()
+        messages_raw = data.get("messages", [])
+
+        bull = sum(1 for m in messages_raw
+                   if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bullish")
+        bear = sum(1 for m in messages_raw
+                   if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bearish")
+
+        messages = []
+        for m in messages_raw[:8]:
+            body = (m.get("body") or "").strip()
+            if not body:
+                continue
+            sentiment = (m.get("entities", {}).get("sentiment") or {}).get("basic", "")
+            likes_obj = m.get("likes", {})
+            likes = likes_obj.get("total", 0) if isinstance(likes_obj, dict) else 0
+            username = (m.get("user") or {}).get("username", "익명")
+            created  = (m.get("created_at") or "")[:10]
+            msg_id   = m.get("id", "")
+            link = f"https://stocktwits.com/{username}/message/{msg_id}" if msg_id else f"https://stocktwits.com/{username}"
+            messages.append({
+                "user":      username,
+                "body":      body,
+                "sentiment": sentiment,
+                "likes":     likes,
+                "date":      created,
+                "link":      link,
+            })
+
+        return {"bull": bull, "bear": bear, "messages": messages}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def fetch_reddit_posts(ticker: str) -> list:
+    """
+    Reddit JSON API — r/stocks, r/wallstreetbets, r/investing 병렬 수집.
+    제목(title) + 본문(selftext) 모두 가져옵니다.
+    """
+    subreddits = ["stocks", "wallstreetbets", "investing"]
+
+    def _fetch_sub(sub: str) -> list:
+        url = (f"https://www.reddit.com/r/{sub}/search.json"
+               f"?q={ticker}&sort=new&limit=5&restrict_sr=1&t=week")
+        try:
+            headers = {
+                "User-Agent": f"Mozilla/5.0 quant_app/2.0 (by /u/quant_user)",
+                "Accept": "application/json",
+            }
+            resp = requests.get(url, headers=headers, timeout=8)
+            if resp.status_code != 200:
+                return []
+            out = []
+            for p in resp.json().get("data", {}).get("children", []):
+                d = p.get("data", {})
+                title = (d.get("title") or "").strip()
+                if not title:
+                    continue
+                # selftext: 본문 내용 (없으면 빈 문자열)
+                selftext = (d.get("selftext") or "").strip()
+                # 너무 긴 본문은 300자로 자름
+                if len(selftext) > 300:
+                    selftext = selftext[:297] + "..."
+                out.append({
+                    "subreddit": sub,
+                    "title":     title,
+                    "selftext":  selftext,
+                    "ups":       d.get("ups", 0),
+                    "comments":  d.get("num_comments", 0),
+                    "link":      "https://www.reddit.com" + (d.get("permalink") or ""),
+                })
+            return out
+        except Exception:
+            return []
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        all_posts = list(ex.map(_fetch_sub, subreddits))
+
+    merged = [p for sub_list in all_posts for p in sub_list]
+    merged.sort(key=lambda x: x["ups"], reverse=True)
+    return merged[:6]
+
+
+def render_social_section(ticker_input: str):
+    """소셜 미디어 의견 탭 — StockTwits + Reddit"""
+    st.markdown(
+        """<div class="section-header">
+            <div class="section-icon icon-cyan">💬</div>
+            <div class="section-title title-cyan">소셜 미디어 투자자 의견</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner("StockTwits · Reddit 실시간 데이터 수집 중..."):
+        st_data     = fetch_stocktwits(ticker_input)
+        reddit_data = fetch_reddit_posts(ticker_input)
+
+    # ── StockTwits ───────────────────────────────────────────────
+    st.markdown(
+        """<div class="section-header" style="margin-top:0.3rem;">
+            <div class="section-icon icon-cyan" style="font-size:0.8rem;">🐦</div>
+            <div class="section-title" style="color:#38bdf8;font-size:0.88rem;">StockTwits</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    if not st_data or not st_data.get("messages"):
+        st.markdown(
+            """<div class="glass-card"><div class="status-row"><div class="status-item">
+                <div class="status-dot dot-yellow"></div>
+                <div class="status-text">StockTwits 데이터를 불러올 수 없습니다. (API 일시 제한 또는 해당 티커 데이터 없음)</div>
+            </div></div></div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        bull  = st_data.get("bull", 0)
+        bear  = st_data.get("bear", 0)
+        total = bull + bear
+        bull_pct = round(bull / total * 100) if total else 50
+
+        st.markdown(f"""
+        <div class="sentiment-bar-wrap">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+                <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">투자 심리 게이지</span>
+                <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);">총 {total}건 &nbsp;·&nbsp; 🟢 {bull} &nbsp;🔴 {bear}</span>
+            </div>
+            <div class="sentiment-bar-track">
+                <div class="sentiment-bar-fill" style="width:{bull_pct}%;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.25rem;">
+                <span>🟢 Bullish {bull_pct}%</span>
+                <span>🔴 Bearish {100 - bull_pct}%</span>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        for msg in st_data["messages"]:
+            sent = msg["sentiment"]
+            if sent == "Bullish":
+                card_cls = "social-card social-bull"
+                badge    = '<span class="bull-badge">🟢 Bullish</span>'
+            elif sent == "Bearish":
+                card_cls = "social-card social-bear"
+                badge    = '<span class="bear-badge">🔴 Bearish</span>'
+            else:
+                card_cls = "social-card"
+                badge    = ""
+
+            likes_html = f'<span>❤️ {msg["likes"]}</span>' if msg["likes"] else ""
+            st.markdown(f"""
+            <div class="{card_cls}">
+                <div class="social-meta">
+                    <span class="platform-badge">StockTwits</span>
+                    {badge}
+                    <span>@{msg['user']}</span>
+                    <span>·</span>
+                    <span>{msg['date']}</span>
+                </div>
+                <div class="social-body">{msg['body']}</div>
+                <div class="social-stats">
+                    {likes_html}
+                    <a href="{msg['link']}" target="_blank"
+                       style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">
+                        원문 보기 →
+                    </a>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Reddit ───────────────────────────────────────────────────
+    st.markdown(
+        """<div class="section-header">
+            <div class="section-icon"
+                 style="background:rgba(255,106,0,0.18);border-color:rgba(255,106,0,0.35);font-size:0.8rem;">🤖</div>
+            <div class="section-title"
+                 style="color:#ff6a00;font-size:0.88rem;">Reddit (r/stocks · r/wallstreetbets · r/investing)</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    if not reddit_data:
+        st.markdown(
+            """<div class="glass-card"><div class="status-row"><div class="status-item">
+                <div class="status-dot dot-yellow"></div>
+                <div class="status-text">이번 주 해당 티커 관련 Reddit 게시글이 없거나 불러올 수 없습니다.</div>
+            </div></div></div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        for post in reddit_data:
+            selftext_html = (
+                f'<div class="social-selftext">{post["selftext"]}</div>'
+                if post.get("selftext") else ""
+            )
+            st.markdown(f"""
+            <div class="social-card">
+                <div class="social-meta">
+                    <span class="reddit-badge">r/{post['subreddit']}</span>
+                    <span>·</span>
+                    <span>⬆️ {post['ups']:,}</span>
+                    <span>·</span>
+                    <span>💬 {post['comments']:,}개 댓글</span>
+                </div>
+                <div class="social-body">{post['title']}</div>
+                {selftext_html}
+                <div class="social-stats">
+                    <a href="{post['link']}" target="_blank"
+                       style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">
+                        Reddit에서 보기 →
+                    </a>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+
+# ════════════════════════════════════════════════════════════════
 # CSS
 # ════════════════════════════════════════════════════════════════
 st.markdown("""
@@ -557,6 +789,66 @@ st.markdown("""
         border: 1px solid rgba(96,165,250,0.3);
         padding: 0.15rem 0.55rem; border-radius: 20px;
         font-size: 0.68rem; font-weight: 700;
+    }
+
+    /* ── 소셜 미디어 카드 ─────────────────────────────────────────── */
+    .social-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.09);
+        border-radius: 14px;
+        padding: 0.95rem 1.1rem;
+        margin-bottom: 0.7rem;
+        backdrop-filter: blur(8px);
+        transition: border-color 0.2s;
+    }
+    .social-card:hover { border-color: rgba(56,189,248,0.35); }
+    .social-bull { border-left: 3px solid #34d399; background: rgba(52,211,153,0.05); }
+    .social-bear { border-left: 3px solid #f87171; background: rgba(248,113,113,0.05); }
+    .social-meta {
+        display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+        font-size: 0.7rem; color: rgba(148,163,184,0.65); margin-bottom: 0.4rem;
+    }
+    .social-body { font-size: 0.88rem; color: #e2e8f0; line-height: 1.5; margin-bottom: 0.4rem; }
+    .social-stats { display: flex; gap: 0.9rem; font-size: 0.72rem; color: rgba(148,163,184,0.55); }
+    .social-selftext {
+        font-size: 0.82rem; color: rgba(203,213,225,0.75);
+        line-height: 1.55; margin: 0.3rem 0 0.4rem 0;
+        border-left: 2px solid rgba(255,255,255,0.1);
+        padding-left: 0.7rem;
+    }
+    .bull-badge {
+        background: rgba(52,211,153,0.15); color: #34d399;
+        border: 1px solid rgba(52,211,153,0.3);
+        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
+    }
+    .bear-badge {
+        background: rgba(248,113,113,0.15); color: #f87171;
+        border: 1px solid rgba(248,113,113,0.3);
+        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
+    }
+    .platform-badge {
+        background: rgba(56,189,248,0.12); color: #38bdf8;
+        border: 1px solid rgba(56,189,248,0.25);
+        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
+    }
+    .reddit-badge {
+        background: rgba(255,106,0,0.12); color: #ff6a00;
+        border: 1px solid rgba(255,106,0,0.25);
+        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
+    }
+    .sentiment-bar-wrap {
+        background: rgba(255,255,255,0.06); border-radius: 10px;
+        padding: 0.85rem 1rem; margin-bottom: 0.8rem;
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+    .sentiment-bar-track {
+        background: rgba(255,255,255,0.08); border-radius: 99px;
+        height: 8px; overflow: hidden; margin: 0.4rem 0;
+    }
+    .sentiment-bar-fill {
+        height: 100%; border-radius: 99px;
+        background: linear-gradient(90deg, #34d399, #fbbf24);
+        transition: width 0.6s ease;
     }
 
     /* ── 스캔 결과 테이블 ──────────────────────────────────────────── */
@@ -1299,9 +1591,13 @@ if st.session_state.get("has_searched"):
                         high_52w, low_52w
                     )
                 with col2:
-                    render_news_section(active_ticker)
+                    dt1, dt2 = st.tabs(["📰 뉴스 & 호재", "💬 소셜 미디어"])
+                    with dt1:
+                        render_news_section(active_ticker)
+                    with dt2:
+                        render_social_section(active_ticker)
             else:
-                tab1, tab2 = st.tabs(["📊 기술 분석", "📰 뉴스 & 호재"])
+                tab1, tab2, tab3 = st.tabs(["📊 기술 분석", "📰 뉴스 & 호재", "💬 소셜 미디어"])
                 with tab1:
                     render_technical_analysis(
                         active_ticker, hist, today, yesterday,
@@ -1311,3 +1607,5 @@ if st.session_state.get("has_searched"):
                     )
                 with tab2:
                     render_news_section(active_ticker)
+                with tab3:
+                    render_social_section(active_ticker)
