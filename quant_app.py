@@ -94,6 +94,7 @@ _defaults = {
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
+    "dark_mode":        True,           # 다크/라이트 모드 토글
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -136,13 +137,25 @@ def fetch_sector_data() -> list:
         results = list(ex.map(_fetch_one, SECTOR_ETFS))
     return [r for r in results if r is not None]
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_yahoo_news(ticker: str) -> list:
     """yfinance 뉴스 목록 캐싱 — #14 try/except 추가"""
     try:
         return yf.Ticker(ticker).news or []
     except Exception:
         return []
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_ticker_info(ticker: str) -> dict:
+    """
+    yfinance .info 딕셔너리를 TTL 1시간으로 캐싱합니다.
+    매 리렌더링마다 네트워크 요청이 발생하던 성능 저하를 방지합니다.
+    실패 시 빈 딕셔너리를 반환하여 호출부에서 .get() 사용이 안전합니다.
+    """
+    try:
+        return yf.Ticker(ticker).info or {}
+    except Exception:
+        return {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def translate_text(text: str) -> str:
@@ -289,11 +302,31 @@ def get_stock_titan_data(ticker: str) -> list:
                 if date_el:
                     raw_date = date_el.get("datetime") or date_el.text.strip()
                     try:
-                        # ISO 형식 파싱 시도
+                        # 1차: ISO 형식 파싱 시도 (2024-05-01T12:34:56...)
                         dt = datetime.fromisoformat(raw_date[:19])
                         date_str = dt.strftime("%b %d, %Y")
                     except Exception:
-                        date_str = raw_date[:20] if raw_date else "날짜 미확인"
+                        # 2차 폴백: 정규식으로 YYYY-MM-DD 또는 유사 패턴 추출
+                        _m = re.search(
+                            r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})'   # YYYY-MM-DD 계열
+                            r'|(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})',       # "May 1, 2024" 계열
+                            raw_date or ""
+                        )
+                        if _m:
+                            try:
+                                if _m.group(1):   # YYYY-MM-DD 계열 매칭
+                                    dt2 = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)))
+                                    date_str = dt2.strftime("%b %d, %Y")
+                                else:             # "May 1, 2024" 계열 매칭
+                                    raw_eng = f"{_m.group(4)} {_m.group(5)} {_m.group(6)}"
+                                    dt2 = datetime.strptime(raw_eng, "%B %d %Y") if len(_m.group(4)) > 3 \
+                                          else datetime.strptime(raw_eng, "%b %d %Y")
+                                    date_str = dt2.strftime("%b %d, %Y")
+                            except Exception:
+                                date_str = raw_date[:20] if raw_date else "날짜 미확인"
+                        else:
+                            # 3차 최후 폴백: 원문 앞부분을 그대로 사용
+                            date_str = raw_date[:20].strip() if raw_date else "날짜 미확인"
                     break
                 parent = parent.parent
 
@@ -627,9 +660,81 @@ def render_social_section(ticker_input: str):
 
 
 # ════════════════════════════════════════════════════════════════
-# CSS
+# CSS — 다크/라이트 모드 동적 주입
 # ════════════════════════════════════════════════════════════════
-st.markdown("""
+def inject_css(dark: bool = True):
+    if dark:
+        bg_main      = "linear-gradient(135deg, #0a0a1a 0%, #0d0d2b 40%, #0a1628 100%)"
+        bg_sidebar   = "linear-gradient(180deg, #0d0d2b 0%, #0a1628 100%)"
+        glass_bg     = "rgba(255,255,255,0.04)"
+        glass_border = "rgba(255,255,255,0.09)"
+        metric_bg    = "rgba(255,255,255,0.045)"
+        metric_bdr   = "rgba(255,255,255,0.1)"
+        tab_bg       = "rgba(255,255,255,0.04)"
+        tab_bdr      = "rgba(255,255,255,0.08)"
+        status_bg    = "rgba(255,255,255,0.035)"
+        status_bdr   = "rgba(255,255,255,0.08)"
+        news_bg      = "rgba(255,255,255,0.04)"
+        news_bdr     = "rgba(255,255,255,0.09)"
+        social_bg    = "rgba(255,255,255,0.04)"
+        social_bdr   = "rgba(255,255,255,0.09)"
+        sent_wrap_bg = "rgba(255,255,255,0.06)"
+        sent_wrap_bdr= "rgba(255,255,255,0.08)"
+        sent_track   = "rgba(255,255,255,0.08)"
+        hr_color     = "rgba(255,255,255,0.07)"
+        text_primary = "#f1f5f9"
+        text_sec     = "#e2e8f0"
+        text_muted   = "rgba(148,163,184,0.7)"
+        text_dimmed  = "rgba(148,163,184,0.55)"
+        text_status  = "#cbd5e1"
+        metric_label = "rgba(148,163,184,0.7)"
+        sidebar_input_bg  = "rgba(255,255,255,0.05)"
+        sidebar_input_bdr = "rgba(139,92,246,0.4)"
+        sidebar_input_clr = "#e2e8f0"
+        textarea_bg  = "rgba(255,255,255,0.04)"
+        plotly_tmpl  = "plotly_dark"
+        sector_name_clr  = "rgba(255,255,255,0.7)"
+        sector_ticker_clr= "rgba(255,255,255,0.4)"
+        social_selftext_bdr = "rgba(255,255,255,0.1)"
+        social_selftext_clr = "rgba(203,213,225,0.75)"
+    else:
+        bg_main      = "linear-gradient(135deg, #f0f4ff 0%, #e8eeff 40%, #f0f7ff 100%)"
+        bg_sidebar   = "linear-gradient(180deg, #eef2ff 0%, #e8f0fe 100%)"
+        glass_bg     = "rgba(255,255,255,0.72)"
+        glass_border = "rgba(99,102,241,0.15)"
+        metric_bg    = "rgba(255,255,255,0.8)"
+        metric_bdr   = "rgba(99,102,241,0.15)"
+        tab_bg       = "rgba(255,255,255,0.7)"
+        tab_bdr      = "rgba(99,102,241,0.15)"
+        status_bg    = "rgba(255,255,255,0.7)"
+        status_bdr   = "rgba(99,102,241,0.12)"
+        news_bg      = "rgba(255,255,255,0.72)"
+        news_bdr     = "rgba(99,102,241,0.15)"
+        social_bg    = "rgba(255,255,255,0.72)"
+        social_bdr   = "rgba(99,102,241,0.15)"
+        sent_wrap_bg = "rgba(255,255,255,0.8)"
+        sent_wrap_bdr= "rgba(99,102,241,0.12)"
+        sent_track   = "rgba(99,102,241,0.1)"
+        hr_color     = "rgba(99,102,241,0.12)"
+        text_primary = "#1e1b4b"
+        text_sec     = "#312e81"
+        text_muted   = "#6b7280"
+        text_dimmed  = "#9ca3af"
+        text_status  = "#374151"
+        metric_label = "#6b7280"
+        sidebar_input_bg  = "rgba(255,255,255,0.9)"
+        sidebar_input_bdr = "rgba(99,102,241,0.4)"
+        sidebar_input_clr = "#1e1b4b"
+        textarea_bg  = "rgba(255,255,255,0.9)"
+        plotly_tmpl  = "plotly_white"
+        sector_name_clr  = "#374151"
+        sector_ticker_clr= "#6b7280"
+        social_selftext_bdr = "rgba(99,102,241,0.2)"
+        social_selftext_clr = "#4b5563"
+
+    st.session_state["_plotly_template"] = plotly_tmpl
+
+    st.markdown(f"""
 <style>
     /* ── 폰트 임포트 ──────────────────────────────────────────────── *
      * 디스플레이: Space Grotesk (헤딩 — 개성)                         *
@@ -637,52 +742,128 @@ st.markdown("""
      * 데이터: JetBrains Mono (가격/티커/지표 — 자릿수 정렬되는 단말기 느낌) */
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
 
-    :root {
+    :root {{
         --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
         --font-body:    'Inter', 'Segoe UI', system-ui, sans-serif;
         --font-mono:    'JetBrains Mono', 'Consolas', monospace;
-        /* 섹션별 시그니처 컬러 — 보라/파랑/초록 단일톤 대신 의미별로 분리 */
-        --c-amber:  #f5b942;   /* 자금/즐겨찾기 */
-        --c-teal:   #2dd4bf;   /* 이동평균 */
-        --c-indigo: #6366f1;   /* 차트/기술분석 */
-        --c-violet: #a78bfa;   /* 메모 */
-        --c-cyan:   #38bdf8;   /* 섹터 히트맵 */
-        --c-rose:   #fb7185;   /* 뉴스 */
-    }
+
+        /* ── 섹션별 시그니처 컬러 (순수 색상) ─────────────────────── */
+        --c-amber:  #f5b942;
+        --c-teal:   #2dd4bf;
+        --c-indigo: #6366f1;
+        --c-violet: #a78bfa;
+        --c-cyan:   #38bdf8;
+        --c-rose:   #fb7185;
+        --c-green:  #34d399;
+        --c-red:    #f87171;
+        --c-blue:   #60a5fa;
+        --c-orange: #ff6a00;
+
+        /* ── 알파 변형 (border-left, 배경, 아이콘 등) ──────────────── */
+        --c-amber-a65:  rgba(245,185,66,0.65);
+        --c-amber-a32:  rgba(245,185,66,0.32);
+        --c-amber-a12:  rgba(245,185,66,0.12);
+        --c-amber-a45:  rgba(245,185,66,0.45);
+        --c-amber-a30:  rgba(245,185,66,0.3);
+        --c-amber-a18:  rgba(245,185,66,0.18);
+
+        --c-teal-a65:   rgba(45,212,191,0.65);
+        --c-teal-a32:   rgba(45,212,191,0.32);
+        --c-teal-a12:   rgba(45,212,191,0.12);
+        --c-teal-a45:   rgba(45,212,191,0.45);
+
+        --c-indigo-a65: rgba(99,102,241,0.65);
+        --c-indigo-a32: rgba(99,102,241,0.32);
+        --c-indigo-a12: rgba(99,102,241,0.12);
+        --c-indigo-a45: rgba(99,102,241,0.45);
+        --c-indigo-a20: rgba(99,102,241,0.2);
+        --c-indigo-a15: rgba(99,102,241,0.15);
+        --c-indigo-a35: rgba(99,102,241,0.35);
+
+        --c-violet-a65: rgba(167,139,250,0.65);
+        --c-violet-a32: rgba(167,139,250,0.32);
+        --c-violet-a12: rgba(167,139,250,0.12);
+        --c-violet-a45: rgba(167,139,250,0.45);
+
+        --c-cyan-a65:   rgba(56,189,248,0.65);
+        --c-cyan-a32:   rgba(56,189,248,0.32);
+        --c-cyan-a12:   rgba(56,189,248,0.12);
+        --c-cyan-a45:   rgba(56,189,248,0.45);
+        --c-cyan-a25:   rgba(56,189,248,0.25);
+
+        --c-rose-a65:   rgba(251,113,133,0.65);
+        --c-rose-a32:   rgba(251,113,133,0.32);
+        --c-rose-a12:   rgba(251,113,133,0.12);
+        --c-rose-a45:   rgba(251,113,133,0.45);
+        --c-rose-a16:   rgba(251,113,133,0.16);
+
+        --c-green-a15:  rgba(52,211,153,0.15);
+        --c-green-a30:  rgba(52,211,153,0.3);
+        --c-green-a06:  rgba(52,211,153,0.06);
+        --c-green-a05:  rgba(52,211,153,0.05);
+
+        --c-red-a15:    rgba(248,113,113,0.15);
+        --c-red-a30:    rgba(248,113,113,0.3);
+        --c-red-a06:    rgba(248,113,113,0.06);
+        --c-red-a05:    rgba(248,113,113,0.05);
+        --c-red-a18:    rgba(239,68,68,0.18);
+        --c-red-a45:    rgba(239,68,68,0.45);
+        --c-red-a20:    rgba(239,68,68,0.2);
+        --c-red-a35:    rgba(239,68,68,0.35);
+        --c-red-a12:    rgba(239,68,68,0.12);
+
+        --c-blue-a15:   rgba(96,165,250,0.15);
+        --c-blue-a30:   rgba(96,165,250,0.3);
+
+        --c-orange-a12: rgba(255,106,0,0.12);
+        --c-orange-a25: rgba(255,106,0,0.25);
+
+        --c-violet-std: rgba(139,92,246,0.3);   /* 섹션 아이콘 기본 보라 */
+        --c-violet-bdr: rgba(139,92,246,0.35);
+        --c-violet-bdr2:rgba(139,92,246,0.4);
+        --c-violet-bdr3:rgba(139,92,246,0.65);
+        --c-violet-a25: rgba(139,92,246,0.25);
+        --c-violet-a20: rgba(139,92,246,0.2);
+
+        --c-yellow-a15: rgba(251,191,36,0.15);
+        --c-yellow-a30: rgba(251,191,36,0.3);
+        --c-yellow-a06: rgba(251,191,36,0.06);
+        --c-yellow-a12: rgba(245,158,11,0.12);
+    }}
 
     /* ── 전역 배경 & 폰트 ─────────────────────────────────────────── */
-    html, body, [data-testid="stAppViewContainer"] {
-        background: linear-gradient(135deg, #0a0a1a 0%, #0d0d2b 40%, #0a1628 100%) !important;
+    html, body, [data-testid="stAppViewContainer"] {{
+        background: {bg_main} !important;
         font-family: var(--font-body);
-    }
+    }}
     h1, h2, h3, .app-header h1, .section-title, .glass-card-title,
-    .scan-title, .alert-title { font-family: var(--font-display); }
+    .scan-title, .alert-title {{ font-family: var(--font-display); }}
     .metric-value, .metric-delta, .sector-pct, .sector-sub, .sector-ticker,
-    [data-testid="stDataFrame"] * {
+    [data-testid="stDataFrame"] * {{
         font-family: var(--font-mono) !important;
         font-variant-numeric: tabular-nums;
-    }
-    [data-testid="stAppViewContainer"] > .main { background: transparent !important; }
-    .block-container { padding: 1.2rem 1.5rem 2rem 1.5rem !important; max-width: 900px; }
+    }}
+    [data-testid="stAppViewContainer"] > .main {{ background: transparent !important; }}
+    .block-container {{ padding: 1.2rem 1.5rem 2rem 1.5rem !important; max-width: 900px; }}
 
     /* ── 사이드바 ──────────────────────────────────────────────────── */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0d0d2b 0%, #0a1628 100%) !important;
+    [data-testid="stSidebar"] {{
+        background: {bg_sidebar} !important;
         border-right: 1px solid rgba(139, 92, 246, 0.2);
-    }
-    [data-testid="stSidebar"] .stTextInput input {
-        background: rgba(255,255,255,0.05) !important;
-        border: 1px solid rgba(139,92,246,0.4) !important;
+    }}
+    [data-testid="stSidebar"] .stTextInput input {{
+        background: {sidebar_input_bg} !important;
+        border: 1px solid {sidebar_input_bdr} !important;
         border-radius: 10px !important;
-        color: #e2e8f0 !important;
+        color: {sidebar_input_clr} !important;
         font-family: var(--font-mono) !important;
         font-size: 1rem !important;
         letter-spacing: 0.5px !important;
         padding: 0.6rem 0.8rem !important;
-    }
+    }}
 
     /* ── 헤더 배너 ─────────────────────────────────────────────────── */
-    .app-header {
+    .app-header {{
         background: linear-gradient(135deg, rgba(245,185,66,0.18) 0%, rgba(251,113,133,0.16) 45%, rgba(99,102,241,0.2) 100%);
         border: 1px solid rgba(245,185,66,0.3);
         border-radius: 18px;
@@ -690,8 +871,8 @@ st.markdown("""
         margin-bottom: 1.4rem;
         backdrop-filter: blur(12px);
         box-shadow: 0 8px 32px rgba(99,102,241,0.15), inset 0 1px 0 rgba(255,255,255,0.08);
-    }
-    .app-header h1 {
+    }}
+    .app-header h1 {{
         margin: 0 0 0.2rem 0;
         font-size: 1.55rem;
         font-weight: 800;
@@ -700,300 +881,300 @@ st.markdown("""
         -webkit-text-fill-color: transparent;
         background-clip: text;
         letter-spacing: -0.3px;
-    }
-    .app-header p {
+    }}
+    .app-header p {{
         margin: 0;
-        color: rgba(148,163,184,0.85);
+        color: {text_muted};
         font-size: 0.82rem;
-    }
+    }}
 
     /* ── 글래스 카드 공통 ──────────────────────────────────────────── */
-    .glass-card {
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.09);
+    .glass-card {{
+        background: {glass_bg};
+        border: 1px solid {glass_border};
         border-radius: 14px;
         padding: 1.1rem 1.2rem;
         margin-bottom: 1rem;
         backdrop-filter: blur(10px);
         box-shadow: 0 4px 20px rgba(0,0,0,0.25);
-    }
-    .glass-card-title {
+    }}
+    .glass-card-title {{
         font-size: 0.72rem;
         font-weight: 700;
         letter-spacing: 1.2px;
         text-transform: uppercase;
-        color: rgba(148,163,184,0.7);
+        color: {text_muted};
         margin-bottom: 0.6rem;
-    }
+    }}
 
     /* ── 메트릭 카드 ──────────────────────────────────────────────── */
-    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }
-    .metric-card {
-        background: rgba(255,255,255,0.045);
-        border: 1px solid rgba(255,255,255,0.1);
+    .metric-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }}
+    .metric-card {{
+        background: {metric_bg};
+        border: 1px solid {metric_bdr};
         border-radius: 14px;
         padding: 1rem 1.1rem;
         backdrop-filter: blur(8px);
         box-shadow: 0 2px 12px rgba(0,0,0,0.2);
         transition: transform 0.15s;
-    }
-    .metric-card:hover { transform: translateY(-2px); }
-    .metric-card { border-left: 3px solid transparent; }
-    .mc-amber  { border-left-color: rgba(245,185,66,0.65) !important; }
-    .mc-violet { border-left-color: rgba(167,139,250,0.65) !important; }
-    .mc-rose   { border-left-color: rgba(251,113,133,0.65) !important; }
-    .mc-cyan   { border-left-color: rgba(56,189,248,0.65) !important; }
-    .mc-indigo { border-left-color: rgba(99,102,241,0.65) !important; }
-    .mc-teal   { border-left-color: rgba(45,212,191,0.65) !important; }
-    .metric-label { font-size: 0.7rem; color: rgba(148,163,184,0.7); font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 0.35rem; }
-    .metric-value { font-size: 1.45rem; font-weight: 800; color: #f1f5f9; line-height: 1; }
-    .metric-delta { font-size: 0.78rem; font-weight: 600; margin-top: 0.3rem; }
-    .delta-up   { color: #34d399; }
-    .delta-down { color: #f87171; }
-    .delta-neu  { color: #94a3b8; }
+    }}
+    .metric-card:hover {{ transform: translateY(-2px); }}
+    .metric-card {{ border-left: 3px solid transparent; }}
+    .mc-amber  {{ border-left-color: var(--c-amber-a65)  !important; }}
+    .mc-violet {{ border-left-color: var(--c-violet-a65) !important; }}
+    .mc-rose   {{ border-left-color: var(--c-rose-a65)   !important; }}
+    .mc-cyan   {{ border-left-color: var(--c-cyan-a65)   !important; }}
+    .mc-indigo {{ border-left-color: var(--c-indigo-a65) !important; }}
+    .mc-teal   {{ border-left-color: var(--c-teal-a65)   !important; }}
+    .metric-label {{ font-size: 0.7rem; color: {metric_label}; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 0.35rem; }}
+    .metric-value {{ font-size: 1.45rem; font-weight: 800; color: {text_primary}; line-height: 1; }}
+    .metric-delta {{ font-size: 0.78rem; font-weight: 600; margin-top: 0.3rem; }}
+    .delta-up   {{ color: #34d399; }}
+    .delta-down {{ color: #f87171; }}
+    .delta-neu  {{ color: #94a3b8; }}
 
     /* ── 신호 알림 배너 ────────────────────────────────────────────── */
-    .alert-banner {
-        background: linear-gradient(135deg, rgba(239,68,68,0.18), rgba(245,158,11,0.12));
-        border: 1px solid rgba(239,68,68,0.45);
+    .alert-banner {{
+        background: linear-gradient(135deg, var(--c-red-a18), var(--c-yellow-a12));
+        border: 1px solid var(--c-red-a45);
         border-radius: 14px;
         padding: 1rem 1.2rem;
         margin-bottom: 1rem;
         display: flex;
         align-items: flex-start;
         gap: 0.7rem;
-        box-shadow: 0 0 20px rgba(239,68,68,0.12);
-    }
-    .alert-icon { font-size: 1.4rem; line-height: 1; }
-    .alert-title { font-size: 0.72rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fca5a5; margin-bottom: 0.3rem; }
-    .alert-signals { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-    .signal-chip {
-        background: rgba(239,68,68,0.2);
-        border: 1px solid rgba(239,68,68,0.35);
+        box-shadow: 0 0 20px var(--c-red-a12);
+    }}
+    .alert-icon {{ font-size: 1.4rem; line-height: 1; }}
+    .alert-title {{ font-size: 0.72rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fca5a5; margin-bottom: 0.3rem; }}
+    .alert-signals {{ display: flex; flex-wrap: wrap; gap: 0.4rem; }}
+    .signal-chip {{
+        background: var(--c-red-a20);
+        border: 1px solid var(--c-red-a35);
         border-radius: 20px;
         padding: 0.2rem 0.7rem;
         font-size: 0.75rem;
         font-weight: 600;
         color: #fca5a5;
-    }
+    }}
 
     /* ── 섹션 헤더 ─────────────────────────────────────────────────── */
-    .section-header {
+    .section-header {{
         display: flex;
         align-items: center;
         gap: 0.5rem;
         margin: 1.3rem 0 0.7rem 0;
-    }
-    .section-icon {
+    }}
+    .section-icon {{
         width: 28px; height: 28px;
-        background: linear-gradient(135deg, rgba(139,92,246,0.3), rgba(59,130,246,0.2));
-        border: 1px solid rgba(139,92,246,0.35);
+        background: linear-gradient(135deg, var(--c-violet-std), var(--c-indigo-a20));
+        border: 1px solid var(--c-violet-bdr);
         border-radius: 8px;
         display: flex; align-items: center; justify-content: center;
         font-size: 0.85rem;
-    }
-    /* 섹션별 시그니처 컬러 — 모든 섹션이 같은 보라톤이 아니라 의미로 구분됨 */
-    .icon-amber  { background: linear-gradient(135deg, rgba(245,185,66,0.32), rgba(245,185,66,0.12)); border-color: rgba(245,185,66,0.45) !important; }
-    .icon-teal   { background: linear-gradient(135deg, rgba(45,212,191,0.32), rgba(45,212,191,0.12)); border-color: rgba(45,212,191,0.45) !important; }
-    .icon-indigo { background: linear-gradient(135deg, rgba(99,102,241,0.32), rgba(99,102,241,0.12)); border-color: rgba(99,102,241,0.45) !important; }
-    .icon-violet { background: linear-gradient(135deg, rgba(167,139,250,0.32), rgba(167,139,250,0.12)); border-color: rgba(167,139,250,0.45) !important; }
-    .icon-cyan   { background: linear-gradient(135deg, rgba(56,189,248,0.32), rgba(56,189,248,0.12)); border-color: rgba(56,189,248,0.45) !important; }
-    .icon-rose   { background: linear-gradient(135deg, rgba(251,113,133,0.32), rgba(251,113,133,0.12)); border-color: rgba(251,113,133,0.45) !important; }
-    .title-amber  { color: #f5b942 !important; }
-    .title-teal   { color: #2dd4bf !important; }
-    .title-indigo { color: #818cf8 !important; }
-    .title-violet { color: #c4b5fd !important; }
-    .title-cyan   { color: #38bdf8 !important; }
-    .title-rose   { color: #fb7185 !important; }
-    .section-title { font-size: 0.9rem; font-weight: 700; color: #e2e8f0; }
+    }}
+    /* 섹션별 시그니처 컬러 — 의미별로 구분 */
+    .icon-amber  {{ background: linear-gradient(135deg, var(--c-amber-a32),  var(--c-amber-a12));  border-color: var(--c-amber-a45)  !important; }}
+    .icon-teal   {{ background: linear-gradient(135deg, var(--c-teal-a32),   var(--c-teal-a12));   border-color: var(--c-teal-a45)   !important; }}
+    .icon-indigo {{ background: linear-gradient(135deg, var(--c-indigo-a32), var(--c-indigo-a12)); border-color: var(--c-indigo-a45) !important; }}
+    .icon-violet {{ background: linear-gradient(135deg, var(--c-violet-a32), var(--c-violet-a12)); border-color: var(--c-violet-a45) !important; }}
+    .icon-cyan   {{ background: linear-gradient(135deg, var(--c-cyan-a32),   var(--c-cyan-a12));   border-color: var(--c-cyan-a45)   !important; }}
+    .icon-rose   {{ background: linear-gradient(135deg, var(--c-rose-a32),   var(--c-rose-a12));   border-color: var(--c-rose-a45)   !important; }}
+    .title-amber  {{ color: var(--c-amber)  !important; }}
+    .title-teal   {{ color: var(--c-teal)   !important; }}
+    .title-indigo {{ color: var(--c-indigo) !important; }}
+    .title-violet {{ color: var(--c-violet) !important; }}
+    .title-cyan   {{ color: var(--c-cyan)   !important; }}
+    .title-rose   {{ color: var(--c-rose)   !important; }}
+    .section-title {{ font-size: 0.9rem; font-weight: 700; color: {text_sec}; }}
 
-    /* ── 상태 배지 ─────────────────────────────────────────────────── */
-    .status-row { display: flex; flex-direction: column; gap: 0.55rem; }
-    .status-item {
-        display: flex;
-        align-items: center;
-        gap: 0.7rem;
-        background: rgba(255,255,255,0.035);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 10px;
-        padding: 0.65rem 0.9rem;
-    }
-    .status-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-    .dot-green  { background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.6); }
-    .dot-yellow { background: #fbbf24; box-shadow: 0 0 6px rgba(251,191,36,0.6); }
-    .dot-red    { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,0.6); }
-    .dot-blue   { background: #60a5fa; box-shadow: 0 0 6px rgba(96,165,250,0.5); }
-    .status-text { font-size: 0.82rem; color: #cbd5e1; flex: 1; line-height: 1.4; }
-    .status-text strong { color: #f1f5f9; }
-
-    /* ── 뉴스 카드 ─────────────────────────────────────────────────── */
-    .news-card {
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.09);
-        border-radius: 14px;
-        padding: 1rem 1.1rem;
-        margin-bottom: 0.8rem;
-        backdrop-filter: blur(8px);
-        transition: border-color 0.2s;
-    }
-    .news-card:hover { border-color: rgba(139,92,246,0.35); }
-    .pos-card { border-left: 3px solid #34d399; background: rgba(52,211,153,0.06); }
-    .neg-card { border-left: 3px solid #f87171; background: rgba(248,113,113,0.06); }
-    .neu-card { border-left: 3px solid #fbbf24; background: rgba(251,191,36,0.06); }
-    .news-meta { font-size: 0.7rem; color: rgba(148,163,184,0.7); margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-    .news-title { font-size: 0.9rem; font-weight: 600; color: #f1f5f9; line-height: 1.45; margin-bottom: 0.35rem; }
-    .news-orig  { font-size: 0.72rem; color: rgba(148,163,184,0.55); margin-bottom: 0.5rem; font-style: italic; }
-    .news-link  { font-size: 0.78rem; color: #818cf8; text-decoration: none; font-weight: 500; }
-    .news-link:hover { color: #a78bfa; }
-    .sentiment-badge {
+    /* ── 감성 배지 ─────────────────────────────────────────────────── */
+    .sentiment-badge {{
         display: inline-flex; align-items: center; gap: 0.3rem;
         padding: 0.15rem 0.55rem;
         border-radius: 20px;
         font-size: 0.68rem;
         font-weight: 700;
-    }
-    .sent-pos { background: rgba(52,211,153,0.15); color: #34d399; border: 1px solid rgba(52,211,153,0.3); }
-    .sent-neg { background: rgba(248,113,113,0.15); color: #f87171; border: 1px solid rgba(248,113,113,0.3); }
-    .sent-neu { background: rgba(251,191,36,0.15);  color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
-    .impact-badge {
-        background: rgba(96,165,250,0.15); color: #60a5fa;
-        border: 1px solid rgba(96,165,250,0.3);
+    }}
+    .sent-pos {{ background: var(--c-green-a15); color: var(--c-green); border: 1px solid var(--c-green-a30); }}
+    .sent-neg {{ background: var(--c-red-a15);   color: var(--c-red);   border: 1px solid var(--c-red-a30);   }}
+    .sent-neu {{ background: var(--c-yellow-a15); color: #fbbf24;       border: 1px solid var(--c-yellow-a30); }}
+    .impact-badge {{
+        background: var(--c-blue-a15); color: var(--c-blue);
+        border: 1px solid var(--c-blue-a30);
         padding: 0.15rem 0.55rem; border-radius: 20px;
         font-size: 0.68rem; font-weight: 700;
-    }
+    }}
+    .status-row {{ display: flex; flex-direction: column; gap: 0.55rem; }}
+    .status-item {{
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        background: {status_bg};
+        border: 1px solid {status_bdr};
+        border-radius: 10px;
+        padding: 0.65rem 0.9rem;
+    }}
+    .status-dot {{ width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }}
+    .dot-green  {{ background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.6); }}
+    .dot-yellow {{ background: #fbbf24; box-shadow: 0 0 6px rgba(251,191,36,0.6); }}
+    .dot-red    {{ background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,0.6); }}
+    .dot-blue   {{ background: #60a5fa; box-shadow: 0 0 6px rgba(96,165,250,0.5); }}
+    .status-text {{ font-size: 0.82rem; color: {text_status}; flex: 1; line-height: 1.4; }}
+    .status-text strong {{ color: {text_primary}; }}
+
+    /* ── 뉴스 카드 ─────────────────────────────────────────────────── */
+    .news-card {{
+        background: {news_bg};
+        border: 1px solid {news_bdr};
+        border-radius: 14px;
+        padding: 1rem 1.1rem;
+        margin-bottom: 0.8rem;
+        backdrop-filter: blur(8px);
+        transition: border-color 0.2s;
+    }}
+    .news-card:hover {{ border-color: var(--c-violet-bdr); }}
+    .pos-card {{ border-left: 3px solid var(--c-green);  background: var(--c-green-a06); }}
+    .neg-card {{ border-left: 3px solid var(--c-red);    background: var(--c-red-a06);   }}
+    .neu-card {{ border-left: 3px solid #fbbf24;         background: var(--c-yellow-a06); }}
+    .news-meta {{ font-size: 0.7rem; color: {text_muted}; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }}
+    .news-title {{ font-size: 0.9rem; font-weight: 600; color: {text_primary}; line-height: 1.45; margin-bottom: 0.35rem; }}
+    .news-orig  {{ font-size: 0.72rem; color: {text_dimmed}; margin-bottom: 0.5rem; font-style: italic; }}
+    .news-link  {{ font-size: 0.78rem; color: #818cf8; text-decoration: none; font-weight: 500; }}
+    .news-link:hover {{ color: #a78bfa; }}
 
     /* ── 소셜 미디어 카드 ─────────────────────────────────────────── */
-    .social-card {
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.09);
+    .social-card {{
+        background: {social_bg};
+        border: 1px solid {social_bdr};
         border-radius: 14px;
         padding: 0.95rem 1.1rem;
         margin-bottom: 0.7rem;
         backdrop-filter: blur(8px);
         transition: border-color 0.2s;
-    }
-    .social-card:hover { border-color: rgba(56,189,248,0.35); }
-    .social-bull { border-left: 3px solid #34d399; background: rgba(52,211,153,0.05); }
-    .social-bear { border-left: 3px solid #f87171; background: rgba(248,113,113,0.05); }
-    .social-meta {
+    }}
+    .social-card:hover {{ border-color: var(--c-cyan-a45); }}
+    .social-bull {{ border-left: 3px solid var(--c-green); background: var(--c-green-a05); }}
+    .social-bear {{ border-left: 3px solid var(--c-red);   background: var(--c-red-a05);   }}
+    .social-meta {{
         display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-        font-size: 0.7rem; color: rgba(148,163,184,0.65); margin-bottom: 0.4rem;
-    }
-    .social-body { font-size: 0.88rem; color: #e2e8f0; line-height: 1.5; margin-bottom: 0.4rem; }
-    .social-stats { display: flex; gap: 0.9rem; font-size: 0.72rem; color: rgba(148,163,184,0.55); }
-    .social-selftext {
-        font-size: 0.82rem; color: rgba(203,213,225,0.75);
+        font-size: 0.7rem; color: {text_muted}; margin-bottom: 0.4rem;
+    }}
+    .social-body {{ font-size: 0.88rem; color: {text_sec}; line-height: 1.5; margin-bottom: 0.4rem; }}
+    .social-stats {{ display: flex; gap: 0.9rem; font-size: 0.72rem; color: {text_dimmed}; }}
+    .social-selftext {{
+        font-size: 0.82rem; color: {social_selftext_clr};
         line-height: 1.55; margin: 0.3rem 0 0.4rem 0;
-        border-left: 2px solid rgba(255,255,255,0.1);
+        border-left: 2px solid {social_selftext_bdr};
         padding-left: 0.7rem;
-    }
-    .bull-badge {
-        background: rgba(52,211,153,0.15); color: #34d399;
-        border: 1px solid rgba(52,211,153,0.3);
+    }}
+    .bull-badge {{
+        background: var(--c-green-a15); color: var(--c-green);
+        border: 1px solid var(--c-green-a30);
         padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }
-    .bear-badge {
-        background: rgba(248,113,113,0.15); color: #f87171;
-        border: 1px solid rgba(248,113,113,0.3);
+    }}
+    .bear-badge {{
+        background: var(--c-red-a15); color: var(--c-red);
+        border: 1px solid var(--c-red-a30);
         padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }
-    .platform-badge {
-        background: rgba(56,189,248,0.12); color: #38bdf8;
-        border: 1px solid rgba(56,189,248,0.25);
+    }}
+    .platform-badge {{
+        background: var(--c-cyan-a12); color: var(--c-cyan);
+        border: 1px solid var(--c-cyan-a25);
         padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }
-    .reddit-badge {
-        background: rgba(255,106,0,0.12); color: #ff6a00;
-        border: 1px solid rgba(255,106,0,0.25);
+    }}
+    .reddit-badge {{
+        background: var(--c-orange-a12); color: var(--c-orange);
+        border: 1px solid var(--c-orange-a25);
         padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }
-    .sentiment-bar-wrap {
-        background: rgba(255,255,255,0.06); border-radius: 10px;
+    }}
+    .sentiment-bar-wrap {{
+        background: {sent_wrap_bg}; border-radius: 10px;
         padding: 0.85rem 1rem; margin-bottom: 0.8rem;
-        border: 1px solid rgba(255,255,255,0.08);
-    }
-    .sentiment-bar-track {
-        background: rgba(255,255,255,0.08); border-radius: 99px;
+        border: 1px solid {sent_wrap_bdr};
+    }}
+    .sentiment-bar-track {{
+        background: {sent_track}; border-radius: 99px;
         height: 8px; overflow: hidden; margin: 0.4rem 0;
-    }
-    .sentiment-bar-fill {
+    }}
+    .sentiment-bar-fill {{
         height: 100%; border-radius: 99px;
         background: linear-gradient(90deg, #34d399, #fbbf24);
         transition: width 0.6s ease;
-    }
+    }}
 
     /* ── 스캔 결과 테이블 ──────────────────────────────────────────── */
-    .scan-header {
+    .scan-header {{
         background: linear-gradient(135deg, rgba(245,185,66,0.2), rgba(251,113,133,0.12));
         border: 1px solid rgba(245,185,66,0.35);
         border-radius: 14px;
         padding: 1rem 1.2rem;
         margin-bottom: 0.8rem;
         display: flex; align-items: center; justify-content: space-between;
-    }
-    .scan-title { font-size: 0.95rem; font-weight: 700; color: #f5b942; }
+    }}
+    .scan-title {{ font-size: 0.95rem; font-weight: 700; color: #f5b942; }}
 
     /* ── 메모 영역 ─────────────────────────────────────────────────── */
-    .stTextArea textarea {
-        background: rgba(255,255,255,0.04) !important;
+    .stTextArea textarea {{
+        background: {textarea_bg} !important;
         border: 1px solid rgba(139,92,246,0.3) !important;
         border-radius: 12px !important;
-        color: #e2e8f0 !important;
+        color: {text_primary} !important;
         font-size: 0.88rem !important;
         resize: vertical;
-    }
-    .stTextArea textarea:focus {
+    }}
+    .stTextArea textarea:focus {{
         border-color: rgba(139,92,246,0.6) !important;
         box-shadow: 0 0 0 2px rgba(139,92,246,0.15) !important;
-    }
+    }}
 
     /* ── 버튼 ──────────────────────────────────────────────────────── */
-    .stButton button {
+    .stButton button {{
         background: linear-gradient(135deg, rgba(139,92,246,0.25), rgba(59,130,246,0.2)) !important;
         border: 1px solid rgba(139,92,246,0.4) !important;
         border-radius: 10px !important;
-        color: #e2e8f0 !important;
+        color: {text_primary} !important;
         font-weight: 600 !important;
         font-size: 0.88rem !important;
         transition: all 0.2s !important;
         min-height: 2.5rem !important;
-    }
-    .stButton button:hover {
+    }}
+    .stButton button:hover {{
         background: linear-gradient(135deg, rgba(139,92,246,0.4), rgba(59,130,246,0.3)) !important;
         border-color: rgba(139,92,246,0.65) !important;
         transform: translateY(-1px) !important;
         box-shadow: 0 4px 15px rgba(139,92,246,0.25) !important;
-    }
+    }}
 
     /* ── 탭 ────────────────────────────────────────────────────────── */
-    .stTabs [data-baseweb="tab-list"] {
-        background: rgba(255,255,255,0.04) !important;
+    .stTabs [data-baseweb="tab-list"] {{
+        background: {tab_bg} !important;
         border-radius: 12px !important;
         padding: 0.3rem !important;
         gap: 0.3rem !important;
-        border: 1px solid rgba(255,255,255,0.08) !important;
-    }
-    .stTabs [data-baseweb="tab"] {
+        border: 1px solid {tab_bdr} !important;
+    }}
+    .stTabs [data-baseweb="tab"] {{
         border-radius: 9px !important;
         font-weight: 600 !important;
         font-size: 0.88rem !important;
-        color: rgba(148,163,184,0.8) !important;
+        color: {text_muted} !important;
         padding: 0.55rem 1.1rem !important;
-    }
-    .stTabs [aria-selected="true"] {
+    }}
+    .stTabs [aria-selected="true"] {{
         background: linear-gradient(135deg, rgba(139,92,246,0.35), rgba(59,130,246,0.25)) !important;
-        color: #e2e8f0 !important;
+        color: {text_primary} !important;
         border: 1px solid rgba(139,92,246,0.4) !important;
-    }
+    }}
 
     /* ── 섹터 히트맵 ───────────────────────────────────────────────── */
-    .sector-grid {
+    .sector-grid {{
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
         gap: 0.6rem;
         margin-bottom: 1rem;
-    }
-    .sector-cell {
+    }}
+    .sector-cell {{
         border-radius: 12px;
         padding: 0.85rem 0.9rem;
         text-align: center;
@@ -1001,29 +1182,31 @@ st.markdown("""
         border: 1px solid rgba(255,255,255,0.1);
         transition: transform 0.15s;
         cursor: default;
-    }
-    .sector-cell:hover { transform: translateY(-2px); }
-    .sector-name { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: rgba(255,255,255,0.7); margin-bottom: 0.3rem; }
-    .sector-ticker { font-size: 0.62rem; color: rgba(255,255,255,0.4); margin-bottom: 0.4rem; }
-    .sector-pct { font-size: 1.25rem; font-weight: 800; line-height: 1; }
-    .sector-sub { font-size: 0.68rem; margin-top: 0.25rem; opacity: 0.7; }
-    .sector-legend { display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
-    .legend-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: rgba(148,163,184,0.8); }
-    .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+    }}
+    .sector-cell:hover {{ transform: translateY(-2px); }}
+    .sector-name {{ font-size: 0.68rem; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {sector_name_clr}; margin-bottom: 0.3rem; }}
+    .sector-ticker {{ font-size: 0.62rem; color: {sector_ticker_clr}; margin-bottom: 0.4rem; }}
+    .sector-pct {{ font-size: 1.25rem; font-weight: 800; line-height: 1; }}
+    .sector-sub {{ font-size: 0.68rem; margin-top: 0.25rem; opacity: 0.7; }}
+    .sector-legend {{ display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }}
+    .legend-item {{ display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: {text_muted}; }}
+    .legend-dot {{ width: 10px; height: 10px; border-radius: 3px; }}
 
     /* ── 구분선 ────────────────────────────────────────────────────── */
-    hr { border-color: rgba(255,255,255,0.07) !important; margin: 1rem 0 !important; }
+    hr {{ border-color: {hr_color} !important; margin: 1rem 0 !important; }}
 
     /* ── 모바일 ────────────────────────────────────────────────────── */
-    @media (max-width: 640px) {
-        .block-container { padding: 0.8rem 0.9rem 2rem !important; }
-        .app-header { padding: 1rem 1.1rem; border-radius: 14px; }
-        .app-header h1 { font-size: 1.2rem; }
-        .metric-value { font-size: 1.25rem; }
-        .stButton button { min-height: 2.8rem !important; font-size: 0.95rem !important; }
-    }
+    @media (max-width: 640px) {{
+        .block-container {{ padding: 0.8rem 0.9rem 2rem !important; }}
+        .app-header {{ padding: 1rem 1.1rem; border-radius: 14px; }}
+        .app-header h1 {{ font-size: 1.2rem; }}
+        .metric-value {{ font-size: 1.25rem; }}
+        .stButton button {{ min-height: 2.8rem !important; font-size: 0.95rem !important; }}
+    }}
 </style>
 """, unsafe_allow_html=True)
+
+inject_css(st.session_state.get("dark_mode", True))
 
 # ════════════════════════════════════════════════════════════════
 # 헤더 배너
@@ -1075,6 +1258,14 @@ if st.session_state.scan_results:
 # 사이드바 — 티커 입력 및 파라미터
 # ════════════════════════════════════════════════════════════════
 st.sidebar.header("🔍 주식 분석 설정")
+
+# ── 다크/라이트 모드 토글 ────────────────────────────────────────
+_is_dark = st.session_state.get("dark_mode", True)
+_toggle_label = "☀️ 라이트 모드로 전환" if _is_dark else "🌙 다크 모드로 전환"
+if st.sidebar.button(_toggle_label, use_container_width=True):
+    st.session_state["dark_mode"] = not _is_dark
+    st.rerun()
+st.sidebar.markdown("")
 
 ticker_input = st.sidebar.text_input(
     "티커명을 입력하세요 (예: NVDA, AAPL)",
@@ -1250,7 +1441,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     FLOAT_MAX = 20_000_000  # 20M주
 
     try:
-        info = yf.Ticker(ticker_input).info
+        info = fetch_ticker_info(ticker_input)
         market_cap_raw   = info.get("marketCap") or 0
         shares_float_raw = info.get("floatShares") or info.get("sharesOutstanding") or 0
         if market_cap_raw >= 1_000_000_000_000:
@@ -1453,16 +1644,21 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MACD_SIG'], name='Signal',
         line=dict(color='#f97316', width=1.5)), row=3, col=1)
 
+    _dark = st.session_state.get("dark_mode", True)
+    _tmpl = "plotly_dark" if _dark else "plotly_white"
+    _plot_bg  = "rgba(255,255,255,0.02)" if _dark else "rgba(0,0,0,0)"
+    _grid_clr = "rgba(255,255,255,0.04)" if _dark else "rgba(0,0,0,0.06)"
     fig.update_layout(
-        template="plotly_dark",
+        template=_tmpl,
+        hovermode="x unified",
         height=460,
         margin=dict(l=8, r=8, t=12, b=8),
         legend=dict(orientation="h", y=1.03, x=0, font_size=10),
         paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(255,255,255,0.02)',
+        plot_bgcolor=_plot_bg,
     )
-    fig.update_xaxes(gridcolor='rgba(255,255,255,0.04)', zeroline=False)
-    fig.update_yaxes(gridcolor='rgba(255,255,255,0.04)', zeroline=False)
+    fig.update_xaxes(gridcolor=_grid_clr, zeroline=False)
+    fig.update_yaxes(gridcolor=_grid_clr, zeroline=False)
     fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
     fig.update_yaxes(title_text="MACD", row=3, col=1)
     st.plotly_chart(fig, use_container_width=True)
