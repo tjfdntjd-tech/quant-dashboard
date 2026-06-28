@@ -326,55 +326,93 @@ def get_stock_titan_data(ticker: str) -> list:
 # ════════════════════════════════════════════════════════════════
 # 소셜 미디어 — StockTwits & Reddit
 # ════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_stocktwits(ticker: str) -> dict:
     """
-    StockTwits 공개 스트림 API.
-    반환: { "bull": int, "bear": int, "messages": list[dict] }
+    StockTwits 공개 API → 실패 시 yfinance 뉴스 감성 분석으로 자동 대체.
+    반환: { "bull": int, "bear": int, "messages": list[dict], "source": str }
     """
+    # ── 1차: StockTwits API ─────────────────────────────────────
     url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
             "Accept": "application/json",
             "Referer": "https://stocktwits.com/",
         }
-        resp = requests.get(url, headers=headers, timeout=8)
-        if resp.status_code != 200:
-            return {}
-        data = resp.json()
-        messages_raw = data.get("messages", [])
-
-        bull = sum(1 for m in messages_raw
-                   if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bullish")
-        bear = sum(1 for m in messages_raw
-                   if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bearish")
-
-        messages = []
-        for m in messages_raw[:8]:
-            body = (m.get("body") or "").strip()
-            if not body:
-                continue
-            sentiment = (m.get("entities", {}).get("sentiment") or {}).get("basic", "")
-            likes_obj = m.get("likes", {})
-            likes = likes_obj.get("total", 0) if isinstance(likes_obj, dict) else 0
-            username = (m.get("user") or {}).get("username", "익명")
-            created  = (m.get("created_at") or "")[:10]
-            msg_id   = m.get("id", "")
-            link = f"https://stocktwits.com/{username}/message/{msg_id}" if msg_id else f"https://stocktwits.com/{username}"
-            messages.append({
-                "user":      username,
-                "body":      body,
-                "sentiment": sentiment,
-                "likes":     likes,
-                "date":      created,
-                "link":      link,
-            })
-
-        return {"bull": bull, "bear": bear, "messages": messages}
+        resp = requests.get(url, headers=headers, timeout=6)
+        if resp.status_code == 200:
+            data = resp.json()
+            messages_raw = data.get("messages", [])
+            bull = sum(1 for m in messages_raw
+                       if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bullish")
+            bear = sum(1 for m in messages_raw
+                       if (m.get("entities", {}).get("sentiment") or {}).get("basic") == "Bearish")
+            messages = []
+            for m in messages_raw[:8]:
+                raw_body = (m.get("body") or "").strip()
+                if not raw_body:
+                    continue
+                body = BeautifulSoup(raw_body, "html.parser").get_text(separator=" ").strip()
+                # body에 여전히 HTML 태그가 남아 있으면 건너뜀
+                if not body or "<" in body:
+                    continue
+                sentiment = (m.get("entities", {}).get("sentiment") or {}).get("basic", "")
+                likes_obj = m.get("likes", {})
+                likes     = likes_obj.get("total", 0) if isinstance(likes_obj, dict) else 0
+                username  = (m.get("user") or {}).get("username", "익명")
+                created   = (m.get("created_at") or "")[:10]
+                msg_id    = m.get("id", "")
+                link = (f"https://stocktwits.com/{username}/message/{msg_id}"
+                        if msg_id else f"https://stocktwits.com/{username}")
+                messages.append({
+                    "user": username, "body": body, "sentiment": sentiment,
+                    "likes": likes, "date": created, "link": link,
+                })
+            if messages:
+                return {"bull": bull, "bear": bear, "messages": messages, "source": "stocktwits"}
     except Exception:
-        return {}
+        pass
 
+    # ── 2차 fallback: yfinance 뉴스 + 키워드 감성 분류 ──────────
+    POS_KW = {"beat", "bullish", "surge", "soar", "rally", "up", "gain", "buy",
+              "upgrade", "strong", "growth", "profit", "record", "positive"}
+    NEG_KW = {"miss", "bearish", "drop", "fall", "decline", "cut", "downgrade",
+              "loss", "weak", "lawsuit", "fraud", "sell", "negative", "concern"}
+
+    try:
+        raw_news = yf.Ticker(ticker).news or []
+    except Exception:
+        raw_news = []
+
+    messages  = []
+    bull, bear = 0, 0
+    for item in raw_news[:10]:
+        parsed  = parse_yahoo_news_item(item)
+        title   = parsed["title"]
+        if not title or title == "제목 없음":
+            continue
+        words   = set(title.lower().split())
+        is_bull = bool(words & POS_KW)
+        is_bear = bool(words & NEG_KW)
+        if is_bull and not is_bear:
+            sentiment = "Bullish"; bull += 1
+        elif is_bear and not is_bull:
+            sentiment = "Bearish"; bear += 1
+        else:
+            sentiment = ""
+        pub       = parsed["publisher"]
+        link      = parsed["link"]
+        title_ko  = translate_text(title)
+        messages.append({
+            "user": pub, "body": title_ko, "body_en": title,
+            "sentiment": sentiment, "likes": 0,
+            "date": "", "link": link,
+        })
+        if len(messages) >= 8:
+            break
+
+    return {"bull": bull, "bear": bear, "messages": messages, "source": "yahoo"}
 
 @st.cache_data(ttl=180, show_spinner=False)
 def fetch_reddit_posts(ticker: str) -> list:
@@ -440,21 +478,42 @@ def render_social_section(ticker_input: str):
         st_data     = fetch_stocktwits(ticker_input)
         reddit_data = fetch_reddit_posts(ticker_input)
 
-    # ── StockTwits ───────────────────────────────────────────────
+    # ── StockTwits / Yahoo Finance fallback ─────────────────────
+    src = st_data.get("source", "") if st_data else ""
+    if src == "stocktwits":
+        src_icon  = "🐦"
+        src_label = "StockTwits"
+        src_color = "#38bdf8"
+        src_badge_cls = "platform-badge"
+    else:
+        src_icon  = "📰"
+        src_label = "Yahoo Finance 뉴스 감성 분석"
+        src_color = "#a78bfa"
+        src_badge_cls = "platform-badge"
+
     st.markdown(
-        """<div class="section-header" style="margin-top:0.3rem;">
-            <div class="section-icon icon-cyan" style="font-size:0.8rem;">🐦</div>
-            <div class="section-title" style="color:#38bdf8;font-size:0.88rem;">StockTwits</div>
-        </div>""",
+        f'''<div class="section-header" style="margin-top:0.3rem;">
+            <div class="section-icon icon-cyan" style="font-size:0.8rem;">{src_icon}</div>
+            <div class="section-title" style="color:{src_color};font-size:0.88rem;">{src_label}</div>
+        </div>''',
         unsafe_allow_html=True,
     )
 
+    if src == "yahoo" and st_data and st_data.get("messages"):
+        st.markdown(
+            '''<div class="glass-card"><div class="status-row"><div class="status-item">
+                <div class="status-dot dot-yellow"></div>
+                <div class="status-text">StockTwits API 연결 불가 — Yahoo Finance 최신 뉴스 헤드라인으로 감성을 분석합니다.</div>
+            </div></div></div>''',
+            unsafe_allow_html=True,
+        )
+
     if not st_data or not st_data.get("messages"):
         st.markdown(
-            """<div class="glass-card"><div class="status-row"><div class="status-item">
+            '''<div class="glass-card"><div class="status-row"><div class="status-item">
                 <div class="status-dot dot-yellow"></div>
-                <div class="status-text">StockTwits 데이터를 불러올 수 없습니다. (API 일시 제한 또는 해당 티커 데이터 없음)</div>
-            </div></div></div>""",
+                <div class="status-text">소셜 데이터를 불러올 수 없습니다.</div>
+            </div></div></div>''',
             unsafe_allow_html=True,
         )
     else:
@@ -463,10 +522,11 @@ def render_social_section(ticker_input: str):
         total = bull + bear
         bull_pct = round(bull / total * 100) if total else 50
 
+        bar_label = "투자 심리 게이지" if src == "stocktwits" else "뉴스 감성 분포"
         st.markdown(f"""
         <div class="sentiment-bar-wrap">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
-                <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">투자 심리 게이지</span>
+                <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">{bar_label}</span>
                 <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);">총 {total}건 &nbsp;·&nbsp; 🟢 {bull} &nbsp;🔴 {bear}</span>
             </div>
             <div class="sentiment-bar-track">
@@ -490,25 +550,36 @@ def render_social_section(ticker_input: str):
                 card_cls = "social-card"
                 badge    = ""
 
-            likes_html = f'<span>❤️ {msg["likes"]}</span>' if msg["likes"] else ""
-            st.markdown(f"""
-            <div class="{card_cls}">
-                <div class="social-meta">
-                    <span class="platform-badge">StockTwits</span>
-                    {badge}
-                    <span>@{msg['user']}</span>
-                    <span>·</span>
-                    <span>{msg['date']}</span>
-                </div>
-                <div class="social-body">{msg['body']}</div>
-                <div class="social-stats">
-                    {likes_html}
-                    <a href="{msg['link']}" target="_blank"
-                       style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">
-                        원문 보기 →
-                    </a>
-                </div>
-            </div>""", unsafe_allow_html=True)
+            likes_val  = msg.get("likes", 0)
+            likes_html = f'<span>❤️ {likes_val}</span>' if likes_val else ""
+            user_name  = msg["user"]
+            msg_date   = msg.get("date", "")
+            msg_body   = msg["body"]
+            msg_body_en = msg.get("body_en", "")
+            msg_link   = msg["link"]
+
+            # 날짜 표시 (yahoo fallback은 date 없음)
+            date_html = f'<span>·</span><span>{msg_date}</span>' if msg_date else ""
+            # yahoo fallback은 영문 원제목도 표시
+            body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{msg_body_en}</div>'
+                            if msg_body_en else "")
+            # 출처 표시: stocktwits면 @username, yahoo면 뉴스사명
+            if src == "stocktwits":
+                source_html = f'<span class="platform-badge">StockTwits</span>{badge}<span>@{user_name}</span>{date_html}'
+            else:
+                source_html = f'<span class="{src_badge_cls}" style="background:rgba(167,139,250,0.12);color:#a78bfa;border-color:rgba(167,139,250,0.25);">Yahoo Finance</span>{badge}<span>📰 {user_name}</span>'
+
+            card_html = (
+                f'<div class="{card_cls}">' +
+                f'<div class="social-meta">{source_html}</div>' +
+                f'<div class="social-body">{msg_body}</div>' +
+                body_en_html +
+                f'<div class="social-stats">' +
+                likes_html +
+                (f'<a href="{msg_link}" target="_blank" style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">원문 보기 →</a>' if msg_link else "") +
+                f'</div></div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
 
     # ── Reddit ───────────────────────────────────────────────────
     st.markdown(
@@ -1172,8 +1243,41 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 
     rsi_label = "과매수 ⚠️" if rsi_val >= 70 else ("과매도 💡" if rsi_val <= 30 else "중립 ✓")
     rsi_color = "delta-down" if rsi_val >= 70 else ("delta-up" if rsi_val <= 30 else "delta-neu")
-    macd_label = "골든크로스 🟢" if macd_cross else ("데드크로스 🔴" if macd_dead else ("상승" if macd_val > macd_sig_val else "하락"))
-    macd_color = "delta-up" if (macd_cross or macd_val > macd_sig_val) else "delta-down"
+
+    # ── 시가총액 & 유통주식수 조회 ───────────────────────────────
+    MC_LOW  = 4_000_000     # $4M
+    MC_HIGH = 500_000_000   # $500M
+    FLOAT_MAX = 20_000_000  # 20M주
+
+    try:
+        info = yf.Ticker(ticker_input).info
+        market_cap_raw   = info.get("marketCap") or 0
+        shares_float_raw = info.get("floatShares") or info.get("sharesOutstanding") or 0
+        if market_cap_raw >= 1_000_000_000_000:
+            market_cap_str = f"${market_cap_raw / 1_000_000_000_000:.2f}T"
+        elif market_cap_raw >= 1_000_000_000:
+            market_cap_str = f"${market_cap_raw / 1_000_000_000:.2f}B"
+        elif market_cap_raw > 0:
+            market_cap_str = f"${market_cap_raw / 1_000_000:.1f}M"
+        else:
+            market_cap_str = "N/A"
+        if shares_float_raw >= 1_000_000_000:
+            shares_str = f"{shares_float_raw / 1_000_000_000:.2f}B주"
+        elif shares_float_raw > 0:
+            shares_str = f"{shares_float_raw / 1_000_000:.1f}M주"
+        else:
+            shares_str = "N/A"
+        # 별표 조건 판정
+        mc_star     = (market_cap_raw > 0) and (MC_LOW <= market_cap_raw <= MC_HIGH)
+        shares_star = (shares_float_raw > 0) and (shares_float_raw <= FLOAT_MAX)
+    except Exception:
+        market_cap_str = "N/A"
+        shares_str     = "N/A"
+        mc_star        = False
+        shares_star    = False
+
+    mc_star_html     = ' <span style="color:#f5b942;font-size:1rem;vertical-align:middle;" title="소형주 최적 구간 ($4M~$500M)">⭐</span>' if mc_star else ""
+    shares_star_html = ' <span style="color:#f5b942;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">⭐</span>' if shares_star else ""
 
     st.markdown(f"""
     <div class="metric-grid">
@@ -1200,16 +1304,23 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     </div>
     <div class="metric-grid" style="margin-top:-0.25rem;">
         <div class="metric-card mc-indigo">
-            <div class="metric-label">MACD</div>
-            <div class="metric-value">{macd_val:.3f}</div>
-            <div class="metric-delta {macd_color}">{macd_label}</div>
+            <div class="metric-label">시가총액</div>
+            <div class="metric-value" style="font-size:1.2rem;">{market_cap_str}{mc_star_html}</div>
+            <div class="metric-delta {"delta-up" if mc_star else "delta-neu"}">{"$4M~$500M 최적 구간 ✓" if mc_star else "Market Cap"}</div>
         </div>
         <div class="metric-card mc-teal">
             <div class="metric-label">거래량 (MA20 대비)</div>
             <div class="metric-value">{vol_ma20_ratio:.0f}%</div>
-            <div class="metric-delta {'delta-up' if vol_ma20_ratio >= 200 else 'delta-neu'}">
-                {'🔥 폭증' if vol_ma20_ratio >= 200 else ('보통' if vol_ma20_ratio >= 80 else '저조')}
+            <div class="metric-delta {"delta-up" if vol_ma20_ratio >= 200 else "delta-neu"}">
+                {"🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}
             </div>
+        </div>
+    </div>
+    <div class="metric-grid" style="margin-top:-0.25rem;">
+        <div class="metric-card mc-rose" style="grid-column: span 2;">
+            <div class="metric-label">유통주식수 (Float Shares)</div>
+            <div class="metric-value" style="font-size:1.2rem;">{shares_str}{shares_star_html}</div>
+            <div class="metric-delta {"delta-up" if shares_star else "delta-neu"}">{"20M주 이하 저부동주 ✓" if shares_star else "Float Shares"}</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
