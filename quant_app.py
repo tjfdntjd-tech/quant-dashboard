@@ -7,9 +7,7 @@ import yfinance as yf
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
 from deep_translator import GoogleTranslator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -38,6 +36,23 @@ def fetch_usd_to_krw() -> float:
 
 TRADING_THRESHOLD = 500           # 거래대금 기준 (억 원)
 MEMO_FILE         = "memos.json"  # #9 메모 영구 저장 파일
+
+# ════════════════════════════════════════════════════════════════
+# 오퍼링(유상증자) 관련 SEC 공시 서식
+# ════════════════════════════════════════════════════════════════
+OFFERING_FORM_TYPES = {
+    "S-1", "S-1/A", "S-3", "S-3/A", "S-11", "S-11/A",
+    "F-1", "F-1/A", "F-3", "F-3/A",
+    "424B1", "424B2", "424B3", "424B4", "424B5", "424B7", "424B8",
+}
+
+# ════════════════════════════════════════════════════════════════
+# 나스닥 최소 호가($1) 규정 준수 파라미터
+# (Nasdaq Listing Rule 5550(a)(2) — 참고용 추정치 계산에 사용)
+# ════════════════════════════════════════════════════════════════
+NASDAQ_MIN_BID          = 1.00
+NASDAQ_DEFICIENCY_DAYS  = 30    # 연속 영업일 미만 시 결핍통지(Deficiency Notice) 발송 기준
+NASDAQ_CURE_PERIOD_DAYS = 180   # 통지 후 유예기간 (캘린더 일)
 
 # ════════════════════════════════════════════════════════════════
 # 섹터 ETF 정의 (S&P 500 11개 섹터)
@@ -87,10 +102,9 @@ st.set_page_config(page_title="급등주 실시간 검증기 V3", layout="wide",
 # ════════════════════════════════════════════════════════════════
 _defaults = {
     "favorites":        [],
-    "selected_ticker":  "NVDA",
+    "selected_ticker":  "",
     "memos":            load_memos(),   # #9 파일에서 복원
     "scan_results":     [],
-    "chart_period":     "2개월",        # 기술적 차트 기간 유지
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
@@ -156,6 +170,155 @@ def fetch_ticker_info(ticker: str) -> dict:
         return yf.Ticker(ticker).info or {}
     except Exception:
         return {}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_spike_history(ticker: str) -> pd.DataFrame:
+    """
+    상장 이후 전체 기간(period='max')을 조회해 하루 등락률이 +100% 이상이었던
+    날짜들을 찾습니다. 급등주는 종종 상장 초기~단기간에 여러 번의 100%+ 급등을
+    겪으므로, 차트용 1년치 데이터(fetch_history)와는 별도로 전체 기간을 조회합니다.
+    """
+    try:
+        df = yf.Ticker(ticker).history(period="max")
+        if df.empty or len(df) < 2:
+            return pd.DataFrame()
+        df = df.dropna(subset=["Close"])
+        df["PctChange"] = df["Close"].pct_change() * 100
+        spikes = df[df["PctChange"] >= 100].copy()
+        spikes = spikes[["Close", "PctChange", "Volume"]].sort_index(ascending=False)
+        return spikes
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_offering_history(ticker: str) -> list:
+    """
+    야후 파이낸스가 제공하는 SEC 공시 목록(Ticker.sec_filings)에서
+    유상증자/오퍼링과 직접 관련된 서식(S-1, S-3, 424B 시리즈 등)만 필터링합니다.
+    실제 공모 여부·금액까지는 알 수 없으므로 '오퍼링 가능성이 있는 공시' 목록입니다.
+    """
+    try:
+        filings = yf.Ticker(ticker).sec_filings
+        if not filings:
+            return []
+        results = []
+        for f in filings:
+            ftype = (f.get("type") or "").upper().strip()
+            if ftype in OFFERING_FORM_TYPES:
+                exhibits = f.get("exhibits") or []
+                url = f.get("edgarUrl") or (exhibits[0].get("url") if exhibits else "") or ""
+                results.append({
+                    "date":  f.get("date", "") or "",
+                    "type":  f.get("type", "") or ftype,
+                    "title": f.get("title", "") or f.get("type", ""),
+                    "url":   url,
+                })
+        results.sort(key=lambda x: x["date"], reverse=True)
+        return results
+    except Exception:
+        return []
+
+def calc_nasdaq_compliance(hist: pd.DataFrame, today_close: float) -> dict:
+    """
+    나스닥 최소 호가 요건(Listing Rule 5550(a)(2)) 관련 잔여 유예기간을 추정합니다.
+    - 종가가 30 연속 영업일 동안 $1 미만이면 결핍통지(Deficiency Notice) 대상이 되고,
+      통지일로부터 180일(캘린더 기준)의 유예기간이 주어지는 것이 일반적인 규정입니다.
+    - 실제 통지 발송 여부·정확한 날짜는 공개 시세 데이터만으로는 알 수 없으므로,
+      본 계산은 가격 데이터 기반의 '추정치'이며 공식 컴플라이언스 확인을 대체하지 않습니다.
+    """
+    if today_close is None or today_close >= NASDAQ_MIN_BID:
+        return {"applicable": False}
+
+    closes = hist["Close"].dropna()
+    if closes.empty:
+        return {"applicable": False}
+
+    # 최근 종가부터 역순으로 연속 $1 미만 영업일 수 계산
+    streak = 0
+    streak_start_idx = None
+    for i in range(len(closes) - 1, -1, -1):
+        if closes.iloc[i] < NASDAQ_MIN_BID:
+            streak += 1
+            streak_start_idx = i
+        else:
+            break
+
+    if streak_start_idx is None:
+        return {"applicable": False}
+
+    if streak >= NASDAQ_DEFICIENCY_DAYS:
+        # 연속 30영업일째 되는 날 결핍통지가 발송되었다고 가정
+        notice_idx      = streak_start_idx + NASDAQ_DEFICIENCY_DAYS - 1
+        notice_date_est = closes.index[notice_idx].date()
+        deadline_est     = notice_date_est + timedelta(days=NASDAQ_CURE_PERIOD_DAYS)
+        days_left        = (deadline_est - datetime.now().date()).days
+        return {
+            "applicable":      True,
+            "phase":           "notice_issued_est",
+            "streak_days":     streak,
+            "notice_date_est": notice_date_est,
+            "deadline_est":    deadline_est,
+            "days_left":       days_left,
+        }
+    else:
+        return {
+            "applicable":     True,
+            "phase":          "counting",
+            "streak_days":    streak,
+            "days_to_notice": NASDAQ_DEFICIENCY_DAYS - streak,
+        }
+
+# ════════════════════════════════════════════════════════════════
+# 주식병합(리버스 스플릿) 예정 뉴스 감지
+# ════════════════════════════════════════════════════════════════
+_REVERSE_SPLIT_PATTERNS = [
+    re.compile(r"reverse\s+stock\s+split", re.I),
+    re.compile(r"reverse\s+split", re.I),
+    re.compile(r"주식\s*병합"),
+    re.compile(r"역병합"),
+    re.compile(r"리버스\s*스플릿"),
+]
+
+_RATIO_PATTERN = re.compile(r"(\d+)\s*[-: ]?\s*(?:for|대)\s*[-: ]?\s*(\d+)", re.I)
+
+_EFFECTIVE_DATE_PATTERNS = [
+    re.compile(r"effective\s+(?:as\s+of\s+|on\s+)?([A-Za-z]+\s+\d{1,2},?\s+\d{4})", re.I),
+    re.compile(r"effective\s+(?:as\s+of\s+|on\s+)?(\d{1,2}/\d{1,2}/\d{2,4})", re.I),
+    re.compile(r"(?:effective|시행일?|적용일?)\s*[:\-]?\s*(\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2})"),
+]
+
+def detect_reverse_split_news(news_items: list) -> list:
+    """
+    뉴스 제목(한글 번역본 + 영문 원문)에서 리버스 스플릿(주식병합) 관련
+    키워드를 감지하고, 가능한 경우 정규식으로 병합 비율과 시행(effective)일을
+    함께 추출합니다. 원문에 명시적인 날짜가 없으면 시행일은 None으로 남기고
+    뉴스 게재일(date)만 표시합니다 — 실제 시행일은 원문 확인이 필요합니다.
+    """
+    results = []
+    for n in news_items:
+        text = " ".join(filter(None, [n.get("title", ""), n.get("title_en", "")]))
+        if not text or not any(p.search(text) for p in _REVERSE_SPLIT_PATTERNS):
+            continue
+
+        ratio_match = _RATIO_PATTERN.search(text)
+        ratio = f"{ratio_match.group(1)}-for-{ratio_match.group(2)}" if ratio_match else None
+
+        eff_date = None
+        for p in _EFFECTIVE_DATE_PATTERNS:
+            m = p.search(text)
+            if m:
+                eff_date = m.group(1)
+                break
+
+        results.append({
+            "date":           n.get("date", ""),
+            "title":          n.get("title", "") or n.get("title_en", ""),
+            "title_en":       n.get("title_en", ""),
+            "link":           n.get("link", ""),
+            "ratio":          ratio,
+            "effective_date": eff_date,
+        })
+    return results
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def translate_text(text: str) -> str:
@@ -957,6 +1120,30 @@ def inject_css(dark: bool = True):
         font-weight: 600;
         color: #fca5a5;
     }}
+    .china-banner {{
+        background: linear-gradient(135deg, rgba(220,38,38,0.28), rgba(220,38,38,0.12));
+        border: 1.5px solid rgba(248,113,113,0.75);
+        border-radius: 14px;
+        padding: 0.85rem 1.2rem;
+        margin-bottom: 1rem;
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        box-shadow: 0 0 22px rgba(220,38,38,0.25);
+    }}
+    .china-banner-icon {{ font-size: 1.3rem; line-height: 1; }}
+    .china-banner-text {{ font-size: 0.85rem; font-weight: 700; color: #fecaca; letter-spacing: 0.3px; }}
+    .china-banner-sub {{ font-size: 0.72rem; font-weight: 500; color: rgba(254,202,202,0.75); margin-top: 0.15rem; }}
+    .split-banner {{
+        background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(245,158,11,0.08));
+        border: 1.5px solid rgba(251,191,36,0.6);
+        border-radius: 14px;
+        padding: 0.85rem 1.2rem;
+        margin-bottom: 0.8rem;
+    }}
+    .split-banner-title {{ font-size: 0.85rem; font-weight: 700; color: #fbbf24; letter-spacing: 0.3px; margin-bottom: 0.3rem; }}
+    .split-banner-body  {{ font-size: 0.8rem; color: {text_status}; line-height: 1.5; }}
+    .split-banner-body strong {{ color: {text_primary}; }}
 
     /* ── 섹션 헤더 ─────────────────────────────────────────────────── */
     .section-header {{
@@ -1203,6 +1390,89 @@ def inject_css(dark: bool = True):
         .metric-value {{ font-size: 1.25rem; }}
         .stButton button {{ min-height: 2.8rem !important; font-size: 0.95rem !important; }}
     }}
+
+    /* ── 라이트 모드: 저대비 텍스트 색상 전면 보정 ──────────────────── *
+     * (버그 수정: 기존 코드는 이 블록이 바깥 f-string 안에 중첩된      *
+     * "일반 문자열"인데도 중괄호를 {{ }} 로 이중 이스케이프해서       *
+     * 실제로는 깨진 CSS( {{ ... }} )가 출력되어 라이트 모드 보정이    *
+     * 하나도 적용되지 않고 있었음. 홑 중괄호로 수정 + 저대비 색상     *
+     * 전반(회색 노트, 파스텔 강조색 등)에 대한 보정을 추가함.         */
+    {"" if dark else """
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] .stMarkdown,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] div {
+        color: #1e1b4b !important;
+    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        color: #0f0d2a !important;
+    }
+    .stMarkdown p, .stMarkdown span,
+    [data-testid="stAppViewContainer"] label,
+    [data-testid="stAppViewContainer"] .stSelectbox label,
+    [data-testid="stAppViewContainer"] .stCheckbox label,
+    [data-testid="stAppViewContainer"] .stRadio label,
+    [data-testid="stAppViewContainer"] .stTextInput label,
+    [data-testid="stAppViewContainer"] p {
+        color: #1e1b4b !important;
+    }
+
+    /* 시그니처 컬러 변수 재정의 — var(--c-*)를 쓰는 모든 요소
+       (title-*, sent-pos/neg, impact-badge, bull/bear-badge,
+       pos-card/neg-card, news-card:hover 등)에 자동 적용됨 */
+    :root {
+        --c-amber:  #92600a !important;
+        --c-teal:   #0f766e !important;
+        --c-indigo: #4338ca !important;
+        --c-violet: #6d28d9 !important;
+        --c-cyan:   #0369a1 !important;
+        --c-rose:   #be123c !important;
+        --c-green:  #047857 !important;
+        --c-red:    #dc2626 !important;
+        --c-blue:   #1d4ed8 !important;
+        --c-orange: #c2410c !important;
+    }
+
+    /* 하드코딩된 클래스 색상 보정 */
+    .delta-up   { color: #047857 !important; }
+    .delta-down { color: #dc2626 !important; }
+    .delta-neu  { color: #475569 !important; }
+    .alert-title  { color: #b91c1c !important; }
+    .signal-chip  { color: #b91c1c !important; }
+    .china-banner-text { color: #991b1b !important; }
+    .china-banner-sub  { color: #7f1d1d !important; }
+    .sent-neu   { color: #92600a !important; }
+    .split-banner-title { color: #92600a !important; }
+    .news-link  { color: #4338ca !important; }
+    .news-link:hover { color: #6d28d9 !important; }
+    .scan-title { color: #92600a !important; }
+    .status-text { color: #334155 !important; }
+    .metric-label, .news-meta, .social-meta, .social-stats,
+    .sector-ticker, .legend-item, .news-orig { color: #64748b !important; }
+
+    /* 인라인 style="color:..." 로 하드코딩된 파스텔 색상 보정
+       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비) */
+    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] { color: #475569 !important; }
+    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] { color: #334155 !important; }
+    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] { color: #7f1d1d !important; }
+    [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
+    [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
+    [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
+    [style*="color:#f87171"],  [style*="color: #f87171"]  { color: #dc2626 !important; }
+    [style*="color:#ef4444"],  [style*="color: #ef4444"]  { color: #b91c1c !important; }
+    [style*="color:#fca5a5"],  [style*="color: #fca5a5"]  { color: #b91c1c !important; }
+    [style*="color:#fecaca"],  [style*="color: #fecaca"]  { color: #991b1b !important; }
+    [style*="color:#fbbf24"],  [style*="color: #fbbf24"]  { color: #92600a !important; }
+    [style*="color:#f5b942"],  [style*="color: #f5b942"]  { color: #92600a !important; }
+    [style*="color:#a78bfa"],  [style*="color: #a78bfa"]  { color: #6d28d9 !important; }
+    [style*="color:#818cf8"],  [style*="color: #818cf8"]  { color: #4338ca !important; }
+    [style*="color:#60a5fa"],  [style*="color: #60a5fa"]  { color: #1d4ed8 !important; }
+    [style*="color:#94a3b8"],  [style*="color: #94a3b8"]  { color: #475569 !important; }
+    [style*="color:#ff6a00"],  [style*="color: #ff6a00"]  { color: #c2410c !important; }
+    """}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1322,6 +1592,7 @@ if st.session_state.favorites:
                     vol_r      = (t['Volume'] / vol_ma20) * 100
                     rsi        = t['RSI']
                     macd_cross = t['MACD'] > t['MACD_SIG'] and y['MACD'] <= y['MACD_SIG']
+                    gap_up_pct = (t['Open'] - y['Close']) / y['Close'] * 100
 
                     signals = []
                     if vol_r  >= 200:  signals.append("🔥거래량")   # MA20 대비 200%+
@@ -1329,6 +1600,8 @@ if st.session_state.favorites:
                     if rsi    <= 35:   signals.append("📉과매도")
                     if t['Close'] > t['MA120'] and y['Close'] <= y['MA120']:
                                        signals.append("🚀120일선")
+                    if gap_up_pct >= 5:
+                                       signals.append("⬆️갭업")     # 시초가 전일종가 대비 5%+
                     alert = " ".join(signals) if signals else "—"
 
                     return {
@@ -1392,8 +1665,25 @@ if show_heatmap:
 # ════════════════════════════════════════════════════════════════
 def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                                vol_ma20_ratio, trading_value_krw_eok, threshold_eok,
-                               high_52w, low_52w):
+                               high_52w, low_52w, spike_df=None, offering_list=None,
+                               nasdaq_compliance=None):
     """기술적 조건 & 수급 점검 + 차트 (탭1 또는 좌측 컬럼)"""
+
+    # ── 종목 정보 조회 (국적 판별 등에 사용) ─────────────────────
+    info = fetch_ticker_info(ticker_input)
+    country = str(info.get("country") or "").strip()
+    is_china = country in {"China", "Hong Kong"}
+
+    if is_china:
+        st.markdown(f"""
+        <div class="china-banner">
+            <div class="china-banner-icon">🇨🇳⚠️</div>
+            <div>
+                <div class="china-banner-text">중국 기업 (China-based Company)</div>
+                <div class="china-banner-sub">본사 소재지: {country} — VIE 구조, 회계 투명성, 규제 리스크 등을 반드시 확인하세요</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── 변수 계산 ────────────────────────────────────────────────
     pct_chg      = (today['Close'] - yesterday['Close']) / yesterday['Close'] * 100
@@ -1402,6 +1692,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     macd_sig_val = today['MACD_SIG']
     macd_cross   = macd_val > macd_sig_val and yesterday['MACD'] <= yesterday['MACD_SIG']
     macd_dead    = macd_val < macd_sig_val and yesterday['MACD'] >= yesterday['MACD_SIG']
+    gap_up_pct   = (today['Open'] - yesterday['Close']) / yesterday['Close'] * 100
 
     # ── 🔔 급등 신호 배너 ────────────────────────────────────────
     alert_signals = []
@@ -1411,6 +1702,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     if today['Close'] > today['MA120'] and yesterday['Close'] <= yesterday['MA120']:
                                   alert_signals.append("🚀 120일선 돌파")
     if pct_chg >= 5:             alert_signals.append(f"📈 당일 +{pct_chg:.1f}%")
+    if gap_up_pct >= 5:          alert_signals.append(f"⬆️ 갭업 시초가 +{gap_up_pct:.1f}%")
 
     if alert_signals:
         chips = "".join([f'<span class="signal-chip">{s}</span>' for s in alert_signals])
@@ -1441,7 +1733,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     FLOAT_MAX = 20_000_000  # 20M주
 
     try:
-        info = fetch_ticker_info(ticker_input)
         market_cap_raw   = info.get("marketCap") or 0
         shares_float_raw = info.get("floatShares") or info.get("sharesOutstanding") or 0
         if market_cap_raw >= 1_000_000_000_000:
@@ -1515,6 +1806,112 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ── ⚠️ 나스닥 $1 최소 호가 규정 준수 체크 ───────────────────────
+    if nasdaq_compliance and nasdaq_compliance.get("applicable"):
+        if nasdaq_compliance["phase"] == "notice_issued_est":
+            days_left = nasdaq_compliance["days_left"]
+            if days_left > 0:
+                dl_dot  = "dot-red" if days_left <= 30 else "dot-yellow"
+                dl_text = (
+                    f"<strong>나스닥 최소 호가($1) 결핍 상태 — 약 {nasdaq_compliance['streak_days']}영업일 연속 "
+                    f"$1 미만</strong><br>"
+                    f"결핍통지 추정일: <strong>{nasdaq_compliance['notice_date_est']}</strong> · "
+                    f"유예기간(180일) 만료 추정일: <strong>{nasdaq_compliance['deadline_est']}</strong> "
+                    f"(<strong>약 {days_left}일</strong> 남음)"
+                )
+            else:
+                dl_dot  = "dot-red"
+                dl_text = (
+                    f"<strong>나스닥 최소 호가($1) 유예기간 만료 추정일 경과</strong> "
+                    f"(추정 만료일: {nasdaq_compliance['deadline_est']}, {abs(days_left)}일 경과) — "
+                    f"상장폐지 절차 또는 역병합(reverse split) 등 조치 여부 확인 필요"
+                )
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="status-row">
+                    <div class="status-item"><div class="status-dot {dl_dot}"></div><div class="status-text">{dl_text}</div></div>
+                </div>
+                <div style="font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;">
+                    ⚠️ 실제 결핍통지 발송일은 공개 시세 데이터로 확인할 수 없어 30영업일 연속 미달 시점을 기준으로 추정한 값입니다. 참고용으로만 사용하세요.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            days_to_notice = nasdaq_compliance["days_to_notice"]
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="status-row">
+                    <div class="status-item"><div class="status-dot dot-yellow"></div>
+                    <div class="status-text"><strong>$1 미만 거래 중</strong> — 연속 {nasdaq_compliance['streak_days']}영업일째.
+                    나스닥 결핍통지 기준(연속 30영업일)까지 <strong>약 {days_to_notice}영업일</strong> 남음</div></div>
+                </div>
+                <div style="font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;">
+                    ⚠️ Nasdaq Listing Rule 5550(a)(2) 기준 추정치이며, 실제 결핍통지 여부는 공식 공시를 확인하세요.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ── 🚀 100%+ 급등 이력 ───────────────────────────────────────
+    st.markdown("""<div class="section-header"><div class="section-icon icon-rose">🚀</div><div class="section-title title-rose">하루 100%+ 급등 이력</div></div>""", unsafe_allow_html=True)
+    if spike_df is not None and not spike_df.empty:
+        rows_html = ""
+        for dt_idx, row in spike_df.head(15).iterrows():
+            rows_html += (
+                f"<div class='status-item'><div class='status-dot dot-green'></div>"
+                f"<div class='status-text'>{dt_idx.date()} — 종가 ${row['Close']:.2f} "
+                f"<strong style='color:#34d399;'>▲ {row['PctChange']:.1f}%</strong> "
+                f"(거래량 {int(row['Volume']):,})</div></div>"
+            )
+        more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
+                      f"총 {len(spike_df)}회 중 최근 15건 표시</div>" if len(spike_df) > 15 else "")
+        st.markdown(f"""
+        <div class="glass-card">
+            <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
+                {rows_html}
+            </div>
+            {more_note}
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="glass-card">
+            <div class="status-row">
+                <div class="status-item"><div class="status-dot dot-blue"></div>
+                <div class="status-text">상장 이후 하루 +100% 이상 급등 이력이 없습니다 (조회 가능한 전체 기간 기준)</div></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ── 📜 오퍼링(유상증자) 이력 ─────────────────────────────────
+    st.markdown("""<div class="section-header"><div class="section-icon icon-amber">📜</div><div class="section-title title-amber">오퍼링(유상증자) 관련 공시 이력</div></div>""", unsafe_allow_html=True)
+    if offering_list:
+        rows_html = ""
+        for o in offering_list[:15]:
+            link_html = f"<a class='news-link' href='{o['url']}' target='_blank'>공시 원문 →</a>" if o.get("url") else ""
+            rows_html += (
+                f"<div class='status-item'><div class='status-dot dot-yellow'></div>"
+                f"<div class='status-text'>📅 {o['date']} &nbsp;<strong>{o['type']}</strong> — {o['title']} {link_html}</div></div>"
+            )
+        more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
+                      f"총 {len(offering_list)}건 중 최근 15건 표시</div>" if len(offering_list) > 15 else "")
+        st.markdown(f"""
+        <div class="glass-card">
+            <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
+                {rows_html}
+            </div>
+            {more_note}
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div class="glass-card">
+            <div class="status-row">
+                <div class="status-item"><div class="status-dot dot-blue"></div>
+                <div class="status-text">S-1 / S-3 / 424B 계열 오퍼링 관련 공시 이력이 조회되지 않았습니다</div></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # ── 수급 체크 ────────────────────────────────────────────────
     st.markdown("""<div class="section-header"><div class="section-icon icon-amber">💡</div><div class="section-title title-amber">실시간 자금 유입 체크</div></div>""", unsafe_allow_html=True)
@@ -1590,78 +1987,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # ── #11 차트 기간 선택 ────────────────────────────────────────
-    period_map   = {"1개월": 30, "2개월": 60, "3개월": 90, "6개월": 180, "1년": 252}
-    period_keys  = list(period_map.keys())
-
-    # #15 key="chart_period"는 이미 session_state 기본값("2개월")을 가지고 있으므로
-    # index를 함께 넘기면 "default value + Session State" 충돌 오류가 날 수 있음.
-    # key만으로도 이전 선택값이 자동 복원되므로 index는 제거.
-    selected_period = st.radio(
-        "차트 기간",
-        period_keys,
-        horizontal=True,
-        key="chart_period",           # 전역 key — 리렌더링 후에도 자동 유지
-        label_visibility="collapsed",
-    )
-    n_days  = period_map[selected_period]
-    plot_df = hist.tail(n_days)
-
-    st.markdown(f"""<div class="section-header"><div class="section-icon icon-indigo">📊</div><div class="section-title title-indigo">기술적 차트 ({selected_period})</div></div>""", unsafe_allow_html=True)
-
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        row_heights=[0.55, 0.22, 0.23],
-        vertical_spacing=0.03,
-    )
-
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BB_UPPER'], name='BB 상단',
-        line=dict(color='rgba(139,92,246,0.4)', width=1, dash='dot'), showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BB_LOWER'], name='BB 하단',
-        line=dict(color='rgba(139,92,246,0.4)', width=1, dash='dot'),
-        fill='tonexty', fillcolor='rgba(139,92,246,0.05)', showlegend=False), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['BB_MID'], name='BB 중심(20일)',
-        line=dict(color='rgba(139,92,246,0.6)', width=1, dash='dash')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Close'], name='주가',
-        line=dict(color='#60a5fa', width=2.2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MA20'], name='MA20',
-        line=dict(color='#fbbf24', width=1.3)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MA120'], name='MA120',
-        line=dict(color='#f87171', width=1.3)), row=1, col=1)
-
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['RSI'], name='RSI',
-        line=dict(color='#a78bfa', width=1.5)), row=2, col=1)
-    fig.add_hline(y=70, line_color='rgba(248,113,113,0.5)', line_dash='dot', line_width=1, row=2, col=1)
-    fig.add_hline(y=30, line_color='rgba(52,211,153,0.5)', line_dash='dot', line_width=1, row=2, col=1)
-
-    colors = ['#34d399' if v >= 0 else '#f87171' for v in plot_df['MACD_HIST']]
-    fig.add_trace(go.Bar(x=plot_df.index, y=plot_df['MACD_HIST'], name='MACD Hist',
-        marker_color=colors, opacity=0.6), row=3, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MACD'], name='MACD',
-        line=dict(color='#60a5fa', width=1.5)), row=3, col=1)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['MACD_SIG'], name='Signal',
-        line=dict(color='#f97316', width=1.5)), row=3, col=1)
-
-    _dark = st.session_state.get("dark_mode", True)
-    _tmpl = "plotly_dark" if _dark else "plotly_white"
-    _plot_bg  = "rgba(255,255,255,0.02)" if _dark else "rgba(0,0,0,0)"
-    _grid_clr = "rgba(255,255,255,0.04)" if _dark else "rgba(0,0,0,0.06)"
-    fig.update_layout(
-        template=_tmpl,
-        hovermode="x unified",
-        height=460,
-        margin=dict(l=8, r=8, t=12, b=8),
-        legend=dict(orientation="h", y=1.03, x=0, font_size=10),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor=_plot_bg,
-    )
-    fig.update_xaxes(gridcolor=_grid_clr, zeroline=False)
-    fig.update_yaxes(gridcolor=_grid_clr, zeroline=False)
-    fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
-    fig.update_yaxes(title_text="MACD", row=3, col=1)
-    st.plotly_chart(fig, use_container_width=True)
 
     # ── 📝 분석 메모 ─────────────────────────────────────────────
     st.markdown("""<div class="section-header"><div class="section-icon icon-violet">📝</div><div class="section-title title-violet">분석 메모</div></div>""", unsafe_allow_html=True)
@@ -1778,6 +2103,25 @@ def render_sector_heatmap():
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 뉴스
 # ════════════════════════════════════════════════════════════════
+def _render_reverse_split_banner(splits: list):
+    """감지된 리버스 스플릿(주식병합) 뉴스를 경고 배너로 표시합니다."""
+    if not splits:
+        return
+    for s in splits:
+        ratio_html = f" &nbsp;·&nbsp; 비율(추정): <strong>{s['ratio']}</strong>" if s["ratio"] else ""
+        if s["effective_date"]:
+            date_html = f"시행(effective) 예정일: <strong>{s['effective_date']}</strong>"
+        else:
+            date_html = "시행일이 뉴스 원문에 명시되지 않음 — 원문 링크에서 정확한 일정을 확인하세요"
+        pub_html = f" (게재일: {s['date']})" if s["date"] else ""
+        link_html = f"<br><a class='news-link' href='{s['link']}' target='_blank'>관련 뉴스 원문 보기 →</a>" if s["link"] else ""
+        st.markdown(f"""
+        <div class="split-banner">
+            <div class="split-banner-title">⚠️ 주식병합(리버스 스플릿) 관련 뉴스 감지{pub_html}</div>
+            <div class="split-banner-body">{date_html}{ratio_html}<br>{s['title']}{link_html}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 def render_news_section(ticker_input):
     """스톡타이탄 뉴스 & Rhea-AI 호재 검증 (탭2 또는 우측 컬럼)"""
     st.markdown("""<div class="section-header"><div class="section-icon icon-rose">🔥</div><div class="section-title title-rose">스톡타이탄 실시간 호재 & Rhea-AI 분석</div></div>""", unsafe_allow_html=True)
@@ -1803,6 +2147,13 @@ def render_news_section(ticker_input):
         with ThreadPoolExecutor(max_workers=5) as ex:
             translated = list(ex.map(_translate, titles_en))
 
+        # ── ⚠️ 주식병합(리버스 스플릿) 예정 뉴스 감지 ────────────────
+        split_source = [
+            {"date": "", "title": t_ko, "title_en": n["title"], "link": n["link"]}
+            for n, t_ko in zip(parsed_list, translated)
+        ]
+        _render_reverse_split_banner(detect_reverse_split_news(split_source))
+
         for news_item, title_ko in zip(parsed_list, translated):
             st.markdown(f"""
             <div class="news-card">
@@ -1812,6 +2163,9 @@ def render_news_section(ticker_input):
             </div>
             """, unsafe_allow_html=True)
     else:
+        # ── ⚠️ 주식병합(리버스 스플릿) 예정 뉴스 감지 ────────────────
+        _render_reverse_split_banner(detect_reverse_split_news(news_data))
+
         for n in news_data:
             if n['sentiment'] == "Positive":
                 card_cls  = "news-card pos-card"
@@ -1888,6 +2242,11 @@ if st.session_state.get("has_searched"):
             high_52w = hist['High'].max()
             low_52w  = hist['Low'].min()
 
+            # 신규 3종: 100%+ 급등 이력 / 오퍼링 공시 이력 / 나스닥 $1 컴플라이언스 추정
+            spike_df          = fetch_spike_history(active_ticker)
+            offering_list     = fetch_offering_history(active_ticker)
+            nasdaq_compliance = calc_nasdaq_compliance(hist, today['Close'])
+
             if desktop_mode:
                 col1, col2 = st.columns([4, 5])
                 with col1:
@@ -1895,7 +2254,8 @@ if st.session_state.get("has_searched"):
                         active_ticker, hist, today, yesterday,
                         vol_ratio, vol_ma20_ratio,
                         trading_value_krw_eok, TRADING_THRESHOLD,
-                        high_52w, low_52w
+                        high_52w, low_52w,
+                        spike_df, offering_list, nasdaq_compliance
                     )
                 with col2:
                     dt1, dt2 = st.tabs(["📰 뉴스 & 호재", "💬 소셜 미디어"])
@@ -1910,7 +2270,8 @@ if st.session_state.get("has_searched"):
                         active_ticker, hist, today, yesterday,
                         vol_ratio, vol_ma20_ratio,
                         trading_value_krw_eok, TRADING_THRESHOLD,
-                        high_52w, low_52w
+                        high_52w, low_52w,
+                        spike_df, offering_list, nasdaq_compliance
                     )
                 with tab2:
                     render_news_section(active_ticker)
