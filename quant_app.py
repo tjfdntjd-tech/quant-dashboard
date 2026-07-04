@@ -4,7 +4,9 @@ import random
 import re
 import streamlit as st
 import yfinance as yf
+from yfinance import EquityQuery
 import pandas as pd
+import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
@@ -110,6 +112,31 @@ def save_memos(memos: dict) -> None:
         pass
 
 # ════════════════════════════════════════════════════════════════
+# 즐겨찾기 영구 저장 헬퍼 (메모와 동일한 방식)
+# ════════════════════════════════════════════════════════════════
+FAVORITES_FILE = "favorites.json"
+
+def load_favorites() -> list:
+    """앱 재시작 후에도 즐겨찾기를 복원합니다."""
+    try:
+        if os.path.exists(FAVORITES_FILE):
+            with open(FAVORITES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception:
+        pass
+    return []
+
+def save_favorites(favorites: list) -> None:
+    """즐겨찾기를 JSON 파일로 저장합니다."""
+    try:
+        with open(FAVORITES_FILE, "w", encoding="utf-8") as f:
+            json.dump(favorites, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+# ════════════════════════════════════════════════════════════════
 # 1. 페이지 설정 — set_page_config는 반드시 가장 먼저
 # ════════════════════════════════════════════════════════════════
 st.set_page_config(page_title="급등주 실시간 검증기 V3", layout="wide", initial_sidebar_state="auto")
@@ -118,11 +145,13 @@ st.set_page_config(page_title="급등주 실시간 검증기 V3", layout="wide",
 # #1 session_state 초기화 — 단일 위치, 중복 제거
 # ════════════════════════════════════════════════════════════════
 _defaults = {
-    "favorites":        [],
+    "favorites":        load_favorites(),   # 파일에서 복원
     "selected_ticker":  "",
     "memos":            load_memos(),   # #9 파일에서 복원
     "scan_results":     [],
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
+    "show_screener":    False,          # 급등주 검색기 토글
+    "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
     "dark_mode":        True,           # 다크/라이트 모드 토글
@@ -138,6 +167,97 @@ for _k, _v in _defaults.items():
 def fetch_history(ticker: str) -> pd.DataFrame:
     """yfinance 1년치 OHLCV — 동일 티커 재검색 시 재다운로드 없이 즉시 반환"""
     return yf.Ticker(ticker).history(period="1y")
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_top_gainers(min_pct: float, min_price: float, max_price: float,
+                       min_volume: int, limit: int = 40) -> list:
+    """
+    Yahoo Finance 공식 스크리너(yf.screen)로 조건에 맞는 급등주를 조회합니다.
+    실시간(지연 가능) 시세 기준 상승률/거래량/주가 조건으로 필터링.
+    이후 enrich_screener_results()에서 RSI·거래대금 등 상세 지표를 추가로 병합하므로,
+    후속 필터링(중국계 제외/동전주 제외 등)에서 걸러질 종목을 감안해 넉넉하게 조회합니다.
+    """
+    try:
+        query = EquityQuery('and', [
+            EquityQuery('gt',  ['percentchange',   min_pct]),
+            EquityQuery('gte', ['intradayprice',   min_price]),
+            EquityQuery('lte', ['intradayprice',   max_price]),
+            EquityQuery('gt',  ['dayvolume',       min_volume]),
+            EquityQuery('eq',  ['region',          'us']),
+        ])
+        result = yf.screen(query, sortField='percentchange', sortAsc=False, size=limit)
+        quotes = (result or {}).get('quotes', [])
+        out = []
+        for q in quotes:
+            out.append({
+                "ticker":     q.get("symbol", ""),
+                "name":       q.get("shortName") or q.get("longName") or "",
+                "price":      q.get("regularMarketPrice", 0) or 0,
+                "pct_change": q.get("regularMarketChangePercent", 0) or 0,
+                "volume":     q.get("regularMarketVolume", 0) or 0,
+                "market_cap": q.get("marketCap", 0) or 0,
+                "exchange":   q.get("fullExchangeName", ""),
+            })
+        return out
+    except Exception:
+        return []
+
+@st.cache_data(ttl=120, show_spinner=False)
+def enrich_screener_results(tickers: tuple) -> dict:
+    """
+    검색기 1차 결과(tickers)를 받아 종목별 상세 지표를 ThreadPoolExecutor로 병렬 수집합니다.
+    - RSI(14), 전일 대비 거래량 비율(%), 20일 거래량 MA 대비 비율(%)
+    - 당일 거래대금(억원 환산, 실시간 환율 적용)
+    - 국가(중국/홍콩 여부) — 리스크 스크리닝용
+    - 나스닥 최소호가($1) 컴플라이언스 추정 (calc_nasdaq_compliance 재사용)
+    fetch_history / fetch_ticker_info는 이미 개별적으로 st.cache_data 캐싱되어 있으므로
+    여기서는 병렬 호출만 담당하고 이중 캐싱하지 않습니다.
+    """
+    usd_krw = fetch_usd_to_krw()
+
+    def _enrich_one(ticker: str) -> dict:
+        try:
+            hist = fetch_history(ticker)
+            if hist.empty or len(hist) < 2:
+                return {"ticker": ticker, "error": True}
+            hist = calc_indicators(hist.dropna())
+            today     = hist.iloc[-1]
+            yesterday = hist.iloc[-2]
+
+            rsi_val = today['RSI']
+            rsi     = round(float(rsi_val), 1) if pd.notna(rsi_val) else None
+
+            vol_ratio = (today['Volume'] / yesterday['Volume'] * 100) if yesterday['Volume'] else 0
+            vol_ma20  = today['VOL_MA20'] if today['VOL_MA20'] > 0 else 1
+            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100
+
+            trading_value_usd     = today['Close'] * today['Volume']
+            trading_value_krw_eok = (trading_value_usd * usd_krw) / 100_000_000
+
+            info      = fetch_ticker_info(ticker)
+            country   = str(info.get("country") or "").strip()
+            is_china  = country in {"China", "Hong Kong"}
+
+            nasdaq_risk = calc_nasdaq_compliance(hist, today['Close'])
+
+            return {
+                "ticker":            ticker,
+                "rsi":               rsi,
+                "vol_ratio":         round(vol_ratio, 0),
+                "vol_ma20_ratio":    round(vol_ma20_ratio, 0),
+                "trading_value_eok": round(trading_value_krw_eok, 1),
+                "is_china":          is_china,
+                "country":           country,
+                "nasdaq_risk":       nasdaq_risk,
+                "error":             False,
+            }
+        except Exception:
+            return {"ticker": ticker, "error": True}
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        results = list(ex.map(_enrich_one, tickers))
+
+    return {r["ticker"]: r for r in results}
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_sector_data() -> list:
@@ -410,6 +530,183 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # ════════════════════════════════════════════════════════════════
+# 🧱 악성매물대(거래량 프로파일 기반 저항 구간) 분석
+# ════════════════════════════════════════════════════════════════
+def calc_supply_zones(hist: pd.DataFrame, current_price: float,
+                       n_bins: int = 40, lookback_days: int = 252,
+                       heavy_mult: float = 1.3, max_zones: int = 4) -> dict:
+    """
+    최근 lookback_days(기본 1년) 동안의 일별 High~Low 구간에 그날의 거래량을
+    균등 분산시켜 '거래량 프로파일(Volume Profile)'을 만든 뒤, 현재가보다 위쪽에서
+    평균 대비 거래량이 몰려있는 가격대(=매물대, 이전 매수자들의 평단가 밀집구간)를
+    현재가에 가까운 순으로 추출한다.
+    """
+    df = hist.tail(lookback_days).dropna(subset=["High", "Low", "Volume"])
+    if df.empty or len(df) < 10 or current_price <= 0:
+        return {"zones": [], "total_volume": 0.0, "has_data": False}
+
+    price_min = float(df["Low"].min())
+    price_max = float(df["High"].max())
+    if price_max <= price_min:
+        return {"zones": [], "total_volume": 0.0, "has_data": False}
+
+    bin_edges = np.linspace(price_min, price_max, n_bins + 1)
+    bin_vols  = np.zeros(n_bins)
+
+    lows  = df["Low"].to_numpy()
+    highs = df["High"].to_numpy()
+    vols  = df["Volume"].to_numpy()
+
+    for lo, hi, vol in zip(lows, highs, vols):
+        if vol <= 0:
+            continue
+        if hi <= lo:
+            idx = min(int((lo - price_min) / (price_max - price_min) * n_bins), n_bins - 1)
+            bin_vols[idx] += vol
+            continue
+        overlap_lo = np.maximum(bin_edges[:-1], lo)
+        overlap_hi = np.minimum(bin_edges[1:], hi)
+        overlap    = np.clip(overlap_hi - overlap_lo, 0, None)
+        total_overlap = overlap.sum()
+        if total_overlap > 0:
+            bin_vols += vol * (overlap / total_overlap)
+
+    total_volume = float(bin_vols.sum())
+    if total_volume <= 0:
+        return {"zones": [], "total_volume": 0.0, "has_data": False}
+
+    bin_mids = (bin_edges[:-1] + bin_edges[1:]) / 2
+    avg_vol  = bin_vols.mean()
+
+    above_mask = bin_mids > current_price
+    heavy_mask = above_mask & (bin_vols >= avg_vol * heavy_mult)
+
+    if not heavy_mask.any() and above_mask.any():
+        above_idx = np.where(above_mask)[0]
+        top_n = min(max_zones, len(above_idx))
+        top_idx = above_idx[np.argsort(bin_vols[above_idx])[::-1][:top_n]]
+        heavy_mask = np.zeros_like(heavy_mask)
+        heavy_mask[top_idx] = True
+
+    zones = []
+    idx_list = np.where(heavy_mask)[0]
+    if len(idx_list) > 0:
+        group = [idx_list[0]]
+        for i in idx_list[1:]:
+            if i == group[-1] + 1:
+                group.append(i)
+            else:
+                zones.append(group)
+                group = [i]
+        zones.append(group)
+
+    zone_infos = []
+    for group in zones:
+        g_low  = bin_edges[group[0]]
+        g_high = bin_edges[group[-1] + 1]
+        g_vol  = bin_vols[group].sum()
+        g_mid  = float((bin_mids[group] * bin_vols[group]).sum() / g_vol) if g_vol > 0 else float(np.mean([g_low, g_high]))
+        pct_of_total = g_vol / total_volume * 100
+        gap_pct = (g_mid - current_price) / current_price * 100
+        avg_bin_in_zone = avg_vol * len(group)
+        ratio = g_vol / avg_bin_in_zone if avg_bin_in_zone > 0 else 1
+        if ratio >= 2.0:
+            strength = "매우 강함"
+        elif ratio >= 1.5:
+            strength = "강함"
+        else:
+            strength = "보통"
+        zone_infos.append({
+            "low": float(g_low), "high": float(g_high), "mid": g_mid,
+            "volume": float(g_vol), "pct_of_total": pct_of_total,
+            "gap_pct": gap_pct, "strength": strength, "ratio": ratio,
+        })
+
+    zone_infos.sort(key=lambda z: z["mid"])
+    zone_infos = zone_infos[:max_zones]
+
+    return {"zones": zone_infos, "total_volume": total_volume, "has_data": True}
+
+
+def render_supply_zones(current_price: float, supply_data: dict):
+    """현재가 위쪽 악성매물대(저항 구간) — 4개 항목만 표시"""
+    ui_section_header("🧱", "악성매물대 분석 (돌파 저항선)", "icon-rose", "title-rose")
+
+    zones = supply_data.get("zones", [])
+    if not supply_data.get("has_data") or not zones:
+        st.markdown("""
+        <div class="glass-card">
+            <div class="status-row">
+                <div class="status-item"><div class="status-dot dot-blue"></div>
+                <div class="status-text">데이터가 부족하여 매물대를 산출할 수 없습니다</div></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    strength_dot = {"매우 강함": "dot-red", "강함": "dot-yellow", "보통": "dot-blue"}
+
+    rows_html = ""
+    for z in zones:
+        dot = strength_dot.get(z["strength"], "dot-blue")
+        rows_html += f"""
+        <div class="status-item">
+            <div class="status-dot {dot}"></div>
+            <div class="status-text">
+                ${z['low']:.2f} ~ ${z['high']:.2f} &nbsp;|&nbsp;
+                {z['volume']:,.0f}주 &nbsp;|&nbsp;
+                {z['strength']} &nbsp;|&nbsp;
+                +{z['gap_pct']:.1f}%
+            </div>
+        </div>
+        """
+
+    st.markdown(f"""
+    <div class="glass-card">
+        <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
+            {rows_html}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════════════
+# 급등주 검색기 / 즐겨찾기 스캔 공용 — 종합 점수(스코어 랭킹) 계산
+# ════════════════════════════════════════════════════════════════
+def calc_screener_score(r: dict) -> float:
+    """
+    검색 결과 여러 지표를 가중 합산해 0~100점 종합 점수를 산출합니다.
+    급등주 검색기와 즐겨찾기 일괄 스캔 양쪽에서 동일한 기준으로 사용합니다.
+    - 등락률           30% (50% 상승 시 만점)
+    - 거래량 20일MA비율 25% (300% 도달 시 만점)
+    - 거래대금(억원)    20% (1,000억 도달 시 만점)
+    - 거래량 전일비     15% (300% 도달 시 만점)
+    - RSI 모멘텀        10% (50~75 구간이 이상적 강세 구간, 과매수/과매도 시 감점)
+    단순 산식이며 절대적 매수·매도 신호가 아닌 상대 비교용 참고 지표입니다.
+    """
+    pct        = r.get("pct_change") or 0
+    vol_ma20_r = r.get("vol_ma20_ratio") or 0
+    trading_v  = r.get("trading_value_eok") or 0
+    vol_r      = r.get("vol_ratio") or 0
+    rsi        = r.get("rsi")
+
+    pct_score       = min(max(pct, 0) / 50, 1) * 30
+    vol_ma20_score  = min(max(vol_ma20_r, 0) / 300, 1) * 25
+    trading_score   = min(max(trading_v, 0) / 1000, 1) * 20
+    vol_ratio_score = min(max(vol_r, 0) / 300, 1) * 15
+
+    if rsi is None:
+        rsi_score = 5.0
+    elif 50 <= rsi <= 75:
+        rsi_score = 10.0
+    elif rsi > 75:
+        rsi_score = max(0.0, 10.0 - (rsi - 75) * 0.6)      # 과매수 근접·초과 시 감점
+    else:
+        rsi_score = max(0.0, rsi / 50 * 5.0)                # 50 미만이면 모멘텀 약함으로 감점
+
+    total = pct_score + vol_ma20_score + trading_score + vol_ratio_score + rsi_score
+    return round(min(total, 100.0), 1)
+
+# ════════════════════════════════════════════════════════════════
 # #3 스톡타이탄 크롤링 함수 — render_news_section 위로 이동
 # #13 User-Agent 랜덤 순환 추가
 # ════════════════════════════════════════════════════════════════
@@ -504,6 +801,7 @@ def _fetch_detail(link: str, headers: dict):
         pass
     return sentiment, impact
 
+@st.cache_data(ttl=300, show_spinner=False)
 def get_stock_titan_data(ticker: str) -> list:
     url     = f"https://www.stocktitan.net/overview/{ticker}/"
     session = get_http_session()  # 커넥션 풀 재사용
@@ -653,63 +951,13 @@ def fetch_stocktwits(ticker: str) -> dict:
 
     return {"bull": bull, "bear": bear, "messages": messages, "source": "yahoo"}
 
-@st.cache_data(ttl=180, show_spinner=False)
-def fetch_reddit_posts(ticker: str) -> list:
-    """
-    Reddit JSON API — r/stocks, r/wallstreetbets, r/investing 병렬 수집.
-    제목(title) + 본문(selftext) 모두 가져옵니다.
-    """
-    subreddits = ["stocks", "wallstreetbets", "investing"]
-
-    def _fetch_sub(sub: str) -> list:
-        url = (f"https://www.reddit.com/r/{sub}/search.json"
-               f"?q={ticker}&sort=new&limit=5&restrict_sr=1&t=week")
-        try:
-            headers = {
-                "User-Agent": f"Mozilla/5.0 quant_app/2.0 (by /u/quant_user)",
-                "Accept": "application/json",
-            }
-            resp = requests.get(url, headers=headers, timeout=8)
-            if resp.status_code != 200:
-                return []
-            out = []
-            for p in resp.json().get("data", {}).get("children", []):
-                d = p.get("data", {})
-                title = (d.get("title") or "").strip()
-                if not title:
-                    continue
-                # selftext: 본문 내용 (없으면 빈 문자열)
-                selftext = (d.get("selftext") or "").strip()
-                # 너무 긴 본문은 300자로 자름
-                if len(selftext) > 300:
-                    selftext = selftext[:297] + "..."
-                out.append({
-                    "subreddit": sub,
-                    "title":     title,
-                    "selftext":  selftext,
-                    "ups":       d.get("ups", 0),
-                    "comments":  d.get("num_comments", 0),
-                    "link":      "https://www.reddit.com" + (d.get("permalink") or ""),
-                })
-            return out
-        except Exception:
-            return []
-
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        all_posts = list(ex.map(_fetch_sub, subreddits))
-
-    merged = [p for sub_list in all_posts for p in sub_list]
-    merged.sort(key=lambda x: x["ups"], reverse=True)
-    return merged[:6]
-
 
 def render_social_section(ticker_input: str):
-    """소셜 미디어 의견 탭 — StockTwits + Reddit"""
+    """소셜 미디어 의견 탭 — StockTwits"""
     ui_section_header("💬", "소셜 미디어 투자자 의견")
 
-    with st.spinner("StockTwits · Reddit 실시간 데이터 수집 중..."):
-        st_data     = fetch_stocktwits(ticker_input)
-        reddit_data = fetch_reddit_posts(ticker_input)
+    with st.spinner("StockTwits 실시간 데이터 수집 중..."):
+        st_data = fetch_stocktwits(ticker_input)
 
     # ── StockTwits / Yahoo Finance fallback ─────────────────────
     src = st_data.get("source", "") if st_data else ""
@@ -814,58 +1062,14 @@ def render_social_section(ticker_input: str):
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-    # ── Reddit ───────────────────────────────────────────────────
-    st.markdown(
-        """<div class="section-header">
-            <div class="section-icon"
-                 style="background:rgba(255,106,0,0.18);border-color:rgba(255,106,0,0.35);font-size:0.8rem;">🤖</div>
-            <div class="section-title"
-                 style="color:#ff6a00;font-size:0.88rem;">Reddit (r/stocks · r/wallstreetbets · r/investing)</div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-
-    if not reddit_data:
-        st.markdown(
-            """<div class="glass-card"><div class="status-row"><div class="status-item">
-                <div class="status-dot dot-yellow"></div>
-                <div class="status-text">이번 주 해당 티커 관련 Reddit 게시글이 없거나 불러올 수 없습니다.</div>
-            </div></div></div>""",
-            unsafe_allow_html=True,
-        )
-    else:
-        for post in reddit_data:
-            selftext_html = (
-                f'<div class="social-selftext">{post["selftext"]}</div>'
-                if post.get("selftext") else ""
-            )
-            st.markdown(f"""
-            <div class="social-card">
-                <div class="social-meta">
-                    <span class="reddit-badge">r/{post['subreddit']}</span>
-                    <span>·</span>
-                    <span>⬆️ {post['ups']:,}</span>
-                    <span>·</span>
-                    <span>💬 {post['comments']:,}개 댓글</span>
-                </div>
-                <div class="social-body">{post['title']}</div>
-                {selftext_html}
-                <div class="social-stats">
-                    <a href="{post['link']}" target="_blank"
-                       style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">
-                        Reddit에서 보기 →
-                    </a>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
 
 # ════════════════════════════════════════════════════════════════
 # CSS — 다크/라이트 모드 동적 주입
 # ════════════════════════════════════════════════════════════════
 def inject_css(dark: bool = True):
     if dark:
-        bg_main      = "linear-gradient(135deg, #0a0a1a 0%, #0d0d2b 40%, #0a1628 100%)"
-        bg_sidebar   = "linear-gradient(180deg, #0d0d2b 0%, #0a1628 100%)"
+        bg_main      = "linear-gradient(135deg, #05080f 0%, #0a1220 45%, #0d1b2e 100%)"
+        bg_sidebar   = "linear-gradient(180deg, #070d18 0%, #0d1b2e 100%)"
         glass_bg     = "rgba(255,255,255,0.04)"
         glass_border = "rgba(255,255,255,0.09)"
         metric_bg    = "rgba(255,255,255,0.045)"
@@ -897,6 +1101,51 @@ def inject_css(dark: bool = True):
         sector_ticker_clr= "rgba(255,255,255,0.4)"
         social_selftext_bdr = "rgba(255,255,255,0.1)"
         social_selftext_clr = "rgba(203,213,225,0.75)"
+
+        # ── 다이나믹 다크모드 배경: 메시 그라디언트 + 파티클(트윙클) 오버레이 ──
+        mesh_bg_layers = (
+            "radial-gradient(circle at 12% 18%, rgba(56,189,248,0.18), transparent 38%),"
+            "radial-gradient(circle at 88% 12%, rgba(167,139,250,0.16), transparent 40%),"
+            "radial-gradient(circle at 78% 82%, rgba(52,211,153,0.12), transparent 42%),"
+            "radial-gradient(circle at 18% 86%, rgba(244,63,94,0.10), transparent 38%),"
+            "radial-gradient(circle at 50% 50%, rgba(245,158,11,0.06), transparent 55%)"
+        )
+        mesh_bg_size  = "180% 180%, 160% 160%, 200% 200%, 170% 170%, 220% 220%, 100% 100%"
+        mesh_bg_anim  = "meshFloat 26s ease-in-out infinite"
+        mesh_keyframes_css = """
+        @keyframes meshFloat {
+            0%   { background-position: 10% 20%, 90% 10%, 80% 85%, 15% 90%, 50% 50%, 0 0; }
+            50%  { background-position: 30% 35%, 65% 25%, 70% 65%, 30% 75%, 55% 45%, 0 0; }
+            100% { background-position: 10% 20%, 90% 10%, 80% 85%, 15% 90%, 50% 50%, 0 0; }
+        }
+        @keyframes particleTwinkle {
+            0%   { opacity: 0.35; }
+            50%  { opacity: 0.85; }
+            100% { opacity: 0.35; }
+        }
+        """
+        particle_overlay_css = """
+        [data-testid="stAppViewContainer"] { position: relative; }
+        [data-testid="stAppViewContainer"] > .main { position: relative; z-index: 1; }
+        [data-testid="stAppViewContainer"]::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            background-image:
+                radial-gradient(circle at 8%  22%, rgba(255,255,255,0.9) 0, rgba(255,255,255,0.9) 1px, transparent 1.5px),
+                radial-gradient(circle at 23% 68%, rgba(255,255,255,0.7) 0, rgba(255,255,255,0.7) 1px, transparent 1.5px),
+                radial-gradient(circle at 41% 12%, rgba(56,189,248,0.8)  0, rgba(56,189,248,0.8)  1px, transparent 1.5px),
+                radial-gradient(circle at 62% 78%, rgba(255,255,255,0.6) 0, rgba(255,255,255,0.6) 1px, transparent 1.5px),
+                radial-gradient(circle at 77% 34%, rgba(167,139,250,0.8) 0, rgba(167,139,250,0.8) 1px, transparent 1.5px),
+                radial-gradient(circle at 89% 58%, rgba(255,255,255,0.7) 0, rgba(255,255,255,0.7) 1px, transparent 1.5px),
+                radial-gradient(circle at 95% 15%, rgba(52,211,153,0.8)  0, rgba(52,211,153,0.8)  1px, transparent 1.5px),
+                radial-gradient(circle at 34% 90%, rgba(255,255,255,0.6) 0, rgba(255,255,255,0.6) 1px, transparent 1.5px);
+            background-repeat: no-repeat;
+            animation: particleTwinkle 5s ease-in-out infinite alternate;
+        }
+        """
     else:
         bg_main      = "linear-gradient(135deg, #f0f4ff 0%, #e8eeff 40%, #f0f7ff 100%)"
         bg_sidebar   = "linear-gradient(180deg, #eef2ff 0%, #e8f0fe 100%)"
@@ -931,6 +1180,13 @@ def inject_css(dark: bool = True):
         sector_ticker_clr= "#6b7280"
         social_selftext_bdr = "rgba(99,102,241,0.2)"
         social_selftext_clr = "#4b5563"
+
+        # 라이트 모드는 정적 배경 유지 (다이나믹 메시/파티클은 다크모드 전용)
+        mesh_bg_layers      = ""
+        mesh_bg_size        = "100% 100%"
+        mesh_bg_anim        = "none"
+        mesh_keyframes_css  = ""
+        particle_overlay_css = ""
 
     st.session_state["_plotly_template"] = plotly_tmpl
 
@@ -1040,9 +1296,14 @@ def inject_css(dark: bool = True):
 
     /* ── 전역 배경 & 폰트 ─────────────────────────────────────────── */
     html, body, [data-testid="stAppViewContainer"] {{
-        background: {bg_main} !important;
+        background-image: {mesh_bg_layers}{"," if mesh_bg_layers else ""} {bg_main} !important;
+        background-size: {mesh_bg_size} !important;
+        background-attachment: fixed !important;
+        animation: {mesh_bg_anim};
         font-family: var(--font-body);
     }}
+    {mesh_keyframes_css}
+    {particle_overlay_css}
     h1, h2, h3, .app-header h1, .section-title, .glass-card-title,
     .scan-title, .alert-title {{ font-family: var(--font-display); }}
     .metric-value, .metric-delta, .sector-pct, .sector-sub, .sector-ticker,
@@ -1412,6 +1673,26 @@ def inject_css(dark: bool = True):
         font-weight: 700 !important;
     }}
 
+    /* ── 세그먼트 컨트롤 (뉴스/소셜/기술분석 전환 — 탭과 동일한 필터 칩 스타일) ── */
+    [data-testid="stSegmentedControl"] {{
+        background: {tab_bg} !important;
+        border-radius: 999px !important;
+        padding: 0.3rem !important;
+        gap: 0.3rem !important;
+        border: 1px solid {tab_bdr} !important;
+    }}
+    [data-testid="stSegmentedControl"] label {{
+        border-radius: 999px !important;
+        font-weight: 600 !important;
+        font-size: 0.88rem !important;
+    }}
+    [data-testid="stSegmentedControl"] [aria-checked="true"] {{
+        background: var(--c-accent) !important;
+        color: var(--c-accent-ink) !important;
+        border: 1px solid var(--c-accent) !important;
+        font-weight: 700 !important;
+    }}
+
     /* ── 섹터 히트맵 ───────────────────────────────────────────────── */
     .sector-grid {{
         display: grid;
@@ -1599,37 +1880,74 @@ if st.sidebar.button(_toggle_label, use_container_width=True):
     st.rerun()
 st.sidebar.markdown("")
 
-ticker_input = st.sidebar.text_input(
-    "티커명을 입력하세요 (예: NVDA, AAPL)",
-    value=st.session_state.selected_ticker
-).upper()
+# ── 섹터 히트맵 / 급등주 검색기 토글 (스크롤 없이 바로 보이도록 상단 배치) ──
+tcol1, tcol2 = st.sidebar.columns(2)
+with tcol1:
+    st.checkbox(
+        "📊 섹터 히트맵", key="show_heatmap",
+        help="11개 섹터 ETF의 당일/1주/1개월 성과를 히트맵으로 표시합니다"
+    )
+with tcol2:
+    st.checkbox(
+        "🚀 급등주 검색기", key="show_screener",
+        help="Yahoo Finance 실시간 스크리너로 조건에 맞는 급등 종목을 찾습니다"
+    )
+st.sidebar.markdown("---")
 
-col_btn, col_star = st.sidebar.columns([3, 1])
-with col_btn:
-    search_button = st.button("실시간 정밀 검증 시작", use_container_width=True)
-with col_star:
-    is_fav = ticker_input in st.session_state.favorites
-    if st.button("★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"):
-        if is_fav:
-            st.session_state.favorites.remove(ticker_input)
-        else:
-            if ticker_input and ticker_input not in st.session_state.favorites:
-                st.session_state.favorites.append(ticker_input)
-        st.rerun()
+# ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
+with st.sidebar.form(key="ticker_search_form"):
+    ticker_input = st.text_input(
+        "티커명을 입력하세요 (예: NVDA, AAPL)",
+        value=st.session_state.selected_ticker
+    ).upper()
+
+    col_btn, col_star = st.columns([3, 1])
+    with col_btn:
+        search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True)
+    with col_star:
+        is_fav = ticker_input in st.session_state.favorites
+        fav_button_clicked = st.form_submit_button(
+            "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
+        )
+
+if fav_button_clicked:
+    if is_fav:
+        st.session_state.favorites.remove(ticker_input)
+    else:
+        if ticker_input and ticker_input not in st.session_state.favorites:
+            st.session_state.favorites.append(ticker_input)
+    save_favorites(st.session_state.favorites)
+    st.rerun()
 
 # ── 즐겨찾기 목록 ────────────────────────────────────────────────
 if st.session_state.favorites:
     st.sidebar.markdown("---")
     st.sidebar.markdown("**⭐ 즐겨찾기**")
-    for fav in st.session_state.favorites:
-        fav_col, del_col = st.sidebar.columns([4, 1])
+    fav_count = len(st.session_state.favorites)
+    for idx, fav in enumerate(st.session_state.favorites):
+        fav_col, up_col, down_col, del_col = st.sidebar.columns([3, 1, 1, 1])
         with fav_col:
             if st.button(fav, key=f"fav_{fav}", use_container_width=True):
                 st.session_state.selected_ticker = fav
                 st.rerun()
+        with up_col:
+            if st.button("▲", key=f"up_{fav}", use_container_width=True,
+                         help="위로 이동", disabled=(idx == 0)):
+                favs = st.session_state.favorites
+                favs[idx - 1], favs[idx] = favs[idx], favs[idx - 1]
+                save_favorites(favs)
+                st.rerun()
+        with down_col:
+            if st.button("▼", key=f"down_{fav}", use_container_width=True,
+                         help="아래로 이동", disabled=(idx == fav_count - 1)):
+                favs = st.session_state.favorites
+                favs[idx + 1], favs[idx] = favs[idx], favs[idx + 1]
+                save_favorites(favs)
+                st.rerun()
         with del_col:
             if st.button("✕", key=f"del_{fav}", use_container_width=True, help=f"{fav} 삭제"):
                 st.session_state.favorites.remove(fav)
+                save_favorites(st.session_state.favorites)
                 st.rerun()
 
     # #5 즐겨찾기 일괄 스캔 — ThreadPoolExecutor로 병렬화
@@ -1640,6 +1958,7 @@ if st.session_state.favorites:
         total      = len(st.session_state.favorites)
         progress   = st.sidebar.progress(0, text="스캔 중...")
         done_count = [0]   # 리스트로 감싸 클로저에서 변경 가능하게
+        usd_krw    = fetch_usd_to_krw()   # 급등주 검색기와 동일한 거래대금 환산 기준
 
         def _scan_one(fav_ticker: str) -> dict:
             try:
@@ -1652,9 +1971,11 @@ if st.session_state.favorites:
                     # #8 거래량 20일 MA 대비 비율
                     vol_ma20   = t['VOL_MA20'] if t['VOL_MA20'] > 0 else 1
                     vol_r      = (t['Volume'] / vol_ma20) * 100
+                    vol_ratio  = (t['Volume'] / y['Volume'] * 100) if y['Volume'] else 0
                     rsi        = t['RSI']
                     macd_cross = t['MACD'] > t['MACD_SIG'] and y['MACD'] <= y['MACD_SIG']
                     gap_up_pct = (t['Open'] - y['Close']) / y['Close'] * 100
+                    trading_value_eok = round((t['Close'] * t['Volume'] * usd_krw) / 100_000_000, 1)
 
                     signals = []
                     if vol_r  >= 200:  signals.append("🔥거래량")   # MA20 대비 200%+
@@ -1666,10 +1987,20 @@ if st.session_state.favorites:
                                        signals.append("⬆️갭업")     # 시초가 전일종가 대비 5%+
                     alert = " ".join(signals) if signals else "—"
 
+                    # 급등주 검색기와 동일한 종합점수 산출 기준 적용
+                    score = calc_screener_score({
+                        "pct_change":        pct,
+                        "vol_ma20_ratio":    vol_r,
+                        "trading_value_eok": trading_value_eok,
+                        "vol_ratio":         vol_ratio,
+                        "rsi":               round(float(rsi), 1) if pd.notna(rsi) else None,
+                    })
+
                     return {
                         "티커":      fav_ticker,
                         "현재가":    f"${t['Close']:.2f}",
                         "등락(%)":   f"{pct:+.2f}%",
+                        "종합점수":  f"{score:.1f}",
                         "거래량(MA비%)": f"{vol_r:.0f}%",
                         "RSI":       f"{rsi:.1f}",
                         "🔔신호":    alert,
@@ -1677,6 +2008,7 @@ if st.session_state.favorites:
             except Exception:
                 pass
             return {"티커": fav_ticker, "현재가": "오류", "등락(%)": "-",
+                    "종합점수": "-",
                     "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
 
         with ThreadPoolExecutor(max_workers=6) as executor:
@@ -1712,22 +2044,17 @@ desktop_mode = st.sidebar.checkbox(
     help="체크 해제 시 폰에 최적화된 탭(Tab) 방식으로 표시됩니다."
 )
 
-# ── 섹터 히트맵 버튼 ─────────────────────────────────────────────
-st.sidebar.markdown("---")
-show_heatmap = st.sidebar.button(
-    "📊 S&P 500 섹터 히트맵",
-    use_container_width=True,
-    help="11개 섹터 ETF의 당일/1주/1개월 성과를 히트맵으로 표시합니다"
-)
-if show_heatmap:
-    st.session_state["show_heatmap"] = not st.session_state["show_heatmap"]
-
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
 # ════════════════════════════════════════════════════════════════
-def render_top_summary_metrics(today_data, yesterday_data, df_calculated):
-    """상단 주요 지표 요약 — st.columns 기반 4구 메트릭 스코어보드"""
-    m1, m2, m3, m4 = st.columns(4)
+def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=None):
+    """상단 주요 지표 요약 — st.columns 기반 메트릭 스코어보드.
+    score가 주어지면 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수를 함께 표시합니다.
+    """
+    if score is not None:
+        m1, m2, m3, m4, m5 = st.columns(5)
+    else:
+        m1, m2, m3, m4 = st.columns(4)
 
     # 가격 및 등락률
     price_chg = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
@@ -1750,7 +2077,7 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated):
     # 당일 거래량
     m3.metric(
         label="당일 거래량",
-        value=f"{today_data['Volume']:,}주"
+        value=f"{int(today_data['Volume']):,}주"
     )
 
     # 전고점 대비 낙폭
@@ -1760,6 +2087,17 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated):
         value=f"{current_dd:.1f}%",
         delta="MDD 관리 필요" if current_dd < -20 else None
     )
+
+    if score is not None:
+        score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
+        m5.metric(
+            label="종합점수",
+            value=f"{score:.1f}점",
+            delta=score_label,
+            delta_color="normal" if score_label != "약세" else "inverse",
+            help="등락률·거래량·거래대금·RSI를 종합한 참고 지표 (급등주 검색기·즐겨찾기 스캔과 동일 기준)"
+        )
+
     st.divider()
 
 # ════════════════════════════════════════════════════════════════
@@ -1953,6 +2291,10 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
+    # ── 🧱 악성매물대 분석 ───────────────────────────────────────
+    supply_data = calc_supply_zones(hist, float(today['Close']))
+    render_supply_zones(float(today['Close']), supply_data)
 
     # ── 🚀 100%+ 급등 이력 ───────────────────────────────────────
     ui_section_header("🚀", "하루 100%+ 급등 이력", "icon-rose", "title-rose")
@@ -2202,6 +2544,221 @@ def render_sector_heatmap():
 
 
 # ════════════════════════════════════════════════════════════════
+# 렌더링 함수 — 급등주 검색기 (Yahoo Finance 실시간 스크리너)
+# ════════════════════════════════════════════════════════════════
+def render_surge_screener():
+    """
+    조건(상승률/주가/거래량/거래대금/기술지표/리스크)에 맞는 급등주를 검색합니다.
+    1차: Yahoo Finance 공식 스크리너로 후보 종목 수집
+    2차: ThreadPoolExecutor로 RSI·거래량비율·거래대금·국가·나스닥 컴플라이언스 병렬 병합
+    3차: 유저가 선택한 신호/리스크 필터 및 정렬 기준 적용
+    """
+    ui_section_header("🚀", "급등주 검색기", "icon-rose", "title-rose")
+    st.caption("Yahoo Finance 실시간(지연 가능) 시세 + RSI·거래대금·리스크 지표를 결합한 정밀 검색기입니다.")
+
+    # ── 1차 검색 조건 ────────────────────────────────────────────
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        min_pct = st.slider(
+            "최소 상승률 (%)", min_value=3, max_value=100, value=10, step=1,
+            key="screener_min_pct"
+        )
+    with c2:
+        price_range = st.slider(
+            "주가 범위 ($)", min_value=0.0, max_value=200.0, value=(1.0, 20.0), step=0.5,
+            key="screener_price_range"
+        )
+    with c3:
+        min_volume = st.number_input(
+            "최소 거래량", min_value=0, value=500_000, step=100_000,
+            key="screener_min_vol"
+        )
+
+    # ── 정렬 기준 & 기술 시그널 필터 ─────────────────────────────
+    d1, d2 = st.columns(2)
+    with d1:
+        sort_option = st.radio(
+            "정렬 기준", ["종합점수 순", "등락률 순", "거래대금 순", "거래량 순"],
+            horizontal=True, key="screener_sort"
+        )
+    with d2:
+        signal_filter = st.selectbox(
+            "기술 시그널 필터",
+            ["전체", "RSI 30 이하 (과매도)", "RSI 70 이상 (과매수)", "거래량 200%+ 돌파"],
+            key="screener_signal_filter"
+        )
+
+    # ── 리스크 스크리닝 필터 ─────────────────────────────────────
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        require_trading_value = st.checkbox(
+            f"💰 거래대금 {TRADING_THRESHOLD}억 이상만", value=False,
+            key="screener_min_trading_value"
+        )
+    with e2:
+        exclude_penny = st.checkbox(
+            "🪙 동전주($1 미만) 제외", value=False, key="screener_exclude_penny"
+        )
+    with e3:
+        exclude_china = st.checkbox(
+            "⚠️ 중국계 기업 제외", value=False, key="screener_exclude_china"
+        )
+
+    if st.button("🔍 검색 실행", key="run_screener", use_container_width=True):
+        with st.spinner("Yahoo Finance에서 급등주 검색 및 상세 지표 병렬 수집 중..."):
+            base = fetch_top_gainers(min_pct, price_range[0], price_range[1], int(min_volume))
+            tickers = tuple(r["ticker"] for r in base if r.get("ticker"))
+            enriched_map = enrich_screener_results(tickers) if tickers else {}
+
+            merged = []
+            for r in base:
+                extra = enriched_map.get(r["ticker"], {})
+                if extra.get("error"):
+                    continue   # 상세 지표 수집 실패 종목은 리스트에서 제외
+                combined = {**r, **extra}
+                combined["score"] = calc_screener_score(combined)
+                merged.append(combined)
+            st.session_state["screener_results"] = merged
+
+    results = st.session_state.get("screener_results", [])
+    if not results:
+        st.info("조건을 설정하고 '🔍 검색 실행' 버튼을 눌러주세요.")
+        return
+
+    # ── 후속 필터 적용 (병합된 상세 지표 기반) ──────────────────
+    filtered = list(results)
+    if require_trading_value:
+        filtered = [r for r in filtered if r.get("trading_value_eok", 0) >= TRADING_THRESHOLD]
+    if exclude_penny:
+        filtered = [r for r in filtered if r.get("price", 0) >= NASDAQ_MIN_BID]
+    if exclude_china:
+        filtered = [r for r in filtered if not r.get("is_china")]
+    if signal_filter == "RSI 30 이하 (과매도)":
+        filtered = [r for r in filtered if r.get("rsi") is not None and r["rsi"] <= 30]
+    elif signal_filter == "RSI 70 이상 (과매수)":
+        filtered = [r for r in filtered if r.get("rsi") is not None and r["rsi"] >= 70]
+    elif signal_filter == "거래량 200%+ 돌파":
+        filtered = [r for r in filtered if r.get("vol_ma20_ratio", 0) >= 200]
+
+    # ── 정렬 ─────────────────────────────────────────────────────
+    sort_key_map = {
+        "종합점수 순": lambda r: r.get("score", 0) or 0,
+        "등락률 순":   lambda r: r.get("pct_change", 0) or 0,
+        "거래대금 순": lambda r: r.get("trading_value_eok", 0) or 0,
+        "거래량 순":   lambda r: r.get("volume", 0) or 0,
+    }
+    filtered.sort(key=sort_key_map[sort_option], reverse=True)
+
+    if not filtered:
+        st.warning("조건에 맞는 종목이 없습니다. 필터를 완화해 보세요.")
+        return
+
+    st.markdown(f"**{len(filtered)}개 종목** (1차 후보 {len(results)}개 중 필터링 결과)")
+
+    # ── 상장 리스크 요약 텍스트 (calc_nasdaq_compliance 응용) ───
+    def _risk_text(r: dict) -> str:
+        risk = r.get("nasdaq_risk") or {}
+        if not risk.get("applicable"):
+            return "—"
+        if risk.get("phase") == "notice_issued_est":
+            return f"⛔ 유예 D-{risk.get('days_left', '?')}"
+        return f"🟡 미달 {risk.get('streak_days', 0)}일째"
+
+    rows = []
+    for r in filtered:
+        is_fav = r["ticker"] in st.session_state.favorites
+        rows.append({
+            "⭐":            "★" if is_fav else "",
+            "티커":          ("⚠️ " if r.get("is_china") else "") + r["ticker"],
+            "종목명":        (r.get("name") or "")[:26],
+            "현재가":        r.get("price", 0),
+            "등락률(%)":     r.get("pct_change", 0),
+            "종합점수":      r.get("score", 0),
+            "거래량":        r.get("volume", 0),
+            "거래대금(억)":  r.get("trading_value_eok", 0),
+            "RSI":           r.get("rsi"),
+            "거래량비율(%)":  r.get("vol_ratio", 0),
+            "20일MA비율(%)": r.get("vol_ma20_ratio", 0),
+            "상장리스크":     _risk_text(r),
+        })
+
+    df_display = pd.DataFrame(rows)
+
+    event = st.dataframe(
+        df_display,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "현재가":        st.column_config.NumberColumn(format="$%.2f"),
+            "등락률(%)":     st.column_config.NumberColumn(format="%+.2f%%"),
+            "종합점수":      st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+            "거래량":        st.column_config.NumberColumn(format="%d"),
+            "거래대금(억)":  st.column_config.NumberColumn(format="%.1f억"),
+            "RSI":           st.column_config.NumberColumn(format="%.1f"),
+            "거래량비율(%)":  st.column_config.NumberColumn(format="%.0f%%"),
+            "20일MA비율(%)": st.column_config.NumberColumn(format="%.0f%%"),
+        },
+        key="screener_df",
+    )
+
+    st.caption("⚠️ = 중국/홍콩 소재 기업 · ⭐ = 즐겨찾기 등록 종목 · 상장리스크는 나스닥 최소호가($1) 규정 기준 추정치입니다. "
+               "행을 클릭하면 해당 종목의 정밀 분석 화면으로 이동합니다. 종합점수는 절대적 매매 신호가 아닌 상대 비교용 참고 지표입니다.")
+
+    # ── 검색 결과에서 바로 즐겨찾기 추가/제거 ───────────────────
+    fav_candidates = [r["ticker"] for r in filtered]
+    current_fav_in_results = [t for t in fav_candidates if t in st.session_state.favorites]
+
+    def _on_screener_fav_change():
+        selected = st.session_state.get("screener_fav_multiselect", [])
+        changed = False
+        for t in fav_candidates:
+            if t in selected and t not in st.session_state.favorites:
+                st.session_state.favorites.append(t)
+                changed = True
+            elif t not in selected and t in st.session_state.favorites:
+                st.session_state.favorites.remove(t)
+                changed = True
+        if changed:
+            save_favorites(st.session_state.favorites)
+
+    st.multiselect(
+        "⭐ 검색 결과 중 즐겨찾기에 추가/제거할 종목",
+        options=fav_candidates,
+        default=current_fav_in_results,
+        key="screener_fav_multiselect",
+        on_change=_on_screener_fav_change,
+        help="선택하면 즐겨찾기에 추가되고, 선택 해제하면 즐겨찾기에서 제거됩니다.",
+    )
+
+    # ── 검색 결과 CSV 다운로드 ───────────────────────────────────
+    csv_bytes = df_display.to_csv(index=False).encode("utf-8-sig")   # 엑셀 한글 깨짐 방지
+    st.download_button(
+        "📥 검색 결과 CSV 다운로드",
+        data=csv_bytes,
+        file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+    sel_rows = []
+    if event is not None:
+        try:
+            sel_rows = event.selection["rows"]
+        except Exception:
+            sel_rows = []
+
+    if sel_rows:
+        picked_ticker = filtered[sel_rows[0]]["ticker"]
+        st.session_state["selected_ticker"] = picked_ticker
+        st.session_state["active_ticker"]   = picked_ticker
+        st.session_state["has_searched"]    = True
+        st.rerun()
+
+
+
+# ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 뉴스
 # ════════════════════════════════════════════════════════════════
 def _render_reverse_split_banner(splits: list):
@@ -2300,6 +2857,10 @@ if st.session_state.get("show_heatmap", False):
     render_sector_heatmap()
     st.markdown("---")
 
+if st.session_state.get("show_screener", False):
+    render_surge_screener()
+    st.markdown("---")
+
 # ════════════════════════════════════════════════════════════════
 # 메인 대시보드 로직
 # ════════════════════════════════════════════════════════════════
@@ -2315,7 +2876,22 @@ if st.session_state.get("has_searched"):
     active_ticker = st.session_state.get("active_ticker", ticker_input)
 
     with st.spinner("야후 파이낸스 및 스톡타이탄에서 실시간 데이터를 분석 중입니다..."):
-        hist = fetch_history(active_ticker)
+        # ── 성능 개선: 서로 의존관계 없는 네트워크 호출을 동시에 실행 ──
+        # 기존엔 history → spike_history → offering_history → 환율 이 순차 대기라
+        # 체감 속도가 느렸음. fetch_ticker_info는 이후 render_technical_analysis에서
+        # 다시 호출되지만 1시간 캐시라 여기서 미리 예열해두면 그때는 즉시 반환됨.
+        with ThreadPoolExecutor(max_workers=5) as _prefetch_ex:
+            _fut_hist     = _prefetch_ex.submit(fetch_history, active_ticker)
+            _fut_spike    = _prefetch_ex.submit(fetch_spike_history, active_ticker)
+            _fut_offering = _prefetch_ex.submit(fetch_offering_history, active_ticker)
+            _fut_info     = _prefetch_ex.submit(fetch_ticker_info, active_ticker)
+            _fut_fx       = _prefetch_ex.submit(fetch_usd_to_krw)
+
+            hist          = _fut_hist.result()
+            spike_df      = _fut_spike.result()
+            offering_list = _fut_offering.result()
+            _fut_info.result()   # 캐시 예열 목적 — 결과는 render_technical_analysis에서 재조회
+            usd_krw       = _fut_fx.result()
 
         if hist.empty:
             st.error("❌ 올바르지 않은 티커명이거나 데이터를 불러올 수 없습니다. 영문 티커를 확인해 주세요.")
@@ -2335,20 +2911,30 @@ if st.session_state.get("has_searched"):
             vol_ma20       = today['VOL_MA20'] if today['VOL_MA20'] > 0 else 1
             vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100   # #8
 
-            # 거래대금 (실시간 환율 적용)
+            # 거래대금 (실시간 환율 적용 — 위에서 병렬로 이미 받아온 값 재사용)
             trading_value_usd     = today['Close'] * today['Volume']
-            trading_value_krw_eok = (trading_value_usd * fetch_usd_to_krw()) / 100_000_000   # #2 실시간 환율
+            trading_value_krw_eok = (trading_value_usd * usd_krw) / 100_000_000   # #2 실시간 환율
 
             # #7 52주 최고/최저
             high_52w = hist['High'].max()
             low_52w  = hist['Low'].min()
 
-            # 신규 3종: 100%+ 급등 이력 / 오퍼링 공시 이력 / 나스닥 $1 컴플라이언스 추정
-            spike_df          = fetch_spike_history(active_ticker)
-            offering_list     = fetch_offering_history(active_ticker)
+            # 나스닥 $1 컴플라이언스 추정 (spike_df/offering_list는 위에서 병렬로 이미 수집됨)
             nasdaq_compliance = calc_nasdaq_compliance(hist, today['Close'])
 
-            render_top_summary_metrics(today, yesterday, hist)
+            # 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수 산출
+            pct_change_now = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
+            current_rsi_val = today['RSI']
+            current_rsi = round(float(current_rsi_val), 1) if pd.notna(current_rsi_val) else None
+            ticker_score = calc_screener_score({
+                "pct_change":        pct_change_now,
+                "vol_ma20_ratio":    vol_ma20_ratio,
+                "trading_value_eok": trading_value_krw_eok,
+                "vol_ratio":         vol_ratio,
+                "rsi":               current_rsi,
+            })
+
+            render_top_summary_metrics(today, yesterday, hist, score=ticker_score)
 
             if desktop_mode:
                 col1, col2 = st.columns([4, 5])
@@ -2361,14 +2947,32 @@ if st.session_state.get("has_searched"):
                         spike_df, offering_list, nasdaq_compliance
                     )
                 with col2:
-                    dt1, dt2 = st.tabs(["📰 뉴스 & 호재", "💬 소셜 미디어"])
-                    with dt1:
+                    # #성능 st.tabs는 선택 안 된 탭도 매번 내부 코드를 전부 실행해
+                    # 안 보는 탭의 뉴스/소셜 API까지 계속 호출되는 문제가 있었음.
+                    # segmented_control은 선택된 값만 알려주므로, 선택된 섹션만 조건부로
+                    # 렌더링(=API 호출)하도록 바꿔 불필요한 네트워크 호출을 없앰.
+                    desktop_view = st.segmented_control(
+                        "정보 보기",
+                        ["📰 뉴스 & 호재", "💬 소셜 미디어"],
+                        default="📰 뉴스 & 호재",
+                        required=True,
+                        key="desktop_info_view",
+                        label_visibility="collapsed",
+                    )
+                    if desktop_view == "📰 뉴스 & 호재":
                         render_news_section(active_ticker)
-                    with dt2:
+                    else:
                         render_social_section(active_ticker)
             else:
-                tab1, tab2, tab3 = st.tabs(["📊 기술 분석", "📰 뉴스 & 호재", "💬 소셜 미디어"])
-                with tab1:
+                mobile_view = st.segmented_control(
+                    "보기 선택",
+                    ["📊 기술 분석", "📰 뉴스 & 호재", "💬 소셜 미디어"],
+                    default="📊 기술 분석",
+                    required=True,
+                    key="mobile_info_view",
+                    label_visibility="collapsed",
+                )
+                if mobile_view == "📊 기술 분석":
                     render_technical_analysis(
                         active_ticker, hist, today, yesterday,
                         vol_ratio, vol_ma20_ratio,
@@ -2376,7 +2980,7 @@ if st.session_state.get("has_searched"):
                         high_52w, low_52w,
                         spike_df, offering_list, nasdaq_compliance
                     )
-                with tab2:
+                elif mobile_view == "📰 뉴스 & 호재":
                     render_news_section(active_ticker)
-                with tab3:
+                else:
                     render_social_section(active_ticker)
