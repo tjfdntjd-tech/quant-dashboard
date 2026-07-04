@@ -38,6 +38,23 @@ TRADING_THRESHOLD = 500           # 거래대금 기준 (억 원)
 MEMO_FILE         = "memos.json"  # #9 메모 영구 저장 파일
 
 # ════════════════════════════════════════════════════════════════
+# 공통 UI 헬퍼 — 반복되는 섹션 헤더 HTML 렌더링을 함수로 분리
+# ════════════════════════════════════════════════════════════════
+def ui_section_header(icon: str, title: str, icon_class: str = "icon-cyan", title_class: str = "title-cyan"):
+    """반복되는 section-header HTML 구조를 공통 함수로 제거.
+
+    icon_class / title_class를 모두 인자로 받아, 색상 테마가 다른
+    섹션(rose/amber/teal/violet 등)에도 그대로 재사용 가능하도록 함.
+    """
+    st.markdown(
+        f"""<div class="section-header">
+            <div class="section-icon {icon_class}">{icon}</div>
+            <div class="section-title {title_class}">{title}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+# ════════════════════════════════════════════════════════════════
 # 오퍼링(유상증자) 관련 SEC 공시 서식
 # ════════════════════════════════════════════════════════════════
 OFFERING_FORM_TYPES = {
@@ -386,6 +403,10 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['MACD_SIG']  = df['MACD'].ewm(span=9, adjust=False).mean()
     df['MACD_HIST'] = df['MACD'] - df['MACD_SIG']
 
+    # 전고점(누적 최고가) 대비 낙폭 — 항상 0 이하 값 (%)
+    running_peak  = c.cummax()
+    df['Drawdown'] = (c - running_peak) / running_peak * 100
+
     return df
 
 # ════════════════════════════════════════════════════════════════
@@ -404,11 +425,71 @@ def _random_headers() -> dict:
     """#13 매 요청마다 무작위 User-Agent 사용"""
     return {"User-Agent": random.choice(_USER_AGENTS)}
 
+@st.cache_resource
+def get_http_session() -> requests.Session:
+    """전역에서 재사용할 HTTP 세션 생성 (Keep-Alive 유지로 성능 향상).
+
+    매 요청마다 새 TCP/TLS 연결을 맺는 대신 커넥션 풀을 재사용해
+    스톡타이탄 크롤링의 반복 호출 성능을 개선한다.
+    """
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=20)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+def _extract_titan_date(link_tag) -> str:
+    """#4 날짜 파싱 로직을 별도 함수로 캡슐화.
+
+    링크 태그의 부모 요소를 최대 4단계까지 탐색하며 datetime 속성이나
+    날짜 관련 class를 가진 요소를 찾아 'MMM DD, YYYY' 형식으로 반환한다.
+    찾지 못하면 '날짜 미확인'을 반환한다.
+    """
+    parent = link_tag.parent
+    for _ in range(4):                     # 최대 4단계 상위 탐색
+        if parent is None:
+            break
+        date_el = parent.find(attrs={"datetime": True})
+        if not date_el:
+            date_el = parent.find(class_=lambda x: x and any(
+                kw in x.lower() for kw in ("date", "time", "published", "when")
+            ))
+        if date_el:
+            raw_date = date_el.get("datetime") or date_el.text.strip()
+            try:
+                # 1차: ISO 형식 파싱 시도 (2024-05-01T12:34:56...)
+                dt = datetime.fromisoformat(raw_date[:19])
+                return dt.strftime("%b %d, %Y")
+            except Exception:
+                # 2차 폴백: 정규식으로 YYYY-MM-DD 또는 유사 패턴 추출
+                _m = re.search(
+                    r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})'   # YYYY-MM-DD 계열
+                    r'|(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})',       # "May 1, 2024" 계열
+                    raw_date or ""
+                )
+                if _m:
+                    try:
+                        if _m.group(1):   # YYYY-MM-DD 계열 매칭
+                            dt2 = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)))
+                            return dt2.strftime("%b %d, %Y")
+                        else:             # "May 1, 2024" 계열 매칭
+                            raw_eng = f"{_m.group(4)} {_m.group(5)} {_m.group(6)}"
+                            dt2 = datetime.strptime(raw_eng, "%B %d %Y") if len(_m.group(4)) > 3 \
+                                  else datetime.strptime(raw_eng, "%b %d %Y")
+                            return dt2.strftime("%b %d, %Y")
+                    except Exception:
+                        return raw_date[:20] if raw_date else "날짜 미확인"
+                else:
+                    # 3차 최후 폴백: 원문 앞부분을 그대로 사용
+                    return raw_date[:20].strip() if raw_date else "날짜 미확인"
+        parent = parent.parent
+    return "날짜 미확인"
+
 def _fetch_detail(link: str, headers: dict):
     """상세 페이지에서 감성·임팩트를 병렬로 가져오는 내부 함수"""
     sentiment, impact = "Unknown", "Normal"
     try:
-        detail_resp = requests.get(link, headers=headers, timeout=5)
+        detail_resp = get_http_session().get(link, headers=headers, timeout=5)
         if detail_resp.status_code == 200:
             detail_soup = BeautifulSoup(detail_resp.text, 'html.parser')
             sentiment_box = detail_soup.find(class_=lambda x: x and 'sentiment' in x.lower())
@@ -425,10 +506,11 @@ def _fetch_detail(link: str, headers: dict):
 
 def get_stock_titan_data(ticker: str) -> list:
     url     = f"https://www.stocktitan.net/overview/{ticker}/"
+    session = get_http_session()  # 커넥션 풀 재사용
     headers = _random_headers()   # #13
 
     try:
-        response = requests.get(url, headers=headers, timeout=8)
+        response = session.get(url, headers=headers, timeout=8)
         if response.status_code != 200:
             return []
 
@@ -451,47 +533,8 @@ def get_stock_titan_data(ticker: str) -> list:
                 continue
             seen_links.add(link)
 
-            # #4 날짜 파싱 시도 — 부모 태그에서 날짜 요소 탐색
-            date_str = "날짜 미확인"
-            parent = link_tag.parent
-            for _ in range(4):                     # 최대 4단계 상위 탐색
-                if parent is None:
-                    break
-                date_el = parent.find(attrs={"datetime": True})
-                if not date_el:
-                    date_el = parent.find(class_=lambda x: x and any(
-                        kw in x.lower() for kw in ("date", "time", "published", "when")
-                    ))
-                if date_el:
-                    raw_date = date_el.get("datetime") or date_el.text.strip()
-                    try:
-                        # 1차: ISO 형식 파싱 시도 (2024-05-01T12:34:56...)
-                        dt = datetime.fromisoformat(raw_date[:19])
-                        date_str = dt.strftime("%b %d, %Y")
-                    except Exception:
-                        # 2차 폴백: 정규식으로 YYYY-MM-DD 또는 유사 패턴 추출
-                        _m = re.search(
-                            r'(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})'   # YYYY-MM-DD 계열
-                            r'|(\w{3,9})\s+(\d{1,2}),?\s+(\d{4})',       # "May 1, 2024" 계열
-                            raw_date or ""
-                        )
-                        if _m:
-                            try:
-                                if _m.group(1):   # YYYY-MM-DD 계열 매칭
-                                    dt2 = datetime(int(_m.group(1)), int(_m.group(2)), int(_m.group(3)))
-                                    date_str = dt2.strftime("%b %d, %Y")
-                                else:             # "May 1, 2024" 계열 매칭
-                                    raw_eng = f"{_m.group(4)} {_m.group(5)} {_m.group(6)}"
-                                    dt2 = datetime.strptime(raw_eng, "%B %d %Y") if len(_m.group(4)) > 3 \
-                                          else datetime.strptime(raw_eng, "%b %d %Y")
-                                    date_str = dt2.strftime("%b %d, %Y")
-                            except Exception:
-                                date_str = raw_date[:20] if raw_date else "날짜 미확인"
-                        else:
-                            # 3차 최후 폴백: 원문 앞부분을 그대로 사용
-                            date_str = raw_date[:20].strip() if raw_date else "날짜 미확인"
-                    break
-                parent = parent.parent
+            # #4 날짜 파싱 — 부모 태그에서 날짜 요소 탐색 (별도 함수로 캡슐화)
+            date_str = _extract_titan_date(link_tag)
 
             title_ko = translate_text(title)
             raw_list.append({"date": date_str, "title": title_ko, "title_en": title, "link": link})
@@ -662,13 +705,7 @@ def fetch_reddit_posts(ticker: str) -> list:
 
 def render_social_section(ticker_input: str):
     """소셜 미디어 의견 탭 — StockTwits + Reddit"""
-    st.markdown(
-        """<div class="section-header">
-            <div class="section-icon icon-cyan">💬</div>
-            <div class="section-title title-cyan">소셜 미디어 투자자 의견</div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    ui_section_header("💬", "소셜 미디어 투자자 의견")
 
     with st.spinner("StockTwits · Reddit 실시간 데이터 수집 중..."):
         st_data     = fetch_stocktwits(ticker_input)
@@ -900,14 +937,13 @@ def inject_css(dark: bool = True):
     st.markdown(f"""
 <style>
     /* ── 폰트 임포트 ──────────────────────────────────────────────── *
-     * 디스플레이: Space Grotesk (헤딩 — 개성)                         *
-     * 본문: Inter (가독성)                                            *
+     * 디스플레이 & 본문: Manrope (모던/미니멀)                         *
      * 데이터: JetBrains Mono (가격/티커/지표 — 자릿수 정렬되는 단말기 느낌) */
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap');
 
     :root {{
-        --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
-        --font-body:    'Inter', 'Segoe UI', system-ui, sans-serif;
+        --font-display: 'Manrope', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
+        --font-body:    'Manrope', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
         --font-mono:    'JetBrains Mono', 'Consolas', monospace;
 
         /* ── 섹션별 시그니처 컬러 (순수 색상) ─────────────────────── */
@@ -921,6 +957,14 @@ def inject_css(dark: bool = True):
         --c-red:    #f87171;
         --c-blue:   #60a5fa;
         --c-orange: #ff6a00;
+
+        /* ── 통일 액센트 컬러 (Blobs 목업 참고 — 코랄/피치 단일 강조색) ── */
+        --c-accent:     #f5a973;
+        --c-accent-ink: #2a1a10;   /* 액센트 배경 위 텍스트 (고대비) */
+        --c-accent-a15: rgba(245,169,115,0.15);
+        --c-accent-a25: rgba(245,169,115,0.25);
+        --c-accent-a45: rgba(245,169,115,0.45);
+        --c-accent-hov: #f8bd8e;
 
         /* ── 알파 변형 (border-left, 배경, 아이콘 등) ──────────────── */
         --c-amber-a65:  rgba(245,185,66,0.65);
@@ -1029,7 +1073,7 @@ def inject_css(dark: bool = True):
     .app-header {{
         background: linear-gradient(135deg, rgba(245,185,66,0.18) 0%, rgba(251,113,133,0.16) 45%, rgba(99,102,241,0.2) 100%);
         border: 1px solid rgba(245,185,66,0.3);
-        border-radius: 18px;
+        border-radius: 22px;
         padding: 1.4rem 1.8rem;
         margin-bottom: 1.4rem;
         backdrop-filter: blur(12px);
@@ -1037,7 +1081,7 @@ def inject_css(dark: bool = True):
     }}
     .app-header h1 {{
         margin: 0 0 0.2rem 0;
-        font-size: 1.55rem;
+        font-size: 1.15rem;
         font-weight: 800;
         background: linear-gradient(90deg, #f5b942, #fb7185, #818cf8);
         -webkit-background-clip: text;
@@ -1048,18 +1092,18 @@ def inject_css(dark: bool = True):
     .app-header p {{
         margin: 0;
         color: {text_muted};
-        font-size: 0.82rem;
+        font-size: 0.72rem;
     }}
 
     /* ── 글래스 카드 공통 ──────────────────────────────────────────── */
     .glass-card {{
         background: {glass_bg};
         border: 1px solid {glass_border};
-        border-radius: 14px;
-        padding: 1.1rem 1.2rem;
+        border-radius: 20px;
+        padding: 1.15rem 1.25rem;
         margin-bottom: 1rem;
         backdrop-filter: blur(10px);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
     }}
     .glass-card-title {{
         font-size: 0.72rem;
@@ -1075,7 +1119,7 @@ def inject_css(dark: bool = True):
     .metric-card {{
         background: {metric_bg};
         border: 1px solid {metric_bdr};
-        border-radius: 14px;
+        border-radius: 18px;
         padding: 1rem 1.1rem;
         backdrop-filter: blur(8px);
         box-shadow: 0 2px 12px rgba(0,0,0,0.2);
@@ -1095,6 +1139,17 @@ def inject_css(dark: bool = True):
     .delta-up   {{ color: #34d399; }}
     .delta-down {{ color: #f87171; }}
     .delta-neu  {{ color: #94a3b8; }}
+
+    /* ── 상단 st.metric 스코어보드 글씨 크기 축소 ─────────────────────── */
+    [data-testid="stMetric"] {{ gap: 0.15rem; }}
+    [data-testid="stMetricLabel"] {{ font-size: 0.72rem !important; }}
+    [data-testid="stMetricValue"] {{ font-size: 1.3rem !important; line-height: 1.15 !important; }}
+    [data-testid="stMetricDelta"] {{ font-size: 0.72rem !important; }}
+    [data-testid="stMetricValue"] > div {{
+        overflow: visible !important;
+        white-space: nowrap !important;
+        text-overflow: clip !important;
+    }}
 
     /* ── 신호 알림 배너 ────────────────────────────────────────────── */
     .alert-banner {{
@@ -1153,12 +1208,13 @@ def inject_css(dark: bool = True):
         margin: 1.3rem 0 0.7rem 0;
     }}
     .section-icon {{
-        width: 28px; height: 28px;
+        width: 32px; height: 32px;
         background: linear-gradient(135deg, var(--c-violet-std), var(--c-indigo-a20));
         border: 1px solid var(--c-violet-bdr);
-        border-radius: 8px;
+        border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
-        font-size: 0.85rem;
+        font-size: 0.9rem;
+        flex-shrink: 0;
     }}
     /* 섹션별 시그니처 컬러 — 의미별로 구분 */
     .icon-amber  {{ background: linear-gradient(135deg, var(--c-amber-a32),  var(--c-amber-a12));  border-color: var(--c-amber-a45)  !important; }}
@@ -1315,43 +1371,45 @@ def inject_css(dark: bool = True):
         box-shadow: 0 0 0 2px rgba(139,92,246,0.15) !important;
     }}
 
-    /* ── 버튼 ──────────────────────────────────────────────────────── */
+    /* ── 버튼 (Blobs 목업 스타일: 단색 필 형태 CTA) ───────────────────── */
     .stButton button {{
-        background: linear-gradient(135deg, rgba(139,92,246,0.25), rgba(59,130,246,0.2)) !important;
-        border: 1px solid rgba(139,92,246,0.4) !important;
-        border-radius: 10px !important;
-        color: {text_primary} !important;
-        font-weight: 600 !important;
+        background: var(--c-accent) !important;
+        border: 1px solid var(--c-accent) !important;
+        border-radius: 999px !important;
+        color: var(--c-accent-ink) !important;
+        font-weight: 700 !important;
         font-size: 0.88rem !important;
         transition: all 0.2s !important;
         min-height: 2.5rem !important;
+        box-shadow: 0 2px 10px rgba(245,169,115,0.25) !important;
     }}
     .stButton button:hover {{
-        background: linear-gradient(135deg, rgba(139,92,246,0.4), rgba(59,130,246,0.3)) !important;
-        border-color: rgba(139,92,246,0.65) !important;
+        background: var(--c-accent-hov) !important;
+        border-color: var(--c-accent-hov) !important;
         transform: translateY(-1px) !important;
-        box-shadow: 0 4px 15px rgba(139,92,246,0.25) !important;
+        box-shadow: 0 4px 16px rgba(245,169,115,0.4) !important;
     }}
 
-    /* ── 탭 ────────────────────────────────────────────────────────── */
+    /* ── 탭 (Blobs 목업 스타일: 필터 칩) ──────────────────────────────── */
     .stTabs [data-baseweb="tab-list"] {{
         background: {tab_bg} !important;
-        border-radius: 12px !important;
+        border-radius: 999px !important;
         padding: 0.3rem !important;
         gap: 0.3rem !important;
         border: 1px solid {tab_bdr} !important;
     }}
     .stTabs [data-baseweb="tab"] {{
-        border-radius: 9px !important;
+        border-radius: 999px !important;
         font-weight: 600 !important;
         font-size: 0.88rem !important;
         color: {text_muted} !important;
         padding: 0.55rem 1.1rem !important;
     }}
     .stTabs [aria-selected="true"] {{
-        background: linear-gradient(135deg, rgba(139,92,246,0.35), rgba(59,130,246,0.25)) !important;
-        color: {text_primary} !important;
-        border: 1px solid rgba(139,92,246,0.4) !important;
+        background: var(--c-accent) !important;
+        color: var(--c-accent-ink) !important;
+        border: 1px solid var(--c-accent) !important;
+        font-weight: 700 !important;
     }}
 
     /* ── 섹터 히트맵 ───────────────────────────────────────────────── */
@@ -1386,8 +1444,12 @@ def inject_css(dark: bool = True):
     @media (max-width: 640px) {{
         .block-container {{ padding: 0.8rem 0.9rem 2rem !important; }}
         .app-header {{ padding: 1rem 1.1rem; border-radius: 14px; }}
-        .app-header h1 {{ font-size: 1.2rem; }}
+        .app-header h1 {{ font-size: 1rem; }}
+        .app-header p {{ font-size: 0.68rem; }}
         .metric-value {{ font-size: 1.25rem; }}
+        [data-testid="stMetricValue"] {{ font-size: 1.05rem !important; }}
+        [data-testid="stMetricLabel"] {{ font-size: 0.65rem !important; }}
+        [data-testid="stMetricDelta"] {{ font-size: 0.65rem !important; }}
         .stButton button {{ min-height: 2.8rem !important; font-size: 0.95rem !important; }}
     }}
 
@@ -1661,6 +1723,46 @@ if show_heatmap:
     st.session_state["show_heatmap"] = not st.session_state["show_heatmap"]
 
 # ════════════════════════════════════════════════════════════════
+# 렌더링 함수 — 상단 주요 지표 요약
+# ════════════════════════════════════════════════════════════════
+def render_top_summary_metrics(today_data, yesterday_data, df_calculated):
+    """상단 주요 지표 요약 — st.columns 기반 4구 메트릭 스코어보드"""
+    m1, m2, m3, m4 = st.columns(4)
+
+    # 가격 및 등락률
+    price_chg = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
+    m1.metric(
+        label="현재가 (종가)",
+        value=f"${today_data['Close']:.2f}",
+        delta=f"{price_chg:+.2f}%"
+    )
+
+    # RSI 상태
+    current_rsi = df_calculated['RSI'].iloc[-1]
+    rsi_status = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
+    m2.metric(
+        label="RSI (14)",
+        value=f"{current_rsi:.1f}",
+        delta=rsi_status,
+        delta_color="normal" if rsi_status == "보통" else "inverse"
+    )
+
+    # 당일 거래량
+    m3.metric(
+        label="당일 거래량",
+        value=f"{today_data['Volume']:,}주"
+    )
+
+    # 전고점 대비 낙폭
+    current_dd = df_calculated['Drawdown'].iloc[-1]
+    m4.metric(
+        label="전고점 대비 낙폭",
+        value=f"{current_dd:.1f}%",
+        delta="MDD 관리 필요" if current_dd < -20 else None
+    )
+    st.divider()
+
+# ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 기술적 분석
 # ════════════════════════════════════════════════════════════════
 def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
@@ -1853,7 +1955,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             """, unsafe_allow_html=True)
 
     # ── 🚀 100%+ 급등 이력 ───────────────────────────────────────
-    st.markdown("""<div class="section-header"><div class="section-icon icon-rose">🚀</div><div class="section-title title-rose">하루 100%+ 급등 이력</div></div>""", unsafe_allow_html=True)
+    ui_section_header("🚀", "하루 100%+ 급등 이력", "icon-rose", "title-rose")
     if spike_df is not None and not spike_df.empty:
         rows_html = ""
         for dt_idx, row in spike_df.head(15).iterrows():
@@ -1884,7 +1986,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         """, unsafe_allow_html=True)
 
     # ── 📜 오퍼링(유상증자) 이력 ─────────────────────────────────
-    st.markdown("""<div class="section-header"><div class="section-icon icon-amber">📜</div><div class="section-title title-amber">오퍼링(유상증자) 관련 공시 이력</div></div>""", unsafe_allow_html=True)
+    ui_section_header("📜", "오퍼링(유상증자) 관련 공시 이력", "icon-amber", "title-amber")
     if offering_list:
         rows_html = ""
         for o in offering_list[:15]:
@@ -1914,7 +2016,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         """, unsafe_allow_html=True)
 
     # ── 수급 체크 ────────────────────────────────────────────────
-    st.markdown("""<div class="section-header"><div class="section-icon icon-amber">💡</div><div class="section-title title-amber">실시간 자금 유입 체크</div></div>""", unsafe_allow_html=True)
+    ui_section_header("💡", "실시간 자금 유입 체크", "icon-amber", "title-amber")
 
     # #8 거래량: 전일 대비 + MA20 대비 둘 다 표시
     vol_dot  = "dot-green"  if vol_ma20_ratio >= 200 else "dot-yellow"
@@ -1938,7 +2040,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     """, unsafe_allow_html=True)
 
     # ── 이동평균선 배열 ──────────────────────────────────────────
-    st.markdown("""<div class="section-header"><div class="section-icon icon-teal">📈</div><div class="section-title title-teal">이동평균선 배열</div></div>""", unsafe_allow_html=True)
+    ui_section_header("📈", "이동평균선 배열", "icon-teal", "title-teal")
 
     if today['MA5'] > today['MA20'] > today['MA120']:
         ma_dot, ma_text = "dot-green", "<strong>완전 정배열</strong> — 강력한 상승 추세 유지 중"
@@ -1989,7 +2091,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     """, unsafe_allow_html=True)
 
     # ── 📝 분석 메모 ─────────────────────────────────────────────
-    st.markdown("""<div class="section-header"><div class="section-icon icon-violet">📝</div><div class="section-title title-violet">분석 메모</div></div>""", unsafe_allow_html=True)
+    ui_section_header("📝", "분석 메모", "icon-violet", "title-violet")
     existing_memo = st.session_state.memos.get(ticker_input, "")
     new_memo = st.text_area(
         "memo",
@@ -2034,8 +2136,7 @@ def _sector_color(pct: float) -> tuple[str, str]:
 
 def render_sector_heatmap():
     """S&P 500 섹터 히트맵 (당일/1주/1개월 탭)"""
-    st.markdown("""<div class="section-header"><div class="section-icon icon-cyan">📊</div>
-    <div class="section-title title-cyan">S&P 500 섹터 히트맵</div></div>""", unsafe_allow_html=True)
+    ui_section_header("📊", "S&P 500 섹터 히트맵")
 
     with st.spinner("섹터 ETF 데이터 로딩 중..."):
         sector_data = fetch_sector_data()
@@ -2124,7 +2225,7 @@ def _render_reverse_split_banner(splits: list):
 
 def render_news_section(ticker_input):
     """스톡타이탄 뉴스 & Rhea-AI 호재 검증 (탭2 또는 우측 컬럼)"""
-    st.markdown("""<div class="section-header"><div class="section-icon icon-rose">🔥</div><div class="section-title title-rose">스톡타이탄 실시간 호재 & Rhea-AI 분석</div></div>""", unsafe_allow_html=True)
+    ui_section_header("🔥", "스톡타이탄 실시간 호재 & Rhea-AI 분석", "icon-rose", "title-rose")
 
     news_data = get_stock_titan_data(ticker_input)
 
@@ -2246,6 +2347,8 @@ if st.session_state.get("has_searched"):
             spike_df          = fetch_spike_history(active_ticker)
             offering_list     = fetch_offering_history(active_ticker)
             nasdaq_compliance = calc_nasdaq_compliance(hist, today['Close'])
+
+            render_top_summary_metrics(today, yesterday, hist)
 
             if desktop_mode:
                 col1, col2 = st.columns([4, 5])
