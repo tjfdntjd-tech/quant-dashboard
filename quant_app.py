@@ -154,7 +154,7 @@ _defaults = {
     "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
-    "dark_mode":        True,           # 다크/라이트 모드 토글
+    "dark_mode":        False,          # 다크/라이트 모드 토글 (기본값: 라이트 모드)
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -1681,16 +1681,111 @@ def inject_css(dark: bool = True):
         gap: 0.3rem !important;
         border: 1px solid {tab_bdr} !important;
     }}
-    [data-testid="stSegmentedControl"] label {{
+    [data-testid="stSegmentedControl"] label,
+    [data-testid="stSegmentedControl"] button,
+    [data-testid="stSegmentedControl"] div[role="radiogroup"] label,
+    [data-testid="stSegmentedControl"] div[data-baseweb="button-group"] > * {{
         border-radius: 999px !important;
         font-weight: 600 !important;
         font-size: 0.88rem !important;
+        color: {text_sec} !important;
+        background: transparent !important;
+        background-color: transparent !important;
+        opacity: 1 !important;
     }}
-    [data-testid="stSegmentedControl"] [aria-checked="true"] {{
+    [data-testid="stSegmentedControl"] label *,
+    [data-testid="stSegmentedControl"] button *,
+    [data-testid="stSegmentedControl"] label p,
+    [data-testid="stSegmentedControl"] button p,
+    [data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"],
+    [data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"] * {{
+        color: {text_sec} !important;
+        fill: {text_sec} !important;
+        opacity: 1 !important;
+    }}
+    [data-testid="stSegmentedControl"] [aria-checked="true"],
+    [data-testid="stSegmentedControl"] [aria-selected="true"] {{
         background: var(--c-accent) !important;
+        background-color: var(--c-accent) !important;
         color: var(--c-accent-ink) !important;
         border: 1px solid var(--c-accent) !important;
         font-weight: 700 !important;
+    }}
+    [data-testid="stSegmentedControl"] [aria-checked="true"] *,
+    [data-testid="stSegmentedControl"] [aria-selected="true"] *,
+    [data-testid="stSegmentedControl"] [aria-checked="true"] p,
+    [data-testid="stSegmentedControl"] [aria-selected="true"] p {{
+        color: var(--c-accent-ink) !important;
+        fill: var(--c-accent-ink) !important;
+    }}
+
+    /* ── 즐겨찾기 리스트: 티커 칩 (은은한 카드, 좌측 정렬) ───────────── */
+    [class*="st-key-fav_ticker_"] button {{
+        background: {glass_bg} !important;
+        border: 1px solid {glass_border} !important;
+        color: {text_primary} !important;
+        font-weight: 700 !important;
+        font-size: 0.85rem !important;
+        border-radius: 10px !important;
+        box-shadow: none !important;
+        justify-content: flex-start !important;
+        padding-left: 0.9rem !important;
+        min-height: 2.3rem !important;
+        transition: all 0.15s !important;
+    }}
+    [class*="st-key-fav_ticker_"] button:hover {{
+        border-color: var(--c-accent) !important;
+        color: var(--c-accent) !important;
+        background: {glass_bg} !important;
+        transform: none !important;
+        box-shadow: none !important;
+    }}
+
+    /* ── 즐겨찾기 액션 아이콘(▲▼✕): 고스트 스타일로 시각적 무게 축소 ── */
+    [class*="st-key-fav_action_"] button {{
+        background: transparent !important;
+        border: 1px solid {glass_border} !important;
+        color: {text_muted} !important;
+        font-weight: 600 !important;
+        border-radius: 8px !important;
+        min-height: 2.3rem !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+    }}
+    [class*="st-key-fav_action_"] button:hover:not(:disabled) {{
+        border-color: var(--c-accent) !important;
+        color: var(--c-accent) !important;
+        background: {glass_bg} !important;
+        transform: none !important;
+        box-shadow: none !important;
+    }}
+    [class*="st-key-fav_action_"] button:disabled {{
+        opacity: 0.3 !important;
+    }}
+
+    /* ── 폼 제출 버튼 (사이드바 '실시간 정밀 검증 시작' 등, .stButton과 별도 클래스) ── */
+    .stFormSubmitButton button,
+    [data-testid="stFormSubmitButton"] button {{
+        background: var(--c-accent) !important;
+        border: 1px solid var(--c-accent) !important;
+        border-radius: 999px !important;
+        color: var(--c-accent-ink) !important;
+        font-weight: 700 !important;
+        font-size: 0.88rem !important;
+        transition: all 0.2s !important;
+        min-height: 2.5rem !important;
+        box-shadow: 0 2px 10px rgba(245,169,115,0.25) !important;
+    }}
+    .stFormSubmitButton button *,
+    [data-testid="stFormSubmitButton"] button * {{
+        color: var(--c-accent-ink) !important;
+    }}
+    .stFormSubmitButton button:hover,
+    [data-testid="stFormSubmitButton"] button:hover {{
+        background: var(--c-accent-hov) !important;
+        border-color: var(--c-accent-hov) !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 16px rgba(245,169,115,0.4) !important;
     }}
 
     /* ── 섹터 히트맵 ───────────────────────────────────────────────── */
@@ -1819,7 +1914,7 @@ def inject_css(dark: bool = True):
 </style>
 """, unsafe_allow_html=True)
 
-inject_css(st.session_state.get("dark_mode", True))
+inject_css(st.session_state.get("dark_mode", False))
 
 # ════════════════════════════════════════════════════════════════
 # 헤더 배너
@@ -1873,7 +1968,7 @@ if st.session_state.scan_results:
 st.sidebar.header("🔍 주식 분석 설정")
 
 # ── 다크/라이트 모드 토글 ────────────────────────────────────────
-_is_dark = st.session_state.get("dark_mode", True)
+_is_dark = st.session_state.get("dark_mode", False)
 _toggle_label = "☀️ 라이트 모드로 전환" if _is_dark else "🌙 다크 모드로 전환"
 if st.sidebar.button(_toggle_label, use_container_width=True):
     st.session_state["dark_mode"] = not _is_dark
@@ -1927,28 +2022,32 @@ if st.session_state.favorites:
     for idx, fav in enumerate(st.session_state.favorites):
         fav_col, up_col, down_col, del_col = st.sidebar.columns([3, 1, 1, 1])
         with fav_col:
-            if st.button(fav, key=f"fav_{fav}", use_container_width=True):
-                st.session_state.selected_ticker = fav
-                st.rerun()
+            with st.container(key=f"fav_ticker_{idx}"):
+                if st.button(fav, key=f"fav_{fav}", use_container_width=True):
+                    st.session_state.selected_ticker = fav
+                    st.rerun()
         with up_col:
-            if st.button("▲", key=f"up_{fav}", use_container_width=True,
-                         help="위로 이동", disabled=(idx == 0)):
-                favs = st.session_state.favorites
-                favs[idx - 1], favs[idx] = favs[idx], favs[idx - 1]
-                save_favorites(favs)
-                st.rerun()
+            with st.container(key=f"fav_action_up_{idx}"):
+                if st.button("▲", key=f"up_{fav}", use_container_width=True,
+                             help="위로 이동", disabled=(idx == 0)):
+                    favs = st.session_state.favorites
+                    favs[idx - 1], favs[idx] = favs[idx], favs[idx - 1]
+                    save_favorites(favs)
+                    st.rerun()
         with down_col:
-            if st.button("▼", key=f"down_{fav}", use_container_width=True,
-                         help="아래로 이동", disabled=(idx == fav_count - 1)):
-                favs = st.session_state.favorites
-                favs[idx + 1], favs[idx] = favs[idx], favs[idx + 1]
-                save_favorites(favs)
-                st.rerun()
+            with st.container(key=f"fav_action_down_{idx}"):
+                if st.button("▼", key=f"down_{fav}", use_container_width=True,
+                             help="아래로 이동", disabled=(idx == fav_count - 1)):
+                    favs = st.session_state.favorites
+                    favs[idx + 1], favs[idx] = favs[idx], favs[idx + 1]
+                    save_favorites(favs)
+                    st.rerun()
         with del_col:
-            if st.button("✕", key=f"del_{fav}", use_container_width=True, help=f"{fav} 삭제"):
-                st.session_state.favorites.remove(fav)
-                save_favorites(st.session_state.favorites)
-                st.rerun()
+            with st.container(key=f"fav_action_del_{idx}"):
+                if st.button("✕", key=f"del_{fav}", use_container_width=True, help=f"{fav} 삭제"):
+                    st.session_state.favorites.remove(fav)
+                    save_favorites(st.session_state.favorites)
+                    st.rerun()
 
     # #5 즐겨찾기 일괄 스캔 — ThreadPoolExecutor로 병렬화
     st.sidebar.markdown("")
