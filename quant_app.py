@@ -1671,56 +1671,80 @@ with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
 # ════════════════════════════════════════════════════════════════
-def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=None):
-    """상단 주요 지표 요약 — st.columns 기반 메트릭 스코어보드.
+def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=None, desktop_mode=True):
+    """상단 주요 지표 요약.
     score가 주어지면 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수를 함께 표시합니다.
+
+    #개선 모바일 레이아웃: 기존엔 데스크탑과 동일하게 st.metric을 st.columns(4~5)에
+    나열했는데, 폰 너비에서는 Streamlit이 컬럼을 세로로 통째로 쌓아버려
+    (한 줄에 1개씩) 지표 5개를 보려면 스크롤을 5번 해야 했음.
+    → 모바일에서는 2열 카드 그리드(metric-grid, 기존 기술분석 카드와 동일 톤)로
+    바꿔서 한 화면에 4~5개 지표가 한눈에 들어오도록 함. 데스크탑은 기존 그대로 유지.
     """
-    if score is not None:
-        m1, m2, m3, m4, m5 = st.columns(5)
-    else:
-        m1, m2, m3, m4 = st.columns(4)
-
-    # 가격 및 등락률
-    price_chg = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
-    m1.metric(
-        label="현재가 (종가)",
-        value=f"${today_data['Close']:.2f}",
-        delta=f"{price_chg:+.2f}%"
-    )
-
-    # RSI 상태
+    price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
     current_rsi = df_calculated['RSI'].iloc[-1]
-    rsi_status = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
-    m2.metric(
-        label="RSI (14)",
-        value=f"{current_rsi:.1f}",
-        delta=rsi_status,
-        delta_color="normal" if rsi_status == "보통" else "inverse"
-    )
-
-    # 당일 거래량
-    m3.metric(
-        label="당일 거래량",
-        value=f"{int(today_data['Volume']):,}주"
-    )
-
-    # 전고점 대비 낙폭
-    current_dd = df_calculated['Drawdown'].iloc[-1]
-    m4.metric(
-        label="전고점 대비 낙폭",
-        value=f"{current_dd:.1f}%",
-        delta="MDD 관리 필요" if current_dd < -20 else None
-    )
-
+    rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
+    current_dd  = df_calculated['Drawdown'].iloc[-1]
+    score_label = None
     if score is not None:
         score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
-        m5.metric(
-            label="종합점수",
-            value=f"{score:.1f}점",
-            delta=score_label,
-            delta_color="normal" if score_label != "약세" else "inverse",
-            help="등락률·거래량·거래대금·RSI를 종합한 참고 지표 (급등주 검색기·즐겨찾기 스캔과 동일 기준)"
-        )
+
+    if desktop_mode:
+        if score is not None:
+            m1, m2, m3, m4, m5 = st.columns(5)
+        else:
+            m1, m2, m3, m4 = st.columns(4)
+
+        m1.metric(label="현재가 (종가)", value=f"${today_data['Close']:.2f}", delta=f"{price_chg:+.2f}%")
+        m2.metric(label="RSI (14)", value=f"{current_rsi:.1f}", delta=rsi_status,
+                  delta_color="normal" if rsi_status == "보통" else "inverse")
+        m3.metric(label="당일 거래량", value=f"{int(today_data['Volume']):,}주")
+        m4.metric(label="전고점 대비 낙폭", value=f"{current_dd:.1f}%",
+                  delta="MDD 관리 필요" if current_dd < -20 else None)
+        if score is not None:
+            m5.metric(label="종합점수", value=f"{score:.1f}점", delta=score_label,
+                      delta_color="normal" if score_label != "약세" else "inverse",
+                      help="등락률·거래량·거래대금·RSI를 종합한 참고 지표 (급등주 검색기·즐겨찾기 스캔과 동일 기준)")
+    else:
+        pct_color = "delta-up" if price_chg >= 0 else "delta-down"
+        pct_arrow = "▲" if price_chg >= 0 else "▼"
+        rsi_color = "delta-down" if current_rsi >= 70 else ("delta-up" if current_rsi <= 30 else "delta-neu")
+        dd_color  = "delta-down" if current_dd < -20 else "delta-neu"
+
+        score_card_html = ""
+        if score is not None:
+            score_color = "delta-up" if score_label == "강세" else ("delta-neu" if score_label == "보통" else "delta-down")
+            score_card_html = f"""
+            <div class="metric-card mc-amber">
+                <div class="metric-label">종합점수</div>
+                <div class="metric-value">{score:.1f}점</div>
+                <div class="metric-delta {score_color}">{score_label}</div>
+            </div>"""
+
+        st.markdown(f"""
+        <div class="metric-grid">
+            <div class="metric-card mc-violet">
+                <div class="metric-label">현재가</div>
+                <div class="metric-value">${today_data['Close']:.2f}</div>
+                <div class="metric-delta {pct_color}">{pct_arrow} {abs(price_chg):.2f}%</div>
+            </div>
+            <div class="metric-card mc-cyan">
+                <div class="metric-label">RSI (14)</div>
+                <div class="metric-value">{current_rsi:.1f}</div>
+                <div class="metric-delta {rsi_color}">{rsi_status}</div>
+            </div>
+            <div class="metric-card mc-rose">
+                <div class="metric-label">당일 거래량</div>
+                <div class="metric-value" style="font-size:1.15rem;">{int(today_data['Volume']):,}주</div>
+            </div>
+            <div class="metric-card mc-cyan">
+                <div class="metric-label">전고점 대비 낙폭</div>
+                <div class="metric-value">{current_dd:.1f}%</div>
+                <div class="metric-delta {dd_color}">{"MDD 관리 필요" if current_dd < -20 else "&nbsp;"}</div>
+            </div>
+            {score_card_html}
+        </div>
+        """, unsafe_allow_html=True)
 
     st.divider()
 
@@ -2564,7 +2588,7 @@ if st.session_state.get("has_searched"):
                 "rsi":               current_rsi,
             })
 
-            render_top_summary_metrics(today, yesterday, hist, score=ticker_score)
+            render_top_summary_metrics(today, yesterday, hist, score=ticker_score, desktop_mode=desktop_mode)
 
             if desktop_mode:
                 col1, col2 = st.columns([4, 5])
@@ -2594,23 +2618,31 @@ if st.session_state.get("has_searched"):
                     else:
                         render_social_section(active_ticker)
             else:
+                # #개선 모바일 레이아웃 — "더 많은 정보를 한눈에" 요청 반영:
+                # 기존엔 기술 분석/뉴스/소셜을 3분할 세그먼트로 나눠 매번 탭을
+                # 눌러야만 볼 수 있었고, 특히 기술 분석(차트·매물대·수급)은
+                # 화면 진입 시 가장 먼저 확인하는 핵심 정보인데도 별도 탭 뒤에
+                # 숨어 있었음. 기술 분석 데이터는 이미 위에서 다 받아온 상태라
+                # 추가 API 호출 없이 항상 펼쳐 보여줄 수 있음.
+                # → 기술 분석은 항상 표시하고, 네트워크 호출이 있는 뉴스/소셜만
+                # 2지선다 세그먼트로 전환(터치 1회로 부담 없이 전환).
+                render_technical_analysis(
+                    active_ticker, hist, today, yesterday,
+                    vol_ratio, vol_ma20_ratio,
+                    trading_value_krw_eok, TRADING_THRESHOLD,
+                    high_52w, low_52w,
+                    spike_df, offering_list, nasdaq_compliance
+                )
+                st.markdown("---")
                 mobile_view = st.segmented_control(
-                    "보기 선택",
-                    ["📊 기술 분석", "📰 뉴스 & 호재", "💬 소셜 미디어"],
-                    default="📊 기술 분석",
+                    "정보 보기",
+                    ["📰 뉴스 & 호재", "💬 소셜 미디어"],
+                    default="📰 뉴스 & 호재",
                     required=True,
                     key="mobile_info_view",
                     label_visibility="collapsed",
                 )
-                if mobile_view == "📊 기술 분석":
-                    render_technical_analysis(
-                        active_ticker, hist, today, yesterday,
-                        vol_ratio, vol_ma20_ratio,
-                        trading_value_krw_eok, TRADING_THRESHOLD,
-                        high_52w, low_52w,
-                        spike_df, offering_list, nasdaq_compliance
-                    )
-                elif mobile_view == "📰 뉴스 & 호재":
+                if mobile_view == "📰 뉴스 & 호재":
                     render_news_section(active_ticker)
                 else:
                     render_social_section(active_ticker)
