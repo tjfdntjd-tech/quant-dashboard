@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from deep_translator import GoogleTranslator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from string import Template
 
 # ════════════════════════════════════════════════════════════════
 # 상수
@@ -38,6 +39,103 @@ def fetch_usd_to_krw() -> float:
 
 TRADING_THRESHOLD = 500           # 거래대금 기준 (억 원)
 MEMO_FILE         = "memos.json"  # #9 메모 영구 저장 파일
+
+# ════════════════════════════════════════════════════════════════
+# #개선 번역 캐시 영구 저장 파일 (TTL 만료로 인한 재번역 방지)
+# ════════════════════════════════════════════════════════════════
+TRANSLATE_CACHE_FILE = "translate_cache.json"
+
+# ════════════════════════════════════════════════════════════════
+# #개선 CSS 템플릿 파일 경로 — inject_css()의 거대한 인라인 문자열을
+# styles/theme.css.tpl 로 분리해 스타일 수정 시 파이썬 코드를
+# 건드리지 않아도 되도록 함. 스크립트 파일 기준 상대경로로 찾으므로
+# 실행 위치(cwd)와 무관하게 항상 올바른 경로를 찾는다.
+# ════════════════════════════════════════════════════════════════
+APP_DIR       = os.path.dirname(os.path.abspath(__file__))
+CSS_TPL_PATH  = os.path.join(APP_DIR, "styles", "theme.css.tpl")
+
+# ════════════════════════════════════════════════════════════════
+# #개선 라이트 모드 전용 색상 보정 CSS
+# theme.css.tpl 안의 다크/라이트 공통 구조와 달리, 라이트 모드에서만
+# 추가로 덮어써야 하는 저대비 텍스트 보정 규칙들이라 별도 상수로 분리.
+# (inject_css()가 dark=False일 때만 $light_mode_overrides 자리에 채워 넣음)
+# ════════════════════════════════════════════════════════════════
+LIGHT_MODE_OVERRIDE_CSS = """
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] .stMarkdown,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] div {
+        color: #1e1b4b !important;
+    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        color: #0f0d2a !important;
+    }
+    .stMarkdown p, .stMarkdown span,
+    [data-testid="stAppViewContainer"] label,
+    [data-testid="stAppViewContainer"] .stSelectbox label,
+    [data-testid="stAppViewContainer"] .stCheckbox label,
+    [data-testid="stAppViewContainer"] .stRadio label,
+    [data-testid="stAppViewContainer"] .stTextInput label,
+    [data-testid="stAppViewContainer"] p {
+        color: #1e1b4b !important;
+    }
+
+    /* 시그니처 컬러 변수 재정의 — var(--c-*)를 쓰는 모든 요소
+       (title-*, sent-pos/neg, impact-badge, bull/bear-badge,
+       pos-card/neg-card, news-card:hover 등)에 자동 적용됨 */
+    :root {
+        --c-amber:  #92600a !important;
+        --c-teal:   #0f766e !important;
+        --c-indigo: #4338ca !important;
+        --c-violet: #6d28d9 !important;
+        --c-cyan:   #0369a1 !important;
+        --c-rose:   #be123c !important;
+        --c-green:  #047857 !important;
+        --c-red:    #dc2626 !important;
+        --c-blue:   #1d4ed8 !important;
+        --c-orange: #c2410c !important;
+    }
+
+    /* 하드코딩된 클래스 색상 보정 */
+    .delta-up   { color: #047857 !important; }
+    .delta-down { color: #dc2626 !important; }
+    .delta-neu  { color: #475569 !important; }
+    .alert-title  { color: #b91c1c !important; }
+    .signal-chip  { color: #b91c1c !important; }
+    .china-banner-text { color: #991b1b !important; }
+    .china-banner-sub  { color: #7f1d1d !important; }
+    .sent-neu   { color: #92600a !important; }
+    .split-banner-title { color: #92600a !important; }
+    .news-link  { color: #4338ca !important; }
+    .news-link:hover { color: #6d28d9 !important; }
+    .scan-title { color: #92600a !important; }
+    .status-text { color: #334155 !important; }
+    .metric-label, .news-meta, .social-meta, .social-stats,
+    .sector-ticker, .legend-item, .news-orig { color: #64748b !important; }
+
+    /* 인라인 style="color:..." 로 하드코딩된 파스텔 색상 보정
+       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비) */
+    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] { color: #475569 !important; }
+    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] { color: #334155 !important; }
+    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] { color: #7f1d1d !important; }
+    [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
+    [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
+    [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
+    [style*="color:#f87171"],  [style*="color: #f87171"]  { color: #dc2626 !important; }
+    [style*="color:#ef4444"],  [style*="color: #ef4444"]  { color: #b91c1c !important; }
+    [style*="color:#fca5a5"],  [style*="color: #fca5a5"]  { color: #b91c1c !important; }
+    [style*="color:#fecaca"],  [style*="color: #fecaca"]  { color: #991b1b !important; }
+    [style*="color:#fbbf24"],  [style*="color: #fbbf24"]  { color: #92600a !important; }
+    [style*="color:#f5b942"],  [style*="color: #f5b942"]  { color: #92600a !important; }
+    [style*="color:#a78bfa"],  [style*="color: #a78bfa"]  { color: #6d28d9 !important; }
+    [style*="color:#818cf8"],  [style*="color: #818cf8"]  { color: #4338ca !important; }
+    [style*="color:#60a5fa"],  [style*="color: #60a5fa"]  { color: #1d4ed8 !important; }
+    [style*="color:#94a3b8"],  [style*="color: #94a3b8"]  { color: #475569 !important; }
+    [style*="color:#ff6a00"],  [style*="color: #ff6a00"]  { color: #c2410c !important; }
+"""
 
 # ════════════════════════════════════════════════════════════════
 # 아이콘 — 단색 원형 배지 스타일 (요청 이미지 참고: 실선 벡터 아이콘)
@@ -520,15 +618,50 @@ def detect_reverse_split_news(news_items: list) -> list:
         })
     return results
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# ════════════════════════════════════════════════════════════════
+# #개선 번역 결과 영구 캐시
+# 기존엔 st.cache_data(ttl=3600)라서 1시간마다 캐시가 사라져
+# 같은 뉴스 제목도 계속 재번역 요청을 보냈음 (구글 번역 비공식 API라
+# 요청이 잦아질수록 차단/실패 위험이 커짐). 영어 뉴스 제목은 번역
+# 결과가 바뀔 일이 없으므로, 파일(translate_cache.json)에 영구
+# 저장해 앱을 재시작해도 동일 문장은 다시 번역하지 않도록 한다.
+# ════════════════════════════════════════════════════════════════
+def _load_translate_cache() -> dict:
+    try:
+        if os.path.exists(TRANSLATE_CACHE_FILE):
+            with open(TRANSLATE_CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def _save_translate_cache(cache: dict) -> None:
+    try:
+        with open(TRANSLATE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception:
+        pass
+
 def translate_text(text: str) -> str:
-    """GoogleTranslator 호출 결과 캐싱 — 동일 문장 재번역 방지"""
+    """GoogleTranslator 호출 결과를 파일 기반으로 영구 캐싱 — 동일 문장 재번역 방지."""
     if not text:
         return text
+
+    if "_translate_cache" not in st.session_state:
+        st.session_state["_translate_cache"] = _load_translate_cache()
+    cache = st.session_state["_translate_cache"]
+
+    if text in cache:
+        return cache[text]
+
     try:
-        return GoogleTranslator(source='en', target='ko').translate(text)
+        translated = GoogleTranslator(source='en', target='ko').translate(text)
     except Exception:
-        return text
+        translated = text
+
+    cache[text] = translated
+    _save_translate_cache(cache)
+    return translated
 
 def parse_yahoo_news_item(raw_item: dict) -> dict:
     """
@@ -1253,729 +1386,30 @@ def inject_css(dark: bool = True):
 
     st.session_state["_plotly_template"] = plotly_tmpl
 
-    st.markdown(f"""
-<style>
-    /* ── 폰트 임포트 ──────────────────────────────────────────────── *
-     * 디스플레이 & 본문: Manrope (모던/미니멀)                         *
-     * 데이터: JetBrains Mono (가격/티커/지표 — 자릿수 정렬되는 단말기 느낌) */
-    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap');
+    mesh_bg_comma = "," if mesh_bg_layers else ""
+    light_mode_overrides = "" if dark else LIGHT_MODE_OVERRIDE_CSS
 
-    :root {{
-        --font-display: 'Manrope', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', sans-serif;
-        --font-body:    'Manrope', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
-        --font-mono:    'JetBrains Mono', 'Consolas', monospace;
+    # #개선 거대 인라인 CSS f-string(옛 720여 줄)을 styles/theme.css.tpl로 분리.
+    # 색상/애니메이션 값만 파이썬에서 계산해 Template로 치환하고,
+    # 실제 CSS 구조/레이아웃 규칙은 별도 파일에서 관리한다.
+    with open(CSS_TPL_PATH, "r", encoding="utf-8") as _f:
+        _css_template = _f.read()
 
-        /* ── 섹션별 시그니처 컬러 (순수 색상) ─────────────────────── */
-        --c-amber:  #f5b942;
-        --c-teal:   #2dd4bf;
-        --c-indigo: #6366f1;
-        --c-violet: #a78bfa;
-        --c-cyan:   #38bdf8;
-        --c-rose:   #fb7185;
-        --c-green:  #34d399;
-        --c-red:    #f87171;
-        --c-blue:   #60a5fa;
-        --c-orange: #ff6a00;
-
-        /* ── 통일 액센트 컬러 (Blobs 목업 참고 — 코랄/피치 단일 강조색) ── */
-        --c-accent:     #f5a973;
-        --c-accent-ink: #2a1a10;   /* 액센트 배경 위 텍스트 (고대비) */
-        --c-accent-a15: rgba(245,169,115,0.15);
-        --c-accent-a25: rgba(245,169,115,0.25);
-        --c-accent-a45: rgba(245,169,115,0.45);
-        --c-accent-hov: #f8bd8e;
-
-        /* ── 알파 변형 (border-left, 배경, 아이콘 등) ──────────────── */
-        --c-amber-a65:  rgba(245,185,66,0.65);
-        --c-amber-a32:  rgba(245,185,66,0.32);
-        --c-amber-a12:  rgba(245,185,66,0.12);
-        --c-amber-a45:  rgba(245,185,66,0.45);
-        --c-amber-a30:  rgba(245,185,66,0.3);
-        --c-amber-a18:  rgba(245,185,66,0.18);
-
-        --c-teal-a65:   rgba(45,212,191,0.65);
-        --c-teal-a32:   rgba(45,212,191,0.32);
-        --c-teal-a12:   rgba(45,212,191,0.12);
-        --c-teal-a45:   rgba(45,212,191,0.45);
-
-        --c-indigo-a65: rgba(99,102,241,0.65);
-        --c-indigo-a32: rgba(99,102,241,0.32);
-        --c-indigo-a12: rgba(99,102,241,0.12);
-        --c-indigo-a45: rgba(99,102,241,0.45);
-        --c-indigo-a20: rgba(99,102,241,0.2);
-        --c-indigo-a15: rgba(99,102,241,0.15);
-        --c-indigo-a35: rgba(99,102,241,0.35);
-
-        --c-violet-a65: rgba(167,139,250,0.65);
-        --c-violet-a32: rgba(167,139,250,0.32);
-        --c-violet-a12: rgba(167,139,250,0.12);
-        --c-violet-a45: rgba(167,139,250,0.45);
-
-        --c-cyan-a65:   rgba(56,189,248,0.65);
-        --c-cyan-a32:   rgba(56,189,248,0.32);
-        --c-cyan-a12:   rgba(56,189,248,0.12);
-        --c-cyan-a45:   rgba(56,189,248,0.45);
-        --c-cyan-a25:   rgba(56,189,248,0.25);
-
-        --c-rose-a65:   rgba(251,113,133,0.65);
-        --c-rose-a32:   rgba(251,113,133,0.32);
-        --c-rose-a12:   rgba(251,113,133,0.12);
-        --c-rose-a45:   rgba(251,113,133,0.45);
-        --c-rose-a16:   rgba(251,113,133,0.16);
-
-        --c-green-a15:  rgba(52,211,153,0.15);
-        --c-green-a30:  rgba(52,211,153,0.3);
-        --c-green-a06:  rgba(52,211,153,0.06);
-        --c-green-a05:  rgba(52,211,153,0.05);
-
-        --c-red-a15:    rgba(248,113,113,0.15);
-        --c-red-a30:    rgba(248,113,113,0.3);
-        --c-red-a06:    rgba(248,113,113,0.06);
-        --c-red-a05:    rgba(248,113,113,0.05);
-        --c-red-a18:    rgba(239,68,68,0.18);
-        --c-red-a45:    rgba(239,68,68,0.45);
-        --c-red-a20:    rgba(239,68,68,0.2);
-        --c-red-a35:    rgba(239,68,68,0.35);
-        --c-red-a12:    rgba(239,68,68,0.12);
-
-        --c-blue-a15:   rgba(96,165,250,0.15);
-        --c-blue-a30:   rgba(96,165,250,0.3);
-
-        --c-orange-a12: rgba(255,106,0,0.12);
-        --c-orange-a25: rgba(255,106,0,0.25);
-
-        --c-violet-std: rgba(139,92,246,0.3);   /* 섹션 아이콘 기본 보라 */
-        --c-violet-bdr: rgba(139,92,246,0.35);
-        --c-violet-bdr2:rgba(139,92,246,0.4);
-        --c-violet-bdr3:rgba(139,92,246,0.65);
-        --c-violet-a25: rgba(139,92,246,0.25);
-        --c-violet-a20: rgba(139,92,246,0.2);
-
-        --c-yellow-a15: rgba(251,191,36,0.15);
-        --c-yellow-a30: rgba(251,191,36,0.3);
-        --c-yellow-a06: rgba(251,191,36,0.06);
-        --c-yellow-a12: rgba(245,158,11,0.12);
-    }}
-
-    /* ── 전역 배경 & 폰트 ─────────────────────────────────────────── */
-    html, body, [data-testid="stAppViewContainer"] {{
-        background-image: {mesh_bg_layers}{"," if mesh_bg_layers else ""} {bg_main} !important;
-        background-size: {mesh_bg_size} !important;
-        background-attachment: fixed !important;
-        animation: {mesh_bg_anim};
-        font-family: var(--font-body);
-    }}
-    {mesh_keyframes_css}
-    {particle_overlay_css}
-    h1, h2, h3, .app-header h1, .section-title, .glass-card-title,
-    .scan-title, .alert-title {{ font-family: var(--font-display); }}
-    .metric-value, .metric-delta, .sector-pct, .sector-sub, .sector-ticker,
-    [data-testid="stDataFrame"] * {{
-        font-family: var(--font-mono) !important;
-        font-variant-numeric: tabular-nums;
-    }}
-    [data-testid="stAppViewContainer"] > .main {{ background: transparent !important; }}
-    .block-container {{ padding: 1.2rem 1.5rem 2rem 1.5rem !important; max-width: 900px; }}
-
-    /* ── 사이드바 ──────────────────────────────────────────────────── */
-    [data-testid="stSidebar"] {{
-        background: {bg_sidebar} !important;
-        border-right: 1px solid rgba(139, 92, 246, 0.2);
-    }}
-    [data-testid="stSidebar"] .stTextInput input {{
-        background: {sidebar_input_bg} !important;
-        border: 1px solid {sidebar_input_bdr} !important;
-        border-radius: 10px !important;
-        color: {sidebar_input_clr} !important;
-        font-family: var(--font-mono) !important;
-        font-size: 1rem !important;
-        letter-spacing: 0.5px !important;
-        padding: 0.6rem 0.8rem !important;
-    }}
-
-    /* ── 헤더 배너 ─────────────────────────────────────────────────── */
-    .app-header {{
-        background: linear-gradient(135deg, rgba(245,185,66,0.18) 0%, rgba(251,113,133,0.16) 45%, rgba(99,102,241,0.2) 100%);
-        border: 1px solid rgba(245,185,66,0.3);
-        border-radius: 22px;
-        padding: 1.4rem 1.8rem;
-        margin-bottom: 1.4rem;
-        backdrop-filter: blur(12px);
-        box-shadow: 0 8px 32px rgba(99,102,241,0.15), inset 0 1px 0 rgba(255,255,255,0.08);
-    }}
-    .app-header h1 {{
-        margin: 0 0 0.2rem 0;
-        font-size: 1.15rem;
-        font-weight: 800;
-        background: linear-gradient(90deg, #f5b942, #fb7185, #818cf8);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-        letter-spacing: -0.3px;
-    }}
-    .app-header p {{
-        margin: 0;
-        color: {text_muted};
-        font-size: 0.72rem;
-    }}
-
-    /* ── 글래스 카드 공통 ──────────────────────────────────────────── */
-    .glass-card {{
-        background: {glass_bg};
-        border: 1px solid {glass_border};
-        border-radius: 20px;
-        padding: 1.15rem 1.25rem;
-        margin-bottom: 1rem;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-    }}
-    .glass-card-title {{
-        font-size: 0.72rem;
-        font-weight: 700;
-        letter-spacing: 1.2px;
-        text-transform: uppercase;
-        color: {text_muted};
-        margin-bottom: 0.6rem;
-    }}
-
-    /* ── 메트릭 카드 ──────────────────────────────────────────────── */
-    .metric-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }}
-    .metric-card {{
-        background: {metric_bg};
-        border: 1px solid {metric_bdr};
-        border-radius: 18px;
-        padding: 1rem 1.1rem;
-        backdrop-filter: blur(8px);
-        box-shadow: 0 2px 12px rgba(0,0,0,0.2);
-        transition: transform 0.15s;
-    }}
-    .metric-card:hover {{ transform: translateY(-2px); }}
-    .metric-card {{ border-left: 3px solid transparent; }}
-    .mc-amber  {{ border-left-color: var(--c-amber-a65)  !important; }}
-    .mc-violet {{ border-left-color: var(--c-violet-a65) !important; }}
-    .mc-rose   {{ border-left-color: var(--c-rose-a65)   !important; }}
-    .mc-cyan   {{ border-left-color: var(--c-cyan-a65)   !important; }}
-    .mc-indigo {{ border-left-color: var(--c-indigo-a65) !important; }}
-    .mc-teal   {{ border-left-color: var(--c-teal-a65)   !important; }}
-    .metric-label {{ font-size: 0.7rem; color: {metric_label}; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 0.35rem; }}
-    .metric-value {{ font-size: 1.45rem; font-weight: 800; color: {text_primary}; line-height: 1; }}
-    .metric-delta {{ font-size: 0.78rem; font-weight: 600; margin-top: 0.3rem; }}
-    .delta-up   {{ color: #34d399; }}
-    .delta-down {{ color: #f87171; }}
-    .delta-neu  {{ color: #94a3b8; }}
-
-    /* ── 상단 st.metric 스코어보드 글씨 크기 축소 ─────────────────────── */
-    [data-testid="stMetric"] {{ gap: 0.15rem; }}
-    [data-testid="stMetricLabel"] {{ font-size: 0.72rem !important; }}
-    [data-testid="stMetricValue"] {{ font-size: 1.3rem !important; line-height: 1.15 !important; }}
-    [data-testid="stMetricDelta"] {{ font-size: 0.72rem !important; }}
-    [data-testid="stMetricValue"] > div {{
-        overflow: visible !important;
-        white-space: nowrap !important;
-        text-overflow: clip !important;
-    }}
-
-    /* ── 신호 알림 배너 ────────────────────────────────────────────── */
-    .alert-banner {{
-        background: linear-gradient(135deg, var(--c-red-a18), var(--c-yellow-a12));
-        border: 1px solid var(--c-red-a45);
-        border-radius: 14px;
-        padding: 1rem 1.2rem;
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: flex-start;
-        gap: 0.7rem;
-        box-shadow: 0 0 20px var(--c-red-a12);
-    }}
-    .alert-icon {{ font-size: 1.4rem; line-height: 1; }}
-    .alert-title {{ font-size: 0.72rem; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #fca5a5; margin-bottom: 0.3rem; }}
-    .alert-signals {{ display: flex; flex-wrap: wrap; gap: 0.4rem; }}
-    .signal-chip {{
-        background: var(--c-red-a20);
-        border: 1px solid var(--c-red-a35);
-        border-radius: 20px;
-        padding: 0.2rem 0.7rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #fca5a5;
-    }}
-    .china-banner {{
-        background: linear-gradient(135deg, rgba(220,38,38,0.28), rgba(220,38,38,0.12));
-        border: 1.5px solid rgba(248,113,113,0.75);
-        border-radius: 14px;
-        padding: 0.85rem 1.2rem;
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.7rem;
-        box-shadow: 0 0 22px rgba(220,38,38,0.25);
-    }}
-    .china-banner-icon {{ font-size: 1.3rem; line-height: 1; }}
-    .china-banner-text {{ font-size: 0.85rem; font-weight: 700; color: #fecaca; letter-spacing: 0.3px; }}
-    .china-banner-sub {{ font-size: 0.72rem; font-weight: 500; color: rgba(254,202,202,0.75); margin-top: 0.15rem; }}
-    .split-banner {{
-        background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(245,158,11,0.08));
-        border: 1.5px solid rgba(251,191,36,0.6);
-        border-radius: 14px;
-        padding: 0.85rem 1.2rem;
-        margin-bottom: 0.8rem;
-    }}
-    .split-banner-title {{ font-size: 0.85rem; font-weight: 700; color: #fbbf24; letter-spacing: 0.3px; margin-bottom: 0.3rem; }}
-    .split-banner-body  {{ font-size: 0.8rem; color: {text_status}; line-height: 1.5; }}
-    .split-banner-body strong {{ color: {text_primary}; }}
-
-    /* ── 섹션 헤더 ─────────────────────────────────────────────────── */
-    .section-header {{
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin: 1.3rem 0 0.7rem 0;
-    }}
-    .section-icon {{
-        width: 32px; height: 32px;
-        background: linear-gradient(135deg, var(--c-violet-std), var(--c-indigo-a20));
-        border: 1px solid var(--c-violet-bdr);
-        border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        font-size: 0.9rem;
-        flex-shrink: 0;
-    }}
-    /* 섹션별 시그니처 컬러 — 의미별로 구분 */
-    .icon-amber  {{ background: linear-gradient(135deg, var(--c-amber-a32),  var(--c-amber-a12));  border-color: var(--c-amber-a45)  !important; }}
-    .icon-teal   {{ background: linear-gradient(135deg, var(--c-teal-a32),   var(--c-teal-a12));   border-color: var(--c-teal-a45)   !important; }}
-    .icon-indigo {{ background: linear-gradient(135deg, var(--c-indigo-a32), var(--c-indigo-a12)); border-color: var(--c-indigo-a45) !important; }}
-    .icon-violet {{ background: linear-gradient(135deg, var(--c-violet-a32), var(--c-violet-a12)); border-color: var(--c-violet-a45) !important; }}
-    .icon-cyan   {{ background: linear-gradient(135deg, var(--c-cyan-a32),   var(--c-cyan-a12));   border-color: var(--c-cyan-a45)   !important; }}
-    .icon-rose   {{ background: linear-gradient(135deg, var(--c-rose-a32),   var(--c-rose-a12));   border-color: var(--c-rose-a45)   !important; }}
-    .title-amber  {{ color: var(--c-amber)  !important; }}
-    .title-teal   {{ color: var(--c-teal)   !important; }}
-    .title-indigo {{ color: var(--c-indigo) !important; }}
-    .title-violet {{ color: var(--c-violet) !important; }}
-    .title-cyan   {{ color: var(--c-cyan)   !important; }}
-    .title-rose   {{ color: var(--c-rose)   !important; }}
-    .section-title {{ font-size: 0.9rem; font-weight: 700; color: {text_sec}; }}
-
-    /* ── 감성 배지 ─────────────────────────────────────────────────── */
-    .sentiment-badge {{
-        display: inline-flex; align-items: center; gap: 0.3rem;
-        padding: 0.15rem 0.55rem;
-        border-radius: 20px;
-        font-size: 0.68rem;
-        font-weight: 700;
-    }}
-    .sent-pos {{ background: var(--c-green-a15); color: var(--c-green); border: 1px solid var(--c-green-a30); }}
-    .sent-neg {{ background: var(--c-red-a15);   color: var(--c-red);   border: 1px solid var(--c-red-a30);   }}
-    .sent-neu {{ background: var(--c-yellow-a15); color: #fbbf24;       border: 1px solid var(--c-yellow-a30); }}
-    .impact-badge {{
-        background: var(--c-blue-a15); color: var(--c-blue);
-        border: 1px solid var(--c-blue-a30);
-        padding: 0.15rem 0.55rem; border-radius: 20px;
-        font-size: 0.68rem; font-weight: 700;
-    }}
-    .status-row {{ display: flex; flex-direction: column; gap: 0.55rem; }}
-    .status-item {{
-        display: flex;
-        align-items: center;
-        gap: 0.7rem;
-        background: {status_bg};
-        border: 1px solid {status_bdr};
-        border-radius: 10px;
-        padding: 0.65rem 0.9rem;
-    }}
-    .status-dot {{ width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }}
-    .dot-green  {{ background: #34d399; box-shadow: 0 0 6px rgba(52,211,153,0.6); }}
-    .dot-yellow {{ background: #fbbf24; box-shadow: 0 0 6px rgba(251,191,36,0.6); }}
-    .dot-red    {{ background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,0.6); }}
-    .dot-blue   {{ background: #60a5fa; box-shadow: 0 0 6px rgba(96,165,250,0.5); }}
-    .status-text {{ font-size: 0.82rem; color: {text_status}; flex: 1; line-height: 1.4; }}
-    .status-text strong {{ color: {text_primary}; }}
-
-    /* ── 뉴스 카드 ─────────────────────────────────────────────────── */
-    .news-card {{
-        background: {news_bg};
-        border: 1px solid {news_bdr};
-        border-radius: 14px;
-        padding: 1rem 1.1rem;
-        margin-bottom: 0.8rem;
-        backdrop-filter: blur(8px);
-        transition: border-color 0.2s;
-    }}
-    .news-card:hover {{ border-color: var(--c-violet-bdr); }}
-    .pos-card {{ border-left: 3px solid var(--c-green);  background: var(--c-green-a06); }}
-    .neg-card {{ border-left: 3px solid var(--c-red);    background: var(--c-red-a06);   }}
-    .neu-card {{ border-left: 3px solid #fbbf24;         background: var(--c-yellow-a06); }}
-    .news-meta {{ font-size: 0.7rem; color: {text_muted}; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }}
-    .news-title {{ font-size: 0.9rem; font-weight: 600; color: {text_primary}; line-height: 1.45; margin-bottom: 0.35rem; }}
-    .news-orig  {{ font-size: 0.72rem; color: {text_dimmed}; margin-bottom: 0.5rem; font-style: italic; }}
-    .news-link  {{ font-size: 0.78rem; color: #818cf8; text-decoration: none; font-weight: 500; }}
-    .news-link:hover {{ color: #a78bfa; }}
-
-    /* ── 소셜 미디어 카드 ─────────────────────────────────────────── */
-    .social-card {{
-        background: {social_bg};
-        border: 1px solid {social_bdr};
-        border-radius: 14px;
-        padding: 0.95rem 1.1rem;
-        margin-bottom: 0.7rem;
-        backdrop-filter: blur(8px);
-        transition: border-color 0.2s;
-    }}
-    .social-card:hover {{ border-color: var(--c-cyan-a45); }}
-    .social-bull {{ border-left: 3px solid var(--c-green); background: var(--c-green-a05); }}
-    .social-bear {{ border-left: 3px solid var(--c-red);   background: var(--c-red-a05);   }}
-    .social-meta {{
-        display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-        font-size: 0.7rem; color: {text_muted}; margin-bottom: 0.4rem;
-    }}
-    .social-body {{ font-size: 0.88rem; color: {text_sec}; line-height: 1.5; margin-bottom: 0.4rem; }}
-    .social-stats {{ display: flex; gap: 0.9rem; font-size: 0.72rem; color: {text_dimmed}; }}
-    .social-selftext {{
-        font-size: 0.82rem; color: {social_selftext_clr};
-        line-height: 1.55; margin: 0.3rem 0 0.4rem 0;
-        border-left: 2px solid {social_selftext_bdr};
-        padding-left: 0.7rem;
-    }}
-    .bull-badge {{
-        background: var(--c-green-a15); color: var(--c-green);
-        border: 1px solid var(--c-green-a30);
-        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }}
-    .bear-badge {{
-        background: var(--c-red-a15); color: var(--c-red);
-        border: 1px solid var(--c-red-a30);
-        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }}
-    .platform-badge {{
-        background: var(--c-cyan-a12); color: var(--c-cyan);
-        border: 1px solid var(--c-cyan-a25);
-        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }}
-    .reddit-badge {{
-        background: var(--c-orange-a12); color: var(--c-orange);
-        border: 1px solid var(--c-orange-a25);
-        padding: 0.12rem 0.5rem; border-radius: 20px; font-size: 0.68rem; font-weight: 700;
-    }}
-    .sentiment-bar-wrap {{
-        background: {sent_wrap_bg}; border-radius: 10px;
-        padding: 0.85rem 1rem; margin-bottom: 0.8rem;
-        border: 1px solid {sent_wrap_bdr};
-    }}
-    .sentiment-bar-track {{
-        background: {sent_track}; border-radius: 99px;
-        height: 8px; overflow: hidden; margin: 0.4rem 0;
-    }}
-    .sentiment-bar-fill {{
-        height: 100%; border-radius: 99px;
-        background: linear-gradient(90deg, #34d399, #fbbf24);
-        transition: width 0.6s ease;
-    }}
-
-    /* ── 스캔 결과 테이블 ──────────────────────────────────────────── */
-    .scan-header {{
-        background: linear-gradient(135deg, rgba(245,185,66,0.2), rgba(251,113,133,0.12));
-        border: 1px solid rgba(245,185,66,0.35);
-        border-radius: 14px;
-        padding: 1rem 1.2rem;
-        margin-bottom: 0.8rem;
-        display: flex; align-items: center; justify-content: space-between;
-    }}
-    .scan-title {{ font-size: 0.95rem; font-weight: 700; color: #f5b942; }}
-
-    /* ── 메모 영역 ─────────────────────────────────────────────────── */
-    .stTextArea textarea {{
-        background: {textarea_bg} !important;
-        border: 1px solid rgba(139,92,246,0.3) !important;
-        border-radius: 12px !important;
-        color: {text_primary} !important;
-        font-size: 0.88rem !important;
-        resize: vertical;
-    }}
-    .stTextArea textarea:focus {{
-        border-color: rgba(139,92,246,0.6) !important;
-        box-shadow: 0 0 0 2px rgba(139,92,246,0.15) !important;
-    }}
-
-    /* ── 버튼 (Blobs 목업 스타일: 단색 필 형태 CTA) ───────────────────── */
-    .stButton button {{
-        background: var(--c-accent) !important;
-        border: 1px solid var(--c-accent) !important;
-        border-radius: 999px !important;
-        color: var(--c-accent-ink) !important;
-        font-weight: 700 !important;
-        font-size: 0.88rem !important;
-        transition: all 0.2s !important;
-        min-height: 2.5rem !important;
-        box-shadow: 0 2px 10px rgba(245,169,115,0.25) !important;
-    }}
-    .stButton button:hover {{
-        background: var(--c-accent-hov) !important;
-        border-color: var(--c-accent-hov) !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 16px rgba(245,169,115,0.4) !important;
-    }}
-
-    /* ── 탭 (Blobs 목업 스타일: 필터 칩) ──────────────────────────────── */
-    .stTabs [data-baseweb="tab-list"] {{
-        background: {tab_bg} !important;
-        border-radius: 999px !important;
-        padding: 0.3rem !important;
-        gap: 0.3rem !important;
-        border: 1px solid {tab_bdr} !important;
-    }}
-    .stTabs [data-baseweb="tab"] {{
-        border-radius: 999px !important;
-        font-weight: 600 !important;
-        font-size: 0.88rem !important;
-        color: {text_muted} !important;
-        padding: 0.55rem 1.1rem !important;
-    }}
-    .stTabs [aria-selected="true"] {{
-        background: var(--c-accent) !important;
-        color: var(--c-accent-ink) !important;
-        border: 1px solid var(--c-accent) !important;
-        font-weight: 700 !important;
-    }}
-
-    /* ── 세그먼트 컨트롤 (뉴스/소셜/기술분석 전환 — 탭과 동일한 필터 칩 스타일) ── */
-    [data-testid="stSegmentedControl"] {{
-        background: {tab_bg} !important;
-        border-radius: 999px !important;
-        padding: 0.3rem !important;
-        gap: 0.3rem !important;
-        border: 1px solid {tab_bdr} !important;
-    }}
-    [data-testid="stSegmentedControl"] label,
-    [data-testid="stSegmentedControl"] button,
-    [data-testid="stSegmentedControl"] div[role="radiogroup"] label,
-    [data-testid="stSegmentedControl"] div[data-baseweb="button-group"] > * {{
-        border-radius: 999px !important;
-        font-weight: 600 !important;
-        font-size: 0.88rem !important;
-        color: {text_sec} !important;
-        background: transparent !important;
-        background-color: transparent !important;
-        opacity: 1 !important;
-    }}
-    [data-testid="stSegmentedControl"] label *,
-    [data-testid="stSegmentedControl"] button *,
-    [data-testid="stSegmentedControl"] label p,
-    [data-testid="stSegmentedControl"] button p,
-    [data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"],
-    [data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"] * {{
-        color: {text_sec} !important;
-        fill: {text_sec} !important;
-        opacity: 1 !important;
-    }}
-    [data-testid="stSegmentedControl"] [aria-checked="true"],
-    [data-testid="stSegmentedControl"] [aria-selected="true"] {{
-        background: var(--c-accent) !important;
-        background-color: var(--c-accent) !important;
-        color: var(--c-accent-ink) !important;
-        border: 1px solid var(--c-accent) !important;
-        font-weight: 700 !important;
-    }}
-    [data-testid="stSegmentedControl"] [aria-checked="true"] *,
-    [data-testid="stSegmentedControl"] [aria-selected="true"] *,
-    [data-testid="stSegmentedControl"] [aria-checked="true"] p,
-    [data-testid="stSegmentedControl"] [aria-selected="true"] p {{
-        color: var(--c-accent-ink) !important;
-        fill: var(--c-accent-ink) !important;
-    }}
-
-    /* ── 즐겨찾기 리스트: 티커 칩 (은은한 카드, 좌측 정렬) ───────────── */
-    [class*="st-key-fav_ticker_"] button {{
-        background: {glass_bg} !important;
-        border: 1px solid {glass_border} !important;
-        color: {text_primary} !important;
-        font-weight: 700 !important;
-        font-size: 0.85rem !important;
-        border-radius: 10px !important;
-        box-shadow: none !important;
-        justify-content: flex-start !important;
-        padding-left: 0.9rem !important;
-        min-height: 2.3rem !important;
-        transition: all 0.15s !important;
-    }}
-    [class*="st-key-fav_ticker_"] button:hover {{
-        border-color: var(--c-accent) !important;
-        color: var(--c-accent) !important;
-        background: {glass_bg} !important;
-        transform: none !important;
-        box-shadow: none !important;
-    }}
-
-    /* ── 즐겨찾기 액션 아이콘(▲▼✕): 고스트 스타일로 시각적 무게 축소 ── */
-    [class*="st-key-fav_action_"] button {{
-        background: transparent !important;
-        border: 1px solid {glass_border} !important;
-        color: {text_muted} !important;
-        font-weight: 600 !important;
-        border-radius: 8px !important;
-        min-height: 2.3rem !important;
-        box-shadow: none !important;
-        padding: 0 !important;
-    }}
-    [class*="st-key-fav_action_"] button:hover:not(:disabled) {{
-        border-color: var(--c-accent) !important;
-        color: var(--c-accent) !important;
-        background: {glass_bg} !important;
-        transform: none !important;
-        box-shadow: none !important;
-    }}
-    [class*="st-key-fav_action_"] button:disabled {{
-        opacity: 0.3 !important;
-    }}
-
-    /* ── 폼 제출 버튼 (사이드바 '실시간 정밀 검증 시작' 등, .stButton과 별도 클래스) ── */
-    .stFormSubmitButton button,
-    [data-testid="stFormSubmitButton"] button {{
-        background: var(--c-accent) !important;
-        border: 1px solid var(--c-accent) !important;
-        border-radius: 999px !important;
-        color: var(--c-accent-ink) !important;
-        font-weight: 700 !important;
-        font-size: 0.88rem !important;
-        transition: all 0.2s !important;
-        min-height: 2.5rem !important;
-        box-shadow: 0 2px 10px rgba(245,169,115,0.25) !important;
-    }}
-    .stFormSubmitButton button *,
-    [data-testid="stFormSubmitButton"] button * {{
-        color: var(--c-accent-ink) !important;
-    }}
-    .stFormSubmitButton button:hover,
-    [data-testid="stFormSubmitButton"] button:hover {{
-        background: var(--c-accent-hov) !important;
-        border-color: var(--c-accent-hov) !important;
-        transform: translateY(-1px) !important;
-        box-shadow: 0 4px 16px rgba(245,169,115,0.4) !important;
-    }}
-
-    /* ── 섹터 히트맵 ───────────────────────────────────────────────── */
-    .sector-grid {{
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-        gap: 0.6rem;
-        margin-bottom: 1rem;
-    }}
-    .sector-cell {{
-        border-radius: 12px;
-        padding: 0.85rem 0.9rem;
-        text-align: center;
-        backdrop-filter: blur(8px);
-        border: 1px solid rgba(255,255,255,0.1);
-        transition: transform 0.15s;
-        cursor: default;
-    }}
-    .sector-cell:hover {{ transform: translateY(-2px); }}
-    .sector-name {{ font-size: 0.68rem; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: {sector_name_clr}; margin-bottom: 0.3rem; }}
-    .sector-ticker {{ font-size: 0.62rem; color: {sector_ticker_clr}; margin-bottom: 0.4rem; }}
-    .sector-pct {{ font-size: 1.25rem; font-weight: 800; line-height: 1; }}
-    .sector-sub {{ font-size: 0.68rem; margin-top: 0.25rem; opacity: 0.7; }}
-    .sector-legend {{ display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }}
-    .legend-item {{ display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: {text_muted}; }}
-    .legend-dot {{ width: 10px; height: 10px; border-radius: 3px; }}
-
-    /* ── 구분선 ────────────────────────────────────────────────────── */
-    hr {{ border-color: {hr_color} !important; margin: 1rem 0 !important; }}
-
-    /* ── 모바일 ────────────────────────────────────────────────────── */
-    @media (max-width: 640px) {{
-        .block-container {{ padding: 0.8rem 0.9rem 2rem !important; }}
-        .app-header {{ padding: 1rem 1.1rem; border-radius: 14px; }}
-        .app-header h1 {{ font-size: 1rem; }}
-        .app-header p {{ font-size: 0.68rem; }}
-        .metric-value {{ font-size: 1.25rem; }}
-        [data-testid="stMetricValue"] {{ font-size: 1.05rem !important; }}
-        [data-testid="stMetricLabel"] {{ font-size: 0.65rem !important; }}
-        [data-testid="stMetricDelta"] {{ font-size: 0.65rem !important; }}
-        .stButton button {{ min-height: 2.8rem !important; font-size: 0.95rem !important; }}
-    }}
-
-    /* ── 라이트 모드: 저대비 텍스트 색상 전면 보정 ──────────────────── *
-     * (버그 수정: 기존 코드는 이 블록이 바깥 f-string 안에 중첩된      *
-     * "일반 문자열"인데도 중괄호를 {{ }} 로 이중 이스케이프해서       *
-     * 실제로는 깨진 CSS( {{ ... }} )가 출력되어 라이트 모드 보정이    *
-     * 하나도 적용되지 않고 있었음. 홑 중괄호로 수정 + 저대비 색상     *
-     * 전반(회색 노트, 파스텔 강조색 등)에 대한 보정을 추가함.         */
-    {"" if dark else """
-    [data-testid="stSidebar"] label,
-    [data-testid="stSidebar"] .stMarkdown,
-    [data-testid="stSidebar"] p,
-    [data-testid="stSidebar"] span,
-    [data-testid="stSidebar"] div {
-        color: #1e1b4b !important;
-    }
-    [data-testid="stSidebar"] h1,
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3 {
-        color: #0f0d2a !important;
-    }
-    .stMarkdown p, .stMarkdown span,
-    [data-testid="stAppViewContainer"] label,
-    [data-testid="stAppViewContainer"] .stSelectbox label,
-    [data-testid="stAppViewContainer"] .stCheckbox label,
-    [data-testid="stAppViewContainer"] .stRadio label,
-    [data-testid="stAppViewContainer"] .stTextInput label,
-    [data-testid="stAppViewContainer"] p {
-        color: #1e1b4b !important;
-    }
-
-    /* 시그니처 컬러 변수 재정의 — var(--c-*)를 쓰는 모든 요소
-       (title-*, sent-pos/neg, impact-badge, bull/bear-badge,
-       pos-card/neg-card, news-card:hover 등)에 자동 적용됨 */
-    :root {
-        --c-amber:  #92600a !important;
-        --c-teal:   #0f766e !important;
-        --c-indigo: #4338ca !important;
-        --c-violet: #6d28d9 !important;
-        --c-cyan:   #0369a1 !important;
-        --c-rose:   #be123c !important;
-        --c-green:  #047857 !important;
-        --c-red:    #dc2626 !important;
-        --c-blue:   #1d4ed8 !important;
-        --c-orange: #c2410c !important;
-    }
-
-    /* 하드코딩된 클래스 색상 보정 */
-    .delta-up   { color: #047857 !important; }
-    .delta-down { color: #dc2626 !important; }
-    .delta-neu  { color: #475569 !important; }
-    .alert-title  { color: #b91c1c !important; }
-    .signal-chip  { color: #b91c1c !important; }
-    .china-banner-text { color: #991b1b !important; }
-    .china-banner-sub  { color: #7f1d1d !important; }
-    .sent-neu   { color: #92600a !important; }
-    .split-banner-title { color: #92600a !important; }
-    .news-link  { color: #4338ca !important; }
-    .news-link:hover { color: #6d28d9 !important; }
-    .scan-title { color: #92600a !important; }
-    .status-text { color: #334155 !important; }
-    .metric-label, .news-meta, .social-meta, .social-stats,
-    .sector-ticker, .legend-item, .news-orig { color: #64748b !important; }
-
-    /* 인라인 style="color:..." 로 하드코딩된 파스텔 색상 보정
-       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비) */
-    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] { color: #475569 !important; }
-    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] { color: #334155 !important; }
-    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] { color: #7f1d1d !important; }
-    [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
-    [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
-    [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
-    [style*="color:#f87171"],  [style*="color: #f87171"]  { color: #dc2626 !important; }
-    [style*="color:#ef4444"],  [style*="color: #ef4444"]  { color: #b91c1c !important; }
-    [style*="color:#fca5a5"],  [style*="color: #fca5a5"]  { color: #b91c1c !important; }
-    [style*="color:#fecaca"],  [style*="color: #fecaca"]  { color: #991b1b !important; }
-    [style*="color:#fbbf24"],  [style*="color: #fbbf24"]  { color: #92600a !important; }
-    [style*="color:#f5b942"],  [style*="color: #f5b942"]  { color: #92600a !important; }
-    [style*="color:#a78bfa"],  [style*="color: #a78bfa"]  { color: #6d28d9 !important; }
-    [style*="color:#818cf8"],  [style*="color: #818cf8"]  { color: #4338ca !important; }
-    [style*="color:#60a5fa"],  [style*="color: #60a5fa"]  { color: #1d4ed8 !important; }
-    [style*="color:#94a3b8"],  [style*="color: #94a3b8"]  { color: #475569 !important; }
-    [style*="color:#ff6a00"],  [style*="color: #ff6a00"]  { color: #c2410c !important; }
-    """}
-</style>
-""", unsafe_allow_html=True)
+    css = Template(_css_template).substitute(
+        bg_main=bg_main, bg_sidebar=bg_sidebar, glass_bg=glass_bg, glass_border=glass_border,
+        metric_bg=metric_bg, metric_bdr=metric_bdr, tab_bg=tab_bg, tab_bdr=tab_bdr,
+        status_bg=status_bg, status_bdr=status_bdr, news_bg=news_bg, news_bdr=news_bdr,
+        social_bg=social_bg, social_bdr=social_bdr, sent_wrap_bg=sent_wrap_bg, sent_wrap_bdr=sent_wrap_bdr,
+        sent_track=sent_track, hr_color=hr_color, text_primary=text_primary, text_sec=text_sec,
+        text_muted=text_muted, text_dimmed=text_dimmed, text_status=text_status, metric_label=metric_label,
+        sidebar_input_bg=sidebar_input_bg, sidebar_input_bdr=sidebar_input_bdr, sidebar_input_clr=sidebar_input_clr,
+        textarea_bg=textarea_bg, sector_name_clr=sector_name_clr, sector_ticker_clr=sector_ticker_clr,
+        social_selftext_bdr=social_selftext_bdr, social_selftext_clr=social_selftext_clr,
+        mesh_bg_layers=mesh_bg_layers, mesh_bg_comma=mesh_bg_comma, mesh_bg_size=mesh_bg_size,
+        mesh_bg_anim=mesh_bg_anim, mesh_keyframes_css=mesh_keyframes_css, particle_overlay_css=particle_overlay_css,
+        light_mode_overrides=light_mode_overrides,
+    )
+    st.markdown(f"\n{css}\n", unsafe_allow_html=True)
 
 inject_css(st.session_state.get("dark_mode", False))
 
@@ -2205,6 +1639,34 @@ desktop_mode = st.sidebar.checkbox(
     value=False,
     help="체크 해제 시 폰에 최적화된 탭(Tab) 방식으로 표시됩니다."
 )
+
+# ════════════════════════════════════════════════════════════════
+# #개선 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
+# 기존엔 calc_supply_zones()의 n_bins/lookback_days/heavy_mult가
+# 코드에 고정값으로 박혀 있어 종목별 민감도 조절이 불가능했음.
+# 슬라이더로 노출해 급등주(변동성 큼)와 대형주(변동성 작음)에
+# 서로 다른 민감도를 적용해볼 수 있도록 함.
+# ════════════════════════════════════════════════════════════════
+st.sidebar.markdown("---")
+with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
+    supply_lookback_days = st.slider(
+        "분석 기간 (거래일)", min_value=60, max_value=504, value=252, step=6,
+        help="최근 몇 거래일의 거래량을 매물대 계산에 반영할지 설정합니다. "
+             "값이 클수록 장기 매물대까지 포착하지만 최근 흐름 반영은 약해집니다."
+    )
+    supply_n_bins = st.slider(
+        "가격 구간 개수 (Bin)", min_value=15, max_value=80, value=40, step=5,
+        help="가격 범위를 몇 개 구간으로 나눌지 설정합니다. 값이 클수록 "
+             "매물대가 더 촘촘하게(좁은 가격대로) 표시됩니다."
+    )
+    supply_heavy_mult = st.slider(
+        "매물대 판정 민감도 (평균 대비 배수)", min_value=1.0, max_value=2.5, value=1.3, step=0.1,
+        help="평균 거래량 대비 몇 배 이상 몰려 있어야 매물대로 판정할지 설정합니다. "
+             "값이 작을수록 더 많은 구간이 매물대로 잡힙니다."
+    )
+    supply_max_zones = st.slider(
+        "표시할 매물대 개수", min_value=2, max_value=8, value=4, step=1,
+    )
 
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
@@ -2455,7 +1917,13 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             """, unsafe_allow_html=True)
 
     # ── 🧱 악성매물대 분석 ───────────────────────────────────────
-    supply_data = calc_supply_zones(hist, float(today['Close']))
+    supply_data = calc_supply_zones(
+        hist, float(today['Close']),
+        n_bins=supply_n_bins,
+        lookback_days=supply_lookback_days,
+        heavy_mult=supply_heavy_mult,
+        max_zones=supply_max_zones,
+    )
     render_supply_zones(float(today['Close']), supply_data)
 
     # ── 🚀 100%+ 급등 이력 ───────────────────────────────────────
