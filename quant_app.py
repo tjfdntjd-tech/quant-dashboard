@@ -167,6 +167,8 @@ _ICON_SVG = {
     "fire": '<path d="M12 2s-1 3-1 5c0 1 .5 1.8 1 2.5.7-1 1-2 1-3 2 1.5 4 4 4 7.5A5 5 0 0 1 12 19a5 5 0 0 1-5-5c0-3 2-4.5 3-6.5.3 1 1 1.8 1 3 .5-.7 1-2 1-3.5A7 7 0 0 0 12 2z"/>',
     # 막대 차트 — 기술 분석
     "chart": '<line x1="4" y1="20" x2="20" y2="20"/><rect x="6" y="12" width="3" height="8"/><rect x="11" y="7" width="3" height="13"/><rect x="16" y="15" width="3" height="5"/>',
+    # 카메라 — AI 차트 해석(이미지 업로드)
+    "camera": '<path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>',
 }
 
 def mono_icon_badge(icon_key: str, color: str = "#111827", size: int = 32,
@@ -728,6 +730,7 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ════════════════════════════════════════════════════════════════
 # 🧱 악성매물대(거래량 프로파일 기반 저항 구간) 분석
 # ════════════════════════════════════════════════════════════════
+@st.cache_data(ttl=300, show_spinner=False)
 def calc_supply_zones(hist: pd.DataFrame, current_price: float,
                        n_bins: int = 40, lookback_days: int = 252,
                        heavy_mult: float = 1.3, max_zones: int = 4) -> dict:
@@ -736,6 +739,10 @@ def calc_supply_zones(hist: pd.DataFrame, current_price: float,
     균등 분산시켜 '거래량 프로파일(Volume Profile)'을 만든 뒤, 현재가보다 위쪽에서
     평균 대비 거래량이 몰려있는 가격대(=매물대, 이전 매수자들의 평단가 밀집구간)를
     현재가에 가까운 순으로 추출한다.
+
+    #개선 render_technical_analysis()와 render_chart_interpretation()이
+    동일한 (hist, current_price, 파라미터) 조합으로 매번 이 함수를 중복 호출하고
+    있었음 → st.cache_data로 캐싱해 같은 화면 렌더링 내 중복 계산을 제거.
     """
     df = hist.tail(lookback_days).dropna(subset=["High", "Low", "Volume"])
     if df.empty or len(df) < 10 or current_price <= 0:
@@ -825,7 +832,7 @@ def calc_supply_zones(hist: pd.DataFrame, current_price: float,
 
 
 def render_supply_zones(current_price: float, supply_data: dict):
-    """현재가 위쪽 악성매물대(저항 구간) — 4개 항목만 표시"""
+    """현재가 위쪽 악성매물대(저항 구간) — 카드 그리드로 표시 (최대 4개)"""
     ui_section_header(mono_icon_badge("wall", color="var(--c-rose)"), "악성매물대 분석 (돌파 저항선)", "icon-rose", "title-rose")
 
     zones = supply_data.get("zones", [])
@@ -840,30 +847,29 @@ def render_supply_zones(current_price: float, supply_data: dict):
         """, unsafe_allow_html=True)
         return
 
-    strength_dot = {"매우 강함": "dot-red", "강함": "dot-yellow", "보통": "dot-blue"}
+    # 강도별 카드 색상/딜타 색상 매핑 — 강할수록 경고성이 짙은 톤(rose)을 사용
+    strength_style = {
+        "매우 강함": ("mc-rose",  "delta-down"),
+        "강함":     ("mc-amber", "delta-neu"),
+        "보통":     ("mc-cyan",  "delta-up"),
+    }
 
-    rows_html = ""
-    for z in zones:
-        dot = strength_dot.get(z["strength"], "dot-blue")
-        rows_html += f"""
-        <div class="status-item">
-            <div class="status-dot {dot}"></div>
-            <div class="status-text">
-                ${z['low']:.2f} ~ ${z['high']:.2f} &nbsp;|&nbsp;
-                {z['volume']:,.0f}주 &nbsp;|&nbsp;
-                {z['strength']} &nbsp;|&nbsp;
-                +{z['gap_pct']:.1f}%
-            </div>
-        </div>
-        """
+    # #버그수정 여러 줄(들여쓰기 포함) f-string으로 카드를 만들면 metric-grid에
+    # 끼워 넣을 때 빈 줄이 생겨 마크다운이 HTML 블록을 코드블록으로 오인식하는
+    # 문제가 있었음(종합점수 카드에서 동일 이슈 발견/수정). 한 줄짜리 HTML로
+    # 만들어 그 여지를 원천적으로 없앰.
+    cards_html = ""
+    for i, z in enumerate(zones, start=1):
+        mc_cls, delta_cls = strength_style.get(z["strength"], ("mc-cyan", "delta-neu"))
+        cards_html += (
+            f'<div class="metric-card {mc_cls}">'
+            f'<div class="metric-label">저항 구간 {i} &nbsp;·&nbsp; 현재가 대비 +{z["gap_pct"]:.1f}%</div>'
+            f'<div class="metric-value" style="font-size:1.05rem;">${z["low"]:.2f} ~ ${z["high"]:.2f}</div>'
+            f'<div class="metric-delta {delta_cls}">{z["strength"]} &nbsp;|&nbsp; 거래량 {z["volume"]:,.0f}주</div>'
+            f'</div>'
+        )
 
-    st.markdown(f"""
-    <div class="glass-card">
-        <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
-            {rows_html}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-grid">{cards_html}</div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════
 # 급등주 검색기 / 즐겨찾기 스캔 공용 — 종합 점수(스코어 랭킹) 계산
@@ -1260,6 +1266,241 @@ def render_social_section(ticker_input: str):
 
 
 # ════════════════════════════════════════════════════════════════
+# #신규 AI 차트 해석 — 당일 3분봉 자동 분석 (진입 여부 / 저항선 돌파 가능성)
+# ════════════════════════════════════════════════════════════════
+CHART_ANALYSIS_MODEL = "gemini-2.5-flash"
+
+CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는 숙련된 기술적 분석가입니다.
+사용자가 제공하는 '당일 3분봉 데이터'와 '악성매물대(저항 구간) 분석 결과'를 근거로
+한국어로 짧고 명료하게 답변하세요.
+
+#개선 기존 5개 항목(흐름 요약/모멘텀/진입 판단/저항 돌파 가능성/리스크)을
+읽는 데 오래 걸린다는 피드백을 반영해 3개 소제목으로 통합하고,
+항목별 분량 상한(글머리 기호 1~2줄)을 명시함.
+
+아래 3개 소제목만 이모지와 함께 사용하고, 각 항목은 글머리 기호 1~2줄로 핵심만 쓰세요.
+전체 답변은 200자를 넘기지 마세요.
+
+1. 📊 현재 상황 — 시가 대비 등락률, 추세 방향, 저항 구간 돌파 가능성을 한 줄로
+2. 🎯 진입 판단 — 매수 / 관망 중 하나를 고르고 핵심 근거 1가지만
+3. ⚠️ 리스크 — 가장 중요한 리스크 요인 1가지만
+
+숫자는 주어진 데이터 범위 안에서만 근거로 사용하고, 데이터에 없는 값은 추측하지 마세요.
+마지막 줄에 반드시 "이 분석은 참고용이며 투자 조언이 아닙니다."
+라는 문구만 짧게 포함하세요."""
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_intraday_3min(ticker: str) -> pd.DataFrame:
+    """당일 1분봉을 받아 3분봉으로 리샘플링합니다. (장중에만 데이터가 채워짐)"""
+    try:
+        raw = yf.Ticker(ticker).history(period="1d", interval="1m")
+    except Exception:
+        return pd.DataFrame()
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+
+    # #버그수정 거래가 뜸한 종목은 period="1d" 요청에도 며칠치 데이터가 섞여
+    # 반환되는 경우가 있어(휴장 중 조회 등) 3분봉이 하루가 아니라 여러 날짜에
+    # 걸쳐 듬성듬성 찍히면서 차트 x축이 비정상적으로 늘어지는 문제가 있었음.
+    # → 가장 최근 거래일 데이터만 남기고 나머지는 버린다.
+    raw.index = pd.to_datetime(raw.index)
+    latest_date = raw.index.date.max()
+    raw = raw[raw.index.date == latest_date]
+    if raw.empty:
+        return pd.DataFrame()
+
+    ohlc = raw.resample("3min").agg({
+        "Open": "first", "High": "max", "Low": "min",
+        "Close": "last", "Volume": "sum",
+    }).dropna(subset=["Open"])
+    return ohlc
+
+
+def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data: dict,
+                                 extra_question: str = "") -> str:
+    """3분봉 요약 통계 + 최근 캔들 목록 + 저항 구간 정보를 텍스트 프롬프트로 조립."""
+    c = candles.copy()
+    c = calc_indicators(c)  # RSI/MA 등 재사용 (3분봉 기준으로 계산됨)
+
+    day_open   = float(c["Open"].iloc[0])
+    day_high   = float(c["High"].max())
+    day_low    = float(c["Low"].min())
+    last_close = float(c["Close"].iloc[-1])
+    total_vol  = float(c["Volume"].sum())
+    typical    = (c["High"] + c["Low"] + c["Close"]) / 3
+    vwap       = float((typical * c["Volume"]).sum() / total_vol) if total_vol > 0 else last_close
+    pct_open   = (last_close - day_open) / day_open * 100 if day_open else 0.0
+    last_rsi   = c["RSI"].iloc[-1]
+    last_rsi_s = f"{last_rsi:.1f}" if pd.notna(last_rsi) else "N/A"
+
+    recent = c.tail(5)
+    up_count = int((recent["Close"] > recent["Open"]).sum())
+
+    lines = [f"[{ts.strftime('%H:%M')}] O:{row.Open:.2f} H:{row.High:.2f} L:{row.Low:.2f} C:{row.Close:.2f} V:{int(row.Volume):,}"
+              for ts, row in c.tail(20).iterrows()]
+    candle_block = "\n".join(lines)
+
+    zones = supply_data.get("zones", []) if supply_data else []
+    if zones:
+        nearest = zones[0]
+        resistance_block = (
+            f"가장 가까운 저항 구간: ${nearest['low']:.2f} ~ ${nearest['high']:.2f} "
+            f"(현재가 대비 +{nearest['gap_pct']:.1f}%, 강도: {nearest['strength']})\n"
+            f"전체 저항 구간 수: {len(zones)}개"
+        )
+    else:
+        resistance_block = "감지된 저항 구간 없음 (또는 데이터 부족)"
+
+    prompt = f"""티커: {ticker}
+당일 시가: ${day_open:.2f} / 당일 고가: ${day_high:.2f} / 당일 저가: ${day_low:.2f}
+현재가(최근 3분봉 종가): ${last_close:.2f} (시가 대비 {pct_open:+.2f}%)
+VWAP(거래량가중평균가): ${vwap:.2f}
+누적 거래량: {int(total_vol):,}주
+3분봉 RSI(14): {last_rsi_s}
+최근 5개 3분봉 중 양봉 개수: {up_count}/5
+
+[악성매물대(저항 구간) 분석 결과]
+{resistance_block}
+
+[최근 3분봉 목록 (오래된 순)]
+{candle_block}
+"""
+    if extra_question and extra_question.strip():
+        prompt += f"\n[추가 질문]\n{extra_question.strip()}\n"
+    return prompt
+
+
+def analyze_price_action(prompt_text: str, api_key: str) -> str:
+    """조립된 텍스트 프롬프트를 Google Gemini API에 전달해 해석 텍스트를 받아온다."""
+    payload = {
+        "system_instruction": {"parts": [{"text": CHART_ANALYSIS_SYSTEM_PROMPT}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
+        "generationConfig": {
+            # #버그수정 gemini-2.5-flash는 답변 생성 전 내부 "thinking" 토큰을
+            # maxOutputTokens 예산에서 함께 소모함. 예산이 작으면 thinking에
+            # 다 쓰고 실제 답변 텍스트는 인사말만 남긴 채 잘려버리는 문제가
+            # 있었음 → thinkingBudget=0으로 비활성화하고 예산도 넉넉히 늘림.
+            "maxOutputTokens": 3000,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{CHART_ANALYSIS_MODEL}:generateContent?key={api_key}"
+    )
+    resp = requests.post(url, json=payload, timeout=60)
+    if resp.status_code != 200:
+        try:
+            err_msg = resp.json().get("error", {}).get("message", resp.text)
+        except Exception:
+            err_msg = resp.text
+        raise RuntimeError(f"API 오류 ({resp.status_code}): {err_msg}")
+
+    data = resp.json()
+    candidates = data.get("candidates", [])
+    if not candidates:
+        block_reason = data.get("promptFeedback", {}).get("blockReason", "")
+        if block_reason:
+            raise RuntimeError(f"모델이 응답을 거부했습니다 (사유: {block_reason})")
+        raise RuntimeError("모델로부터 응답을 받지 못했습니다.")
+
+    cand = candidates[0]
+    parts = cand.get("content", {}).get("parts", [])
+    texts = [p.get("text", "") for p in parts if "text" in p]
+    result = "\n".join(texts).strip()
+
+    finish_reason = cand.get("finishReason", "")
+    if finish_reason == "MAX_TOKENS" and len(result) < 100:
+        raise RuntimeError(
+            "응답이 토큰 한도 내에서 완성되지 못했습니다. 다시 시도해보시거나, "
+            "그래도 반복되면 maxOutputTokens 값을 더 늘려주세요."
+        )
+    return result
+
+
+def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_price: float):
+    """AI 차트 해석 탭 — 당일 3분봉을 자동으로 받아 진입 여부·저항선 돌파 가능성을 분석."""
+    ui_section_header(mono_icon_badge("camera", color="var(--c-cyan)"), "AI 차트 해석 (당일 3분봉 기준)")
+
+    api_key = st.session_state.get("gemini_api_key", "")
+    if not api_key:
+        st.markdown(
+            '''<div class="glass-card"><div class="status-row"><div class="status-item">
+                <div class="status-dot dot-yellow"></div>
+                <div class="status-text">AI 차트 해석을 사용하려면 사이드바 하단 "🤖 AI 차트 해석 설정"에서
+                Google AI(Gemini) API 키를 먼저 입력해주세요. (aistudio.google.com/apikey 에서 무료 발급)</div>
+            </div></div></div>''',
+            unsafe_allow_html=True,
+        )
+        return
+
+    with st.spinner("당일 3분봉 데이터를 불러오는 중..."):
+        candles = fetch_intraday_3min(ticker)
+
+    if candles.empty or len(candles) < 3:
+        st.markdown(
+            '''<div class="glass-card"><div class="status-row"><div class="status-item">
+                <div class="status-dot dot-blue"></div>
+                <div class="status-text">당일 장중(3분봉) 데이터를 가져올 수 없습니다.
+                장 마감/휴장 중이거나 데이터 제공이 제한된 종목일 수 있습니다.</div>
+            </div></div></div>''',
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.line_chart(candles["Close"], height=180, use_container_width=True)
+
+    # 좌측 컬럼에서 이미 계산된 악성매물대와 동일 기준·파라미터로 저항 구간을 다시 산출
+    supply_data = calc_supply_zones(
+        hist_daily, current_price,
+        n_bins=supply_n_bins, lookback_days=supply_lookback_days,
+        heavy_mult=supply_heavy_mult, max_zones=supply_max_zones,
+    )
+
+    extra_question = st.text_input(
+        "추가로 궁금한 점이 있다면 적어주세요 (선택)",
+        key="chart_ai_question",
+        placeholder="예: 손절선은 어디로 잡는 게 좋을까?",
+    )
+
+    last_ts = candles.index[-1]
+    cache_key = (ticker, str(last_ts), extra_question)
+
+    run_clicked = st.button("🔍 지금 진입 여부 분석하기", use_container_width=True, key="chart_analysis_run_btn")
+
+    if run_clicked or st.session_state.get("chart_analysis_cache_key") != cache_key:
+        if run_clicked:
+            with st.spinner("Gemini가 당일 흐름과 저항 구간을 분석하는 중..."):
+                try:
+                    prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question)
+                    result_text = analyze_price_action(prompt_text, api_key)
+                    st.session_state["chart_analysis_result"] = result_text
+                    st.session_state["chart_analysis_error"] = None
+                    st.session_state["chart_analysis_cache_key"] = cache_key
+                except Exception as e:
+                    st.session_state["chart_analysis_result"] = None
+                    st.session_state["chart_analysis_error"] = str(e)
+                    st.session_state["chart_analysis_cache_key"] = cache_key
+
+    error_msg = st.session_state.get("chart_analysis_error")
+    if error_msg and st.session_state.get("chart_analysis_cache_key") == cache_key:
+        st.markdown(
+            f'''<div class="glass-card"><div class="status-row"><div class="status-item">
+                <div class="status-dot dot-red"></div>
+                <div class="status-text">분석 중 오류가 발생했습니다: {error_msg}</div>
+            </div></div></div>''',
+            unsafe_allow_html=True,
+        )
+    elif st.session_state.get("chart_analysis_result") and st.session_state.get("chart_analysis_cache_key") == cache_key:
+        st.markdown('<div class="glass-card">', unsafe_allow_html=True)
+        st.markdown(st.session_state["chart_analysis_result"])
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.caption("버튼을 누르면 최신 3분봉 데이터를 기준으로 분석합니다.")
+
+
+# ════════════════════════════════════════════════════════════════
 # CSS — 다크/라이트 모드 동적 주입
 # ════════════════════════════════════════════════════════════════
 def inject_css(dark: bool = True):
@@ -1409,7 +1650,44 @@ def inject_css(dark: bool = True):
         mesh_bg_anim=mesh_bg_anim, mesh_keyframes_css=mesh_keyframes_css, particle_overlay_css=particle_overlay_css,
         light_mode_overrides=light_mode_overrides,
     )
-    st.markdown(f"\n{css}\n", unsafe_allow_html=True)
+    # #개선 세로가 좁은 직사각형 카드 + 10개 카드를 한 섹션처럼 보이게 함.
+    # metric-grid / metric-card의 기본 레이아웃은 styles/theme.css.tpl에 정의돼
+    # 있어 여기서 직접 수정할 수 없으므로, 로드된 CSS 뒤에 더 높은 우선순위의
+    # 오버라이드를 추가하는 방식으로 처리함(!important).
+    # - 정사각형(aspect-ratio:1/1) 대신 세로가 짧은 2열 직사각형 카드로 복귀.
+    # - 카드 내부는 기존처럼 좌측 정렬(라벨/값/델타 세로 배치).
+    # - 상단 요약 5장 + 기술분석 5장이 이제 render_technical_analysis()에서
+    #   하나의 metric-grid로 합쳐져 렌더링되므로, 별도 그리드 간 여백(margin-top:
+    #   -0.25rem 등)에 의존하지 않고 gap만으로 균일한 간격을 유지한다.
+    narrow_metric_cards_css = """
+    .metric-grid {
+        grid-template-columns: repeat(2, 1fr) !important;
+        gap: 0.5rem !important;
+    }
+    .metric-card {
+        aspect-ratio: auto !important;
+        min-height: 0 !important;
+        padding: 0.55rem 0.75rem !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        text-align: left !important;
+    }
+    .metric-card .metric-label {
+        font-size: 0.68rem !important;
+        margin-bottom: 0.15rem !important;
+    }
+    .metric-card .metric-value {
+        font-size: 1.05rem !important;
+        line-height: 1.15 !important;
+    }
+    .metric-card .metric-delta {
+        font-size: 0.65rem !important;
+        margin-top: 0.15rem !important;
+    }
+    """
+
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}</style>\n", unsafe_allow_html=True)
 
 inject_css(st.session_state.get("dark_mode", False))
 
@@ -1641,6 +1919,34 @@ desktop_mode = st.sidebar.checkbox(
 )
 
 # ════════════════════════════════════════════════════════════════
+# #신규 AI 차트 해석 — Claude Vision API 키 설정
+# 캡처한 차트 이미지를 업로드하면 Claude가 추세/지지·저항/패턴을
+# 해석해주는 기능. Anthropic API 키가 필요하므로 사이드바에서
+# 안전하게(비밀번호 입력창) 받아 세션에만 보관한다.
+# ════════════════════════════════════════════════════════════════
+st.sidebar.markdown("---")
+with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
+    _secret_key = ""
+    try:
+        _secret_key = st.secrets.get("GEMINI_API_KEY", "")
+    except Exception:
+        _secret_key = ""
+    if _secret_key:
+        st.session_state["gemini_api_key"] = _secret_key
+        st.caption("✅ API 키가 앱 설정(secrets)에 등록되어 있습니다.")
+    else:
+        st.text_input(
+            "Google AI (Gemini) API 키",
+            type="password",
+            key="gemini_api_key",
+            help="aistudio.google.com/apikey 에서 무료로 발급받은 API 키를 입력하세요. "
+                 "입력한 키는 저장되지 않고 현재 세션에서만 사용됩니다.",
+            placeholder="AIza...",
+        )
+        st.caption("🔒 이 브라우저 세션에서만 사용되며 서버에 저장되지 않습니다. "
+                   "무료 티어(분당 요청 제한)로 충분히 사용 가능합니다.")
+
+# ════════════════════════════════════════════════════════════════
 # #개선 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
 # 기존엔 calc_supply_zones()의 n_bins/lookback_days/heavy_mult가
 # 코드에 고정값으로 박혀 있어 종목별 민감도 조절이 불가능했음.
@@ -1671,6 +1977,60 @@ with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
 # ════════════════════════════════════════════════════════════════
+def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, score=None) -> str:
+    """상단 주요 지표(현재가/RSI/거래량/낙폭/종합점수) 카드 5개의 HTML만 반환.
+    render_top_summary_metrics()의 모바일 카드 마크업을 함수로 분리해,
+    render_technical_analysis()의 기술적 지표 카드와 하나의 metric-grid로
+    합칠 수 있도록 함(#개선 "10개 카드를 한 섹션으로" 요청 반영)."""
+    price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
+    current_rsi = df_calculated['RSI'].iloc[-1]
+    rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
+    current_dd  = df_calculated['Drawdown'].iloc[-1]
+    score_label = None
+    if score is not None:
+        score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
+
+    pct_color = "delta-up" if price_chg >= 0 else "delta-down"
+    pct_arrow = "▲" if price_chg >= 0 else "▼"
+    rsi_color = "delta-down" if current_rsi >= 70 else ("delta-up" if current_rsi <= 30 else "delta-neu")
+    dd_color  = "delta-down" if current_dd < -20 else "delta-neu"
+
+    score_card_html = ""
+    if score is not None:
+        score_color = "delta-up" if score_label == "강세" else ("delta-neu" if score_label == "보통" else "delta-down")
+        # 한 줄짜리 HTML로 만들어 줄바꿈/들여쓰기로 인한 마크다운 오인식을 방지
+        score_card_html = (
+            f'<div class="metric-card mc-amber">'
+            f'<div class="metric-label">종합점수</div>'
+            f'<div class="metric-value">{score:.1f}점</div>'
+            f'<div class="metric-delta {score_color}">{score_label}</div>'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="metric-card mc-violet">'
+        f'<div class="metric-label">현재가</div>'
+        f'<div class="metric-value">${today_data["Close"]:.2f}</div>'
+        f'<div class="metric-delta {pct_color}">{pct_arrow} {abs(price_chg):.2f}%</div>'
+        f'</div>'
+        f'<div class="metric-card mc-cyan">'
+        f'<div class="metric-label">RSI (14)</div>'
+        f'<div class="metric-value">{current_rsi:.1f}</div>'
+        f'<div class="metric-delta {rsi_color}">{rsi_status}</div>'
+        f'</div>'
+        f'<div class="metric-card mc-rose">'
+        f'<div class="metric-label">당일 거래량</div>'
+        f'<div class="metric-value" style="font-size:1.15rem;">{int(today_data["Volume"]):,}주</div>'
+        f'</div>'
+        f'<div class="metric-card mc-cyan">'
+        f'<div class="metric-label">전고점 대비 낙폭</div>'
+        f'<div class="metric-value">{current_dd:.1f}%</div>'
+        f'<div class="metric-delta {dd_color}">{"MDD 관리 필요" if current_dd < -20 else "&nbsp;"}</div>'
+        f'</div>'
+        f'{score_card_html}'
+    )
+
+
 def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=None, desktop_mode=True):
     """상단 주요 지표 요약.
     score가 주어지면 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수를 함께 표시합니다.
@@ -1680,6 +2040,10 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=
     (한 줄에 1개씩) 지표 5개를 보려면 스크롤을 5번 해야 했음.
     → 모바일에서는 2열 카드 그리드(metric-grid, 기존 기술분석 카드와 동일 톤)로
     바꿔서 한 화면에 4~5개 지표가 한눈에 들어오도록 함. 데스크탑은 기존 그대로 유지.
+
+    #개선 모바일에서는 이 함수를 단독 호출하지 않고, build_top_summary_cards_html()로
+    카드 HTML만 얻어 render_technical_analysis()의 metric-grid에 합쳐서 렌더링한다
+    (10개 카드를 하나의 섹션으로 묶기 위함). 이 함수는 데스크탑 전용 경로로만 쓰인다.
     """
     price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
     current_rsi = df_calculated['RSI'].iloc[-1]
@@ -1705,48 +2069,11 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=
             m5.metric(label="종합점수", value=f"{score:.1f}점", delta=score_label,
                       delta_color="normal" if score_label != "약세" else "inverse",
                       help="등락률·거래량·거래대금·RSI를 종합한 참고 지표 (급등주 검색기·즐겨찾기 스캔과 동일 기준)")
+        st.divider()
     else:
-        pct_color = "delta-up" if price_chg >= 0 else "delta-down"
-        pct_arrow = "▲" if price_chg >= 0 else "▼"
-        rsi_color = "delta-down" if current_rsi >= 70 else ("delta-up" if current_rsi <= 30 else "delta-neu")
-        dd_color  = "delta-down" if current_dd < -20 else "delta-neu"
-
-        score_card_html = ""
-        if score is not None:
-            score_color = "delta-up" if score_label == "강세" else ("delta-neu" if score_label == "보통" else "delta-down")
-            score_card_html = f"""
-            <div class="metric-card mc-amber">
-                <div class="metric-label">종합점수</div>
-                <div class="metric-value">{score:.1f}점</div>
-                <div class="metric-delta {score_color}">{score_label}</div>
-            </div>"""
-
-        st.markdown(f"""
-        <div class="metric-grid">
-            <div class="metric-card mc-violet">
-                <div class="metric-label">현재가</div>
-                <div class="metric-value">${today_data['Close']:.2f}</div>
-                <div class="metric-delta {pct_color}">{pct_arrow} {abs(price_chg):.2f}%</div>
-            </div>
-            <div class="metric-card mc-cyan">
-                <div class="metric-label">RSI (14)</div>
-                <div class="metric-value">{current_rsi:.1f}</div>
-                <div class="metric-delta {rsi_color}">{rsi_status}</div>
-            </div>
-            <div class="metric-card mc-rose">
-                <div class="metric-label">당일 거래량</div>
-                <div class="metric-value" style="font-size:1.15rem;">{int(today_data['Volume']):,}주</div>
-            </div>
-            <div class="metric-card mc-cyan">
-                <div class="metric-label">전고점 대비 낙폭</div>
-                <div class="metric-value">{current_dd:.1f}%</div>
-                <div class="metric-delta {dd_color}">{"MDD 관리 필요" if current_dd < -20 else "&nbsp;"}</div>
-            </div>
-            {score_card_html}
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.divider()
+        # 모바일은 build_top_summary_cards_html()을 통해 render_technical_analysis()의
+        # metric-grid와 합쳐서 렌더링하므로 여기서는 아무것도 하지 않는다.
+        pass
 
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 기술적 분석
@@ -1754,16 +2081,22 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=
 def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                                vol_ma20_ratio, trading_value_krw_eok, threshold_eok,
                                high_52w, low_52w, spike_df=None, offering_list=None,
-                               nasdaq_compliance=None):
-    """기술적 조건 & 수급 점검 + 차트 (탭1 또는 좌측 컬럼)"""
+                               nasdaq_compliance=None, top_cards_html=""):
+    """기술적 조건 & 수급 점검 + 차트 (탭1 또는 좌측 컬럼)
+
+    top_cards_html이 주어지면(모바일) 상단 요약 카드 5개를 이 함수의
+    metric-grid와 합쳐 10개 카드를 하나의 섹션으로 렌더링하고,
+    중국계/급등신호 배너는 그 뒤로 미뤄서 카드 섹션이 끊기지 않게 한다.
+    """
 
     # ── 종목 정보 조회 (국적 판별 등에 사용) ─────────────────────
     info = fetch_ticker_info(ticker_input)
     country = str(info.get("country") or "").strip()
     is_china = country in {"China", "Hong Kong"}
 
+    china_banner_html = ""
     if is_china:
-        st.markdown(f"""
+        china_banner_html = f"""
         <div class="china-banner">
             <div class="china-banner-icon">🇨🇳⚠️</div>
             <div>
@@ -1771,7 +2104,12 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 <div class="china-banner-sub">본사 소재지: {country} — VIE 구조, 회계 투명성, 규제 리스크 등을 반드시 확인하세요</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
+
+    if not top_cards_html:
+        # 비병합(데스크탑) 경로 — 기존과 동일하게 카드 섹션 이전에 바로 렌더링
+        if china_banner_html:
+            st.markdown(china_banner_html, unsafe_allow_html=True)
 
     # ── 변수 계산 ────────────────────────────────────────────────
     pct_chg      = (today['Close'] - yesterday['Close']) / yesterday['Close'] * 100
@@ -1792,9 +2130,10 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     if pct_chg >= 5:             alert_signals.append(f"📈 당일 +{pct_chg:.1f}%")
     if gap_up_pct >= 5:          alert_signals.append(f"⬆️ 갭업 시초가 +{gap_up_pct:.1f}%")
 
+    alert_banner_html = ""
     if alert_signals:
         chips = "".join([f'<span class="signal-chip">{s}</span>' for s in alert_signals])
-        st.markdown(f"""
+        alert_banner_html = f"""
         <div class="alert-banner">
             <div class="alert-icon">🔔</div>
             <div>
@@ -1802,18 +2141,15 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 <div class="alert-signals">{chips}</div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
 
-    # ── 메트릭 카드 2x2 ─────────────────────────────────────────
-    pct_color = "delta-up" if pct_chg >= 0 else "delta-down"
-    pct_arrow = "▲" if pct_chg >= 0 else "▼"
+    if not top_cards_html and alert_banner_html:
+        st.markdown(alert_banner_html, unsafe_allow_html=True)
 
+    # ── 메트릭 카드 (#개선 상단 요약 스코어보드와 겹치던 현재가/RSI(14) 카드 제거) ──
     # #7 52주 최저가 추가
     gap_52w_high = ((high_52w - today['Close']) / high_52w) * 100
     gap_52w_low  = ((today['Close'] - low_52w) / low_52w) * 100
-
-    rsi_label = "과매수 ⚠️" if rsi_val >= 70 else ("과매도 💡" if rsi_val <= 30 else "중립 ✓")
-    rsi_color = "delta-down" if rsi_val >= 70 else ("delta-up" if rsi_val <= 30 else "delta-neu")
 
     # ── 시가총액 & 유통주식수 조회 ───────────────────────────────
     MC_LOW  = 4_000_000     # $4M
@@ -1851,16 +2187,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 
     st.markdown(f"""
     <div class="metric-grid">
-        <div class="metric-card mc-amber">
-            <div class="metric-label">현재가</div>
-            <div class="metric-value">${today['Close']:.2f}</div>
-            <div class="metric-delta {pct_color}">{pct_arrow} {abs(pct_chg):.2f}%</div>
-        </div>
-        <div class="metric-card mc-violet">
-            <div class="metric-label">RSI (14)</div>
-            <div class="metric-value">{rsi_val:.1f}</div>
-            <div class="metric-delta {rsi_color}">{rsi_label}</div>
-        </div>
+        {top_cards_html}
         <div class="metric-card mc-rose">
             <div class="metric-label">52주 최고가</div>
             <div class="metric-value">${high_52w:.2f}</div>
@@ -1871,8 +2198,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             <div class="metric-value">${low_52w:.2f}</div>
             <div class="metric-delta delta-up">↑ {gap_52w_low:.1f}% 상단</div>
         </div>
-    </div>
-    <div class="metric-grid" style="margin-top:-0.25rem;">
         <div class="metric-card mc-indigo">
             <div class="metric-label">시가총액</div>
             <div class="metric-value" style="font-size:1.2rem;">{market_cap_str}{mc_star_html}</div>
@@ -1885,8 +2210,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 {"🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}
             </div>
         </div>
-    </div>
-    <div class="metric-grid" style="margin-top:-0.25rem;">
         <div class="metric-card mc-rose" style="grid-column: span 2;">
             <div class="metric-label">유통주식수 (Float Shares)</div>
             <div class="metric-value" style="font-size:1.2rem;">{shares_str}{shares_star_html}</div>
@@ -1894,6 +2217,14 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # top_cards_html이 있는 경로(모바일)에서는 중국계/급등신호 배너를
+    # 10개 카드 섹션 뒤로 미뤄 카드 섹션이 끊기지 않게 한다.
+    if top_cards_html:
+        if china_banner_html:
+            st.markdown(china_banner_html, unsafe_allow_html=True)
+        if alert_banner_html:
+            st.markdown(alert_banner_html, unsafe_allow_html=True)
 
     # ── ⚠️ 나스닥 $1 최소 호가 규정 준수 체크 ───────────────────────
     if nasdaq_compliance and nasdaq_compliance.get("applicable"):
@@ -2607,7 +2938,7 @@ if st.session_state.get("has_searched"):
                     # 렌더링(=API 호출)하도록 바꿔 불필요한 네트워크 호출을 없앰.
                     desktop_view = st.segmented_control(
                         "정보 보기",
-                        ["📰 뉴스 & 호재", "💬 소셜 미디어"],
+                        ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
                         default="📰 뉴스 & 호재",
                         required=True,
                         key="desktop_info_view",
@@ -2615,8 +2946,10 @@ if st.session_state.get("has_searched"):
                     )
                     if desktop_view == "📰 뉴스 & 호재":
                         render_news_section(active_ticker)
-                    else:
+                    elif desktop_view == "💬 소셜 미디어":
                         render_social_section(active_ticker)
+                    else:
+                        render_chart_interpretation(active_ticker, hist, float(today['Close']))
             else:
                 # #개선 모바일 레이아웃 — "더 많은 정보를 한눈에" 요청 반영:
                 # 기존엔 기술 분석/뉴스/소셜을 3분할 세그먼트로 나눠 매번 탭을
@@ -2626,17 +2959,23 @@ if st.session_state.get("has_searched"):
                 # 추가 API 호출 없이 항상 펼쳐 보여줄 수 있음.
                 # → 기술 분석은 항상 표시하고, 네트워크 호출이 있는 뉴스/소셜만
                 # 2지선다 세그먼트로 전환(터치 1회로 부담 없이 전환).
+                # #개선 "10개 카드를 한 섹션으로" 요청 반영: 상단 요약 카드 5개를
+                # build_top_summary_cards_html()로 뽑아 기술분석 카드 5개와 합쳐
+                # 하나의 metric-grid로 렌더링한다(render_top_summary_metrics는
+                # 모바일에서 아무것도 렌더링하지 않도록 위에서 이미 no-op 처리됨).
+                top_cards_html = build_top_summary_cards_html(today, yesterday, hist, score=ticker_score)
                 render_technical_analysis(
                     active_ticker, hist, today, yesterday,
                     vol_ratio, vol_ma20_ratio,
                     trading_value_krw_eok, TRADING_THRESHOLD,
                     high_52w, low_52w,
-                    spike_df, offering_list, nasdaq_compliance
+                    spike_df, offering_list, nasdaq_compliance,
+                    top_cards_html=top_cards_html,
                 )
                 st.markdown("---")
                 mobile_view = st.segmented_control(
                     "정보 보기",
-                    ["📰 뉴스 & 호재", "💬 소셜 미디어"],
+                    ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
                     default="📰 뉴스 & 호재",
                     required=True,
                     key="mobile_info_view",
@@ -2644,5 +2983,7 @@ if st.session_state.get("has_searched"):
                 )
                 if mobile_view == "📰 뉴스 & 호재":
                     render_news_section(active_ticker)
-                else:
+                elif mobile_view == "💬 소셜 미디어":
                     render_social_section(active_ticker)
+                else:
+                    render_chart_interpretation(active_ticker, hist, float(today['Close']))
