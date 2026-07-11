@@ -480,7 +480,7 @@
         font-weight: 700 !important;
     }
 
-    /* ── 세그먼트 컨트롤 (뉴스/소셜/기술분석 전환 — 탭과 동일한 필터 칩 스타일) ── */
+    /* ── 세그먼트 컨트롤 (뉴스/소셜/기술분석 전환 — 항상 연한 분홍, 선택 시 진한 분홍) ── */
     [data-testid="stSegmentedControl"] {
         background: ${tab_bg} !important;
         border-radius: 999px !important;
@@ -488,6 +488,48 @@
         gap: 0.3rem !important;
         border: 1px solid ${tab_bdr} !important;
     }
+    /* 미선택 세그먼트 버튼 (실제 Streamlit DOM: stBaseButton-segmented_control) */
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"] {
+        border-radius: 999px !important;
+        font-weight: 600 !important;
+        font-size: 0.88rem !important;
+        color: var(--c-rose) !important;
+        background: var(--c-rose-a16) !important;
+        background-color: var(--c-rose-a16) !important;
+        border: 1px solid var(--c-rose-a32) !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"] *,
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"] p,
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"] [data-testid="stMarkdownContainer"],
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"] [data-testid="stMarkdownContainer"] * {
+        color: var(--c-rose) !important;
+        fill: var(--c-rose) !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"]:hover {
+        background: var(--c-rose-a32) !important;
+        background-color: var(--c-rose-a32) !important;
+        border: 1px solid var(--c-rose) !important;
+    }
+    /* 선택된 세그먼트 버튼 (실제 Streamlit DOM: stBaseButton-segmented_controlActive) */
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"] {
+        border-radius: 999px !important;
+        font-weight: 700 !important;
+        font-size: 0.88rem !important;
+        background: var(--c-rose) !important;
+        background-color: var(--c-rose) !important;
+        color: #fff !important;
+        border: 1px solid var(--c-rose) !important;
+    }
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"] *,
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"] p,
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"] [data-testid="stMarkdownContainer"],
+    [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"] [data-testid="stMarkdownContainer"] * {
+        color: #fff !important;
+        fill: #fff !important;
+    }
+    /* 구버전 Streamlit 호환용 폴백 선택자 (label/button/aria-checked 기반) */
     [data-testid="stSegmentedControl"] label,
     [data-testid="stSegmentedControl"] button,
     [data-testid="stSegmentedControl"] div[role="radiogroup"] label,
@@ -495,9 +537,10 @@
         border-radius: 999px !important;
         font-weight: 600 !important;
         font-size: 0.88rem !important;
-        color: ${text_sec} !important;
-        background: transparent !important;
-        background-color: transparent !important;
+        color: var(--c-rose) !important;
+        background: var(--c-rose-a16) !important;
+        background-color: var(--c-rose-a16) !important;
+        border: 1px solid var(--c-rose-a32) !important;
         opacity: 1 !important;
     }
     [data-testid="stSegmentedControl"] label *,
@@ -506,24 +549,24 @@
     [data-testid="stSegmentedControl"] button p,
     [data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"],
     [data-testid="stSegmentedControl"] [data-testid="stMarkdownContainer"] * {
-        color: ${text_sec} !important;
-        fill: ${text_sec} !important;
+        color: var(--c-rose) !important;
+        fill: var(--c-rose) !important;
         opacity: 1 !important;
     }
     [data-testid="stSegmentedControl"] [aria-checked="true"],
     [data-testid="stSegmentedControl"] [aria-selected="true"] {
-        background: var(--c-accent) !important;
-        background-color: var(--c-accent) !important;
-        color: var(--c-accent-ink) !important;
-        border: 1px solid var(--c-accent) !important;
+        background: var(--c-rose) !important;
+        background-color: var(--c-rose) !important;
+        color: #fff !important;
+        border: 1px solid var(--c-rose) !important;
         font-weight: 700 !important;
     }
     [data-testid="stSegmentedControl"] [aria-checked="true"] *,
     [data-testid="stSegmentedControl"] [aria-selected="true"] *,
     [data-testid="stSegmentedControl"] [aria-checked="true"] p,
     [data-testid="stSegmentedControl"] [aria-selected="true"] p {
-        color: var(--c-accent-ink) !important;
-        fill: var(--c-accent-ink) !important;
+        color: #fff !important;
+        fill: #fff !important;
     }
 
     /* ── 즐겨찾기 리스트: 티커 칩 (은은한 카드, 좌측 정렬) ───────────── */
@@ -646,6 +689,8 @@
         .metric-delta { font-size: 0.68rem; }
 
         /* 세그먼트 컨트롤(뷰 전환) 탭 영역 확대 — 엄지 터치 기준 최소 44px */
+        [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"],
+        [data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"],
         [data-testid="stSegmentedControl"] label,
         [data-testid="stSegmentedControl"] button,
         [data-testid="stSegmentedControl"] div[role="radiogroup"] label,
