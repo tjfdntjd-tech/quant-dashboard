@@ -256,7 +256,7 @@
     }
     .china-banner-icon { font-size: 1.3rem; line-height: 1; }
     .china-banner-text { font-size: 0.85rem; font-weight: 700; color: #fecaca; letter-spacing: 0.3px; }
-    .china-banner-sub { font-size: 0.72rem; font-weight: 500; color: rgba(254,202,202,0.75); margin-top: 0.15rem; }
+    .china-banner-sub { font-size: 0.72rem; font-weight: 500; color: #fecaca; margin-top: 0.15rem; }
     .split-banner {
         background: linear-gradient(135deg, rgba(245,158,11,0.22), rgba(245,158,11,0.08));
         border: 1.5px solid rgba(251,191,36,0.6);
@@ -658,7 +658,7 @@
     .sector-name { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: ${sector_name_clr}; margin-bottom: 0.3rem; }
     .sector-ticker { font-size: 0.62rem; color: ${sector_ticker_clr}; margin-bottom: 0.4rem; }
     .sector-pct { font-size: 1.25rem; font-weight: 800; line-height: 1; }
-    .sector-sub { font-size: 0.68rem; margin-top: 0.25rem; opacity: 0.7; }
+    .sector-sub { font-size: 0.68rem; margin-top: 0.25rem; opacity: 1; }
     .sector-legend { display: flex; gap: 1.2rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
     .legend-item { display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: ${text_muted}; }
     .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
