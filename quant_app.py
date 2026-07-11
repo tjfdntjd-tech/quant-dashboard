@@ -169,6 +169,8 @@ _ICON_SVG = {
     "chart": '<line x1="4" y1="20" x2="20" y2="20"/><rect x="6" y="12" width="3" height="8"/><rect x="11" y="7" width="3" height="13"/><rect x="16" y="15" width="3" height="5"/>',
     # 카메라 — AI 차트 해석(이미지 업로드)
     "camera": '<path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>',
+    # 과녁 — 악성매물대 돌파 가능성 점검(게이지)
+    "target": '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="4.6"/><circle cx="12" cy="12" r="1"/>',
 }
 
 def mono_icon_badge(icon_key: str, color: str = "#111827", size: int = 32,
@@ -317,7 +319,7 @@ _defaults = {
     "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
-    "dark_mode":        False,          # 다크/라이트 모드 토글 (기본값: 라이트 모드)
+    "dark_mode":        True,           # 다크/라이트 모드 토글 (기본값: 다크 모드)
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -871,6 +873,145 @@ def render_supply_zones(current_price: float, supply_data: dict):
 
     st.markdown(f'<div class="metric-grid">{cards_html}</div>', unsafe_allow_html=True)
 
+
+# ════════════════════════════════════════════════════════════════
+# 🎯 실시간 악성매물대 돌파 가능성 점검
+# ════════════════════════════════════════════════════════════════
+def calc_breakout_probability(current_price: float, supply_data: dict,
+                               rsi_val: float, vol_ma20_ratio: float,
+                               macd_val: float, macd_sig_val: float,
+                               macd_cross: bool) -> dict:
+    """가장 가까운 악성매물대(저항 구간)를 현재 수급/모멘텀 지표로 얼마나
+    돌파할 가능성이 있는지 0~100점 게이지로 환산한다.
+
+    절대적인 매매 신호가 아니라 "저항까지 얼마나 가깝고, 그 저항이 얼마나
+    두꺼우며, 지금 그걸 밀어붙일 힘(거래량·모멘텀)이 있는가"를 종합한
+    참고용 점수이며, 4개 구성요소로 나눠 근거를 함께 보여준다.
+      · 근접도(0~30) : 저항 하단까지 남은 거리가 가까울수록 高
+      · 매물벽 두께(0~25, 역가중) : 매물대가 평균 대비 얼마나 두꺼운지 — 두꺼울수록 低
+      · 수급 압력(0~30) : 거래량 MA20 대비 비율 + RSI 모멘텀 구간
+      · MACD 흐름(0~15) : 골든크로스=만점, 상승 배열=절반, 그 외=0
+    """
+    zones = supply_data.get("zones", []) if supply_data else []
+    if not zones or current_price <= 0:
+        return {"has_zone": False}
+
+    zone = zones[0]  # mid 기준 오름차순 정렬이므로 첫 번째가 현재가와 가장 가까운 저항
+    gap_low_pct = (zone["low"] - current_price) / current_price * 100
+    gap_low_pct = max(gap_low_pct, 0.0)  # 이미 저항 구간 내부/돌파 중이면 근접도 만점 처리
+
+    # 1) 근접도 — 0%면 만점, 15% 이상 벌어지면 0점
+    proximity_score = max(0.0, 30.0 * (1 - gap_low_pct / 15.0))
+
+    # 2) 매물벽 두께 — ratio(평균 거래량 대비 배수) 1.0=만점, 3.0 이상=0점
+    ratio = zone.get("ratio", 1.3)
+    strength_score = max(0.0, 25.0 * (1 - (ratio - 1.0) / 2.0))
+
+    # 3) 수급 압력 — 거래량(15점) + RSI 모멘텀(15점)
+    vol_score = min(max((vol_ma20_ratio - 80.0) / 220.0, 0.0), 1.0) * 15.0
+    if 50 <= rsi_val <= 75:
+        rsi_score = 15.0
+    elif rsi_val < 50:
+        rsi_score = 15.0 * max(0.0, rsi_val / 50.0)
+    else:
+        rsi_score = 15.0 * max(0.0, 1 - (rsi_val - 75.0) / 25.0)
+    pressure_score = vol_score + rsi_score
+
+    # 4) MACD 흐름
+    if macd_cross:
+        macd_score = 15.0
+    elif macd_val > macd_sig_val:
+        macd_score = 8.0
+    else:
+        macd_score = 0.0
+
+    total = round(min(100.0, proximity_score + strength_score + pressure_score + macd_score))
+
+    if total >= 70:
+        label, tier = "돌파 가능성 높음", "high"
+    elif total >= 45:
+        label, tier = "돌파 가능성 보통 — 관망", "mid"
+    else:
+        label, tier = "매물대 저항 우세 — 돌파 어려움", "low"
+
+    return {
+        "has_zone": True,
+        "score": total,
+        "label": label,
+        "tier": tier,
+        "gap_low_pct": gap_low_pct,
+        "zone_low": zone["low"],
+        "zone_high": zone["high"],
+        "zone_strength": zone["strength"],
+        "factors": [
+            ("저항까지 거리", proximity_score, 30.0, f"매물대 하단까지 +{gap_low_pct:.1f}%"),
+            ("매물벽 두께",   strength_score, 25.0, f"강도: {zone['strength']} (평균 대비 {ratio:.1f}배)"),
+            ("수급 압력",     pressure_score, 30.0, f"거래량 MA20 대비 {vol_ma20_ratio:.0f}% · RSI {rsi_val:.0f}"),
+            ("MACD 흐름",     macd_score,     15.0, "골든크로스" if macd_cross else ("상승 배열" if macd_val > macd_sig_val else "약세 배열")),
+        ],
+    }
+
+
+def render_breakout_probability(calc: dict):
+    """돌파 가능성 게이지 카드 — 점수 막대 + 4개 구성요소 근거를 함께 표시."""
+    ui_section_header(mono_icon_badge("target", color="var(--c-amber)"), "실시간 악성매물대 돌파 가능성 점검", "icon-amber", "title-amber")
+
+    if not calc.get("has_zone"):
+        st.markdown("""
+        <div class="glass-card">
+            <div class="status-row">
+                <div class="status-item"><div class="status-dot dot-green"></div>
+                <div class="status-text">현재가 위쪽에 감지된 악성매물대가 없습니다 — 저항 없이 신고가 경신 가능 구간입니다</div></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    tier_style = {
+        "high": ("#34d399", "dot-green"),
+        "mid":  ("#fbbf24", "dot-yellow"),
+        "low":  ("#fb7185", "dot-red"),
+    }
+    fill_color, dot_cls = tier_style.get(calc["tier"], ("#fbbf24", "dot-yellow"))
+    score = calc["score"]
+
+    factors_html = ""
+    for name, val, max_val, note in calc["factors"]:
+        pct = round(val / max_val * 100) if max_val else 0
+        factors_html += (
+            f'<div style="margin-bottom:0.55rem;">'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:0.2rem;">'
+            f'<span style="color:rgba(148,163,184,0.75);font-weight:600;">{name}</span>'
+            f'<span style="color:rgba(148,163,184,0.6);">{val:.0f} / {max_val:.0f}</span></div>'
+            f'<div class="sentiment-bar-track" style="height:6px;">'
+            f'<div class="sentiment-bar-fill" style="width:{pct}%;background:{fill_color};"></div></div>'
+            f'<div style="font-size:0.68rem;color:rgba(148,163,184,0.55);margin-top:0.2rem;">{note}</div>'
+            f'</div>'
+        )
+
+    st.markdown(f"""
+    <div class="glass-card">
+        <div class="status-row" style="margin-bottom:0.6rem;">
+            <div class="status-item"><div class="status-dot {dot_cls}"></div>
+            <div class="status-text"><strong>{calc['label']}</strong> &nbsp;·&nbsp; 가장 가까운 저항 ${calc['zone_low']:.2f} ~ ${calc['zone_high']:.2f} ({calc['zone_strength']})</div></div>
+        </div>
+        <div class="sentiment-bar-wrap" style="padding:0.7rem 0.9rem;margin-bottom:0.7rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+                <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">돌파 가능성 종합 점수</span>
+                <span style="font-size:1.1rem;font-weight:800;color:{fill_color};">{score:.0f}점</span>
+            </div>
+            <div class="sentiment-bar-track" style="height:10px;">
+                <div class="sentiment-bar-fill" style="width:{score}%;background:{fill_color};"></div>
+            </div>
+        </div>
+        {factors_html}
+        <div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-top:0.3rem;">
+            ⚠️ 절대적 매수·매도 신호가 아닌 참고 지표이며, 매물대·거래량·RSI·MACD를 단순 가중 합산한 값입니다.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
 # ════════════════════════════════════════════════════════════════
 # 급등주 검색기 / 즐겨찾기 스캔 공용 — 종합 점수(스코어 랭킹) 계산
 # ════════════════════════════════════════════════════════════════
@@ -1038,7 +1179,7 @@ def get_stock_titan_data(ticker: str) -> list:
 
             title_ko = translate_text(title)
             raw_list.append({"date": date_str, "title": title_ko, "title_en": title, "link": link})
-            if len(raw_list) >= 5:
+            if len(raw_list) >= 3:
                 break
 
         # 2단계: 상세 페이지 병렬 요청
@@ -1977,15 +2118,16 @@ with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
 # ════════════════════════════════════════════════════════════════
-def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, score=None) -> str:
-    """상단 주요 지표(현재가/RSI/거래량/낙폭/종합점수) 카드 5개의 HTML만 반환.
-    render_top_summary_metrics()의 모바일 카드 마크업을 함수로 분리해,
-    render_technical_analysis()의 기술적 지표 카드와 하나의 metric-grid로
-    합칠 수 있도록 함(#개선 "10개 카드를 한 섹션으로" 요청 반영)."""
+def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_ma20_ratio, score=None) -> tuple:
+    """상단 주요 지표 카드의 HTML을 (앞쪽 그룹, 뒤쪽 그룹) 튜플로 반환.
+
+    render_technical_analysis()의 metric-grid 맨 앞/맨 뒤에 각각 끼워 넣어,
+    요청된 카드 순서(현재가 → 거래량(MA20대비) → 당일거래량 → 시가총액 →
+    유통주식수 → 52주 최고가 → 52주 최저가)를 만들고, 순서 지정 대상이 아닌
+    RSI/종합점수는 맨 뒤로 보낸다."""
     price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
     current_rsi = df_calculated['RSI'].iloc[-1]
     rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
-    current_dd  = df_calculated['Drawdown'].iloc[-1]
     score_label = None
     if score is not None:
         score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
@@ -1993,7 +2135,6 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, scor
     pct_color = "delta-up" if price_chg >= 0 else "delta-down"
     pct_arrow = "▲" if price_chg >= 0 else "▼"
     rsi_color = "delta-down" if current_rsi >= 70 else ("delta-up" if current_rsi <= 30 else "delta-neu")
-    dd_color  = "delta-down" if current_dd < -20 else "delta-neu"
 
     score_card_html = ""
     if score is not None:
@@ -2007,31 +2148,35 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, scor
             f'</div>'
         )
 
-    return (
+    front_html = (
         f'<div class="metric-card mc-violet">'
         f'<div class="metric-label">현재가</div>'
         f'<div class="metric-value">${today_data["Close"]:.2f}</div>'
         f'<div class="metric-delta {pct_color}">{pct_arrow} {abs(price_chg):.2f}%</div>'
         f'</div>'
-        f'<div class="metric-card mc-cyan">'
-        f'<div class="metric-label">RSI (14)</div>'
-        f'<div class="metric-value">{current_rsi:.1f}</div>'
-        f'<div class="metric-delta {rsi_color}">{rsi_status}</div>'
+        f'<div class="metric-card mc-teal">'
+        f'<div class="metric-label">거래량 (MA20 대비)</div>'
+        f'<div class="metric-value">{vol_ma20_ratio:.0f}%</div>'
+        f'<div class="metric-delta {"delta-up" if vol_ma20_ratio >= 200 else "delta-neu"}">'
+        f'{"🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}</div>'
         f'</div>'
         f'<div class="metric-card mc-rose">'
         f'<div class="metric-label">당일 거래량</div>'
         f'<div class="metric-value" style="font-size:1.15rem;">{int(today_data["Volume"]):,}주</div>'
         f'</div>'
+    )
+    end_html = (
         f'<div class="metric-card mc-cyan">'
-        f'<div class="metric-label">전고점 대비 낙폭</div>'
-        f'<div class="metric-value">{current_dd:.1f}%</div>'
-        f'<div class="metric-delta {dd_color}">{"MDD 관리 필요" if current_dd < -20 else "&nbsp;"}</div>'
+        f'<div class="metric-label">RSI (14)</div>'
+        f'<div class="metric-value">{current_rsi:.1f}</div>'
+        f'<div class="metric-delta {rsi_color}">{rsi_status}</div>'
         f'</div>'
         f'{score_card_html}'
     )
+    return front_html, end_html
 
 
-def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=None, desktop_mode=True):
+def render_top_summary_metrics(today_data, yesterday_data, df_calculated, vol_ma20_ratio, score=None, desktop_mode=True):
     """상단 주요 지표 요약.
     score가 주어지면 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수를 함께 표시합니다.
 
@@ -2048,7 +2193,6 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=
     price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
     current_rsi = df_calculated['RSI'].iloc[-1]
     rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
-    current_dd  = df_calculated['Drawdown'].iloc[-1]
     score_label = None
     if score is not None:
         score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
@@ -2060,11 +2204,12 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=
             m1, m2, m3, m4 = st.columns(4)
 
         m1.metric(label="현재가 (종가)", value=f"${today_data['Close']:.2f}", delta=f"{price_chg:+.2f}%")
-        m2.metric(label="RSI (14)", value=f"{current_rsi:.1f}", delta=rsi_status,
-                  delta_color="normal" if rsi_status == "보통" else "inverse")
+        m2.metric(label="거래량 (MA20 대비)", value=f"{vol_ma20_ratio:.0f}%",
+                  delta="🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조"),
+                  delta_color="normal" if vol_ma20_ratio >= 200 else "off")
         m3.metric(label="당일 거래량", value=f"{int(today_data['Volume']):,}주")
-        m4.metric(label="전고점 대비 낙폭", value=f"{current_dd:.1f}%",
-                  delta="MDD 관리 필요" if current_dd < -20 else None)
+        m4.metric(label="RSI (14)", value=f"{current_rsi:.1f}", delta=rsi_status,
+                  delta_color="normal" if rsi_status == "보통" else "inverse")
         if score is not None:
             m5.metric(label="종합점수", value=f"{score:.1f}점", delta=score_label,
                       delta_color="normal" if score_label != "약세" else "inverse",
@@ -2081,11 +2226,11 @@ def render_top_summary_metrics(today_data, yesterday_data, df_calculated, score=
 def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                                vol_ma20_ratio, trading_value_krw_eok, threshold_eok,
                                high_52w, low_52w, spike_df=None, offering_list=None,
-                               nasdaq_compliance=None, top_cards_html=""):
+                               nasdaq_compliance=None, top_cards_front="", top_cards_end=""):
     """기술적 조건 & 수급 점검 + 차트 (탭1 또는 좌측 컬럼)
 
-    top_cards_html이 주어지면(모바일) 상단 요약 카드 5개를 이 함수의
-    metric-grid와 합쳐 10개 카드를 하나의 섹션으로 렌더링하고,
+    top_cards_front/top_cards_end이 주어지면(모바일) 상단 요약 카드들을 이 함수의
+    metric-grid 앞/뒤에 각각 끼워 넣어 하나의 섹션으로 렌더링하고,
     중국계/급등신호 배너는 그 뒤로 미뤄서 카드 섹션이 끊기지 않게 한다.
     """
 
@@ -2106,7 +2251,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         </div>
         """
 
-    if not top_cards_html:
+    if not top_cards_front:
         # 비병합(데스크탑) 경로 — 기존과 동일하게 카드 섹션 이전에 바로 렌더링
         if china_banner_html:
             st.markdown(china_banner_html, unsafe_allow_html=True)
@@ -2143,7 +2288,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         </div>
         """
 
-    if not top_cards_html and alert_banner_html:
+    if not top_cards_front and alert_banner_html:
         st.markdown(alert_banner_html, unsafe_allow_html=True)
 
     # ── 메트릭 카드 (#개선 상단 요약 스코어보드와 겹치던 현재가/RSI(14) 카드 제거) ──
@@ -2187,7 +2332,17 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 
     st.markdown(f"""
     <div class="metric-grid">
-        {top_cards_html}
+        {top_cards_front}
+        <div class="metric-card mc-indigo">
+            <div class="metric-label">시가총액</div>
+            <div class="metric-value" style="font-size:1.2rem;">{market_cap_str}{mc_star_html}</div>
+            <div class="metric-delta {"delta-up" if mc_star else "delta-neu"}">{"$4M~$500M 최적 구간 ✓" if mc_star else "Market Cap"}</div>
+        </div>
+        <div class="metric-card mc-rose" style="grid-column: span 2;">
+            <div class="metric-label">유통주식수 (Float Shares)</div>
+            <div class="metric-value" style="font-size:1.2rem;">{shares_str}{shares_star_html}</div>
+            <div class="metric-delta {"delta-up" if shares_star else "delta-neu"}">{"20M주 이하 저부동주 ✓" if shares_star else "Float Shares"}</div>
+        </div>
         <div class="metric-card mc-rose">
             <div class="metric-label">52주 최고가</div>
             <div class="metric-value">${high_52w:.2f}</div>
@@ -2198,29 +2353,13 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             <div class="metric-value">${low_52w:.2f}</div>
             <div class="metric-delta delta-up">↑ {gap_52w_low:.1f}% 상단</div>
         </div>
-        <div class="metric-card mc-indigo">
-            <div class="metric-label">시가총액</div>
-            <div class="metric-value" style="font-size:1.2rem;">{market_cap_str}{mc_star_html}</div>
-            <div class="metric-delta {"delta-up" if mc_star else "delta-neu"}">{"$4M~$500M 최적 구간 ✓" if mc_star else "Market Cap"}</div>
-        </div>
-        <div class="metric-card mc-teal">
-            <div class="metric-label">거래량 (MA20 대비)</div>
-            <div class="metric-value">{vol_ma20_ratio:.0f}%</div>
-            <div class="metric-delta {"delta-up" if vol_ma20_ratio >= 200 else "delta-neu"}">
-                {"🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}
-            </div>
-        </div>
-        <div class="metric-card mc-rose" style="grid-column: span 2;">
-            <div class="metric-label">유통주식수 (Float Shares)</div>
-            <div class="metric-value" style="font-size:1.2rem;">{shares_str}{shares_star_html}</div>
-            <div class="metric-delta {"delta-up" if shares_star else "delta-neu"}">{"20M주 이하 저부동주 ✓" if shares_star else "Float Shares"}</div>
-        </div>
+        {top_cards_end}
     </div>
     """, unsafe_allow_html=True)
 
-    # top_cards_html이 있는 경로(모바일)에서는 중국계/급등신호 배너를
-    # 10개 카드 섹션 뒤로 미뤄 카드 섹션이 끊기지 않게 한다.
-    if top_cards_html:
+    # top_cards_front이 있는 경로(모바일)에서는 중국계/급등신호 배너를
+    # 카드 섹션 뒤로 미뤄 카드 섹션이 끊기지 않게 한다.
+    if top_cards_front:
         if china_banner_html:
             st.markdown(china_banner_html, unsafe_allow_html=True)
         if alert_banner_html:
@@ -2271,7 +2410,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             </div>
             """, unsafe_allow_html=True)
 
-    # ── 🧱 악성매물대 분석 ───────────────────────────────────────
+    # ── 🧱 악성매물대 분석 + 🎯 돌파 가능성 점검 (좌우 배열) ──────────
     supply_data = calc_supply_zones(
         hist, float(today['Close']),
         n_bins=supply_n_bins,
@@ -2279,143 +2418,155 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         heavy_mult=supply_heavy_mult,
         max_zones=supply_max_zones,
     )
-    render_supply_zones(float(today['Close']), supply_data)
+    breakout_calc = calc_breakout_probability(
+        float(today['Close']), supply_data,
+        rsi_val=rsi_val, vol_ma20_ratio=vol_ma20_ratio,
+        macd_val=macd_val, macd_sig_val=macd_sig_val, macd_cross=macd_cross,
+    )
+    col_supply, col_breakout = st.columns(2, gap="medium")
+    with col_supply:
+        render_supply_zones(float(today['Close']), supply_data)
 
-    # ── 🚀 100%+ 급등 이력 ───────────────────────────────────────
-    ui_section_header(mono_icon_badge("rocket", color="var(--c-rose)"), "하루 100%+ 급등 이력", "icon-rose", "title-rose")
-    if spike_df is not None and not spike_df.empty:
-        rows_html = ""
-        for dt_idx, row in spike_df.head(15).iterrows():
-            rows_html += (
-                f"<div class='status-item'><div class='status-dot dot-green'></div>"
-                f"<div class='status-text'>{dt_idx.date()} — 종가 ${row['Close']:.2f} "
-                f"<strong style='color:#34d399;'>▲ {row['PctChange']:.1f}%</strong> "
-                f"(거래량 {int(row['Volume']):,})</div></div>"
-            )
-        more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
-                      f"총 {len(spike_df)}회 중 최근 15건 표시</div>" if len(spike_df) > 15 else "")
+        # ── 수급 체크 ────────────────────────────────────────────
+        ui_section_header(mono_icon_badge("bulb", color="var(--c-amber)"), "실시간 자금 유입 체크", "icon-amber", "title-amber")
+
+        # #8 거래량: 전일 대비 + MA20 대비 둘 다 표시
+        vol_dot  = "dot-green"  if vol_ma20_ratio >= 200 else "dot-yellow"
+        vol_text = (f"<strong>거래량 폭증!</strong> MA20 대비 <strong>{vol_ma20_ratio:.0f}%</strong> "
+                    f"(전일 대비 {vol_ratio:.0f}%)"
+                    if vol_ma20_ratio >= 200
+                    else f"거래량 MA20 대비 {vol_ma20_ratio:.0f}% (전일 대비 {vol_ratio:.0f}%)")
+        tv_dot   = "dot-green"  if trading_value_krw_eok >= threshold_eok else "dot-yellow"
+        tv_text  = (f"<strong>거래대금 통과!</strong> 약 <strong>{trading_value_krw_eok:.0f}억 원</strong> 유입 "
+                    f"<span style='color:rgba(148,163,184,0.5);font-size:0.75em;'>(₩{fetch_usd_to_krw():,.0f} 기준)</span>"
+                    if trading_value_krw_eok >= threshold_eok
+                    else f"거래대금 {trading_value_krw_eok:.0f}억 원 ({threshold_eok}억 이상 추천)")
+
         st.markdown(f"""
         <div class="glass-card">
-            <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
-                {rows_html}
-            </div>
-            {more_note}
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div class="glass-card">
             <div class="status-row">
-                <div class="status-item"><div class="status-dot dot-blue"></div>
-                <div class="status-text">상장 이후 하루 +100% 이상 급등 이력이 없습니다 (조회 가능한 전체 기간 기준)</div></div>
+                <div class="status-item"><div class="status-dot {vol_dot}"></div><div class="status-text">{vol_text}</div></div>
+                <div class="status-item"><div class="status-dot {tv_dot}"></div><div class="status-text">{tv_text}</div></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-    # ── 📜 오퍼링(유상증자) 이력 ─────────────────────────────────
-    ui_section_header(mono_icon_badge("doc", color="var(--c-amber)"), "오퍼링(유상증자) 관련 공시 이력", "icon-amber", "title-amber")
-    if offering_list:
-        rows_html = ""
-        for o in offering_list[:15]:
-            link_html = f"<a class='news-link' href='{o['url']}' target='_blank'>공시 원문 →</a>" if o.get("url") else ""
-            rows_html += (
-                f"<div class='status-item'><div class='status-dot dot-yellow'></div>"
-                f"<div class='status-text'>📅 {o['date']} &nbsp;<strong>{o['type']}</strong> — {o['title']} {link_html}</div></div>"
-            )
-        more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
-                      f"총 {len(offering_list)}건 중 최근 15건 표시</div>" if len(offering_list) > 15 else "")
+        # ── 이동평균선 배열 ──────────────────────────────────────
+        ui_section_header(mono_icon_badge("trend", color="var(--c-teal)"), "이동평균선 배열", "icon-teal", "title-teal")
+
+        if today['MA5'] > today['MA20'] > today['MA120']:
+            ma_dot, ma_text = "dot-green", "<strong>완전 정배열</strong> — 강력한 상승 추세 유지 중"
+        elif today['Close'] > today['MA120'] and yesterday['Close'] <= yesterday['MA120']:
+            ma_dot, ma_text = "dot-green", "<strong>120일선 돌파!</strong> — 급등 초입 타점"
+        else:
+            ma_dot, ma_text = "dot-blue", f"이평선 밀집 — 에너지 응축 횡보 구간 &nbsp;|&nbsp; MA5 <strong>${today['MA5']:.1f}</strong> / MA20 <strong>${today['MA20']:.1f}</strong>"
+
+        # ── RSI ──────────────────────────────────────────────────
+        if rsi_val >= 70:
+            rsi_dot, rsi_txt = "dot-yellow", f"<strong>RSI {rsi_val:.1f} — 과매수</strong> 단기 조정 가능성 주의"
+        elif rsi_val <= 30:
+            rsi_dot, rsi_txt = "dot-green",  f"<strong>RSI {rsi_val:.1f} — 과매도</strong> 반등 매수 타점"
+        else:
+            rsi_dot, rsi_txt = "dot-blue",   f"RSI <strong>{rsi_val:.1f}</strong> — 중립 구간 (30~70)"
+
+        # ── 볼린저밴드 ─────────────────────────────────────────────
+        bb_range = today['BB_UPPER'] - today['BB_LOWER']
+        bb_pct   = (today['Close'] - today['BB_LOWER']) / bb_range * 100 if bb_range else 50
+        if today['Close'] >= today['BB_UPPER']:
+            bb_dot, bb_txt = "dot-yellow", f"<strong>볼린저 상단 터치 ({bb_pct:.0f}%)</strong> — 과열 구간"
+        elif today['Close'] <= today['BB_LOWER']:
+            bb_dot, bb_txt = "dot-green",  f"<strong>볼린저 하단 터치 ({bb_pct:.0f}%)</strong> — 반등 구간"
+        else:
+            bb_dot, bb_txt = "dot-blue",   f"밴드 내부 <strong>{bb_pct:.0f}%</strong> 위치 &nbsp;|&nbsp; 밴드폭 {today['BB_WIDTH']:.1f}%"
+
+        # ── MACD ───────────────────────────────────────────────────
+        hist_val  = today['MACD_HIST']
+        prev_hist = yesterday['MACD_HIST']
+        if macd_cross:
+            mc_dot, mc_txt = "dot-green",  "<strong>MACD 골든크로스 발생!</strong> — 상승 전환 신호"
+        elif macd_dead:
+            mc_dot, mc_txt = "dot-red",    "<strong>MACD 데드크로스 발생</strong> — 하락 전환 주의"
+        elif hist_val > 0 and hist_val > prev_hist:
+            mc_dot, mc_txt = "dot-blue",   "MACD 히스토그램 확대 — 상승 모멘텀 강화"
+        else:
+            mc_dot, mc_txt = "dot-yellow", f"MACD <strong>{macd_val:.3f}</strong> / Signal <strong>{macd_sig_val:.3f}</strong> / Hist {hist_val:.3f}"
+
         st.markdown(f"""
         <div class="glass-card">
-            <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
-                {rows_html}
-            </div>
-            {more_note}
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div class="glass-card">
             <div class="status-row">
-                <div class="status-item"><div class="status-dot dot-blue"></div>
-                <div class="status-text">S-1 / S-3 / 424B 계열 오퍼링 관련 공시 이력이 조회되지 않았습니다</div></div>
+                <div class="status-item"><div class="status-dot {ma_dot}"></div><div class="status-text">{ma_text}</div></div>
+                <div class="status-item"><div class="status-dot {rsi_dot}"></div><div class="status-text">{rsi_txt}</div></div>
+                <div class="status-item"><div class="status-dot {bb_dot}"></div><div class="status-text">{bb_txt}</div></div>
+                <div class="status-item"><div class="status-dot {mc_dot}"></div><div class="status-text">{mc_txt}</div></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
+    with col_breakout:
+        render_breakout_probability(breakout_calc)
 
-    # ── 수급 체크 ────────────────────────────────────────────────
-    ui_section_header(mono_icon_badge("bulb", color="var(--c-amber)"), "실시간 자금 유입 체크", "icon-amber", "title-amber")
+    # ── 🚀 급등 이력 / 📜 오퍼링 이력 (좌우 배치) ─────────────────
+    col_spike, col_offering = st.columns(2, gap="medium")
 
-    # #8 거래량: 전일 대비 + MA20 대비 둘 다 표시
-    vol_dot  = "dot-green"  if vol_ma20_ratio >= 200 else "dot-yellow"
-    vol_text = (f"<strong>거래량 폭증!</strong> MA20 대비 <strong>{vol_ma20_ratio:.0f}%</strong> "
-                f"(전일 대비 {vol_ratio:.0f}%)"
-                if vol_ma20_ratio >= 200
-                else f"거래량 MA20 대비 {vol_ma20_ratio:.0f}% (전일 대비 {vol_ratio:.0f}%)")
-    tv_dot   = "dot-green"  if trading_value_krw_eok >= threshold_eok else "dot-yellow"
-    tv_text  = (f"<strong>거래대금 통과!</strong> 약 <strong>{trading_value_krw_eok:.0f}억 원</strong> 유입 "
-                f"<span style='color:rgba(148,163,184,0.5);font-size:0.75em;'>(₩{fetch_usd_to_krw():,.0f} 기준)</span>"
-                if trading_value_krw_eok >= threshold_eok
-                else f"거래대금 {trading_value_krw_eok:.0f}억 원 ({threshold_eok}억 이상 추천)")
+    with col_spike:
+        ui_section_header(mono_icon_badge("rocket", color="var(--c-rose)"), "하루 100%+ 급등 이력", "icon-rose", "title-rose")
+        if spike_df is not None and not spike_df.empty:
+            rows_html = ""
+            for dt_idx, row in spike_df.head(15).iterrows():
+                rows_html += (
+                    f"<div class='status-item'><div class='status-dot dot-green'></div>"
+                    f"<div class='status-text'>{dt_idx.date()} — 종가 ${row['Close']:.2f} "
+                    f"<strong style='color:#34d399;'>▲ {row['PctChange']:.1f}%</strong> "
+                    f"(거래량 {int(row['Volume']):,})</div></div>"
+                )
+            more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
+                          f"총 {len(spike_df)}회 중 최근 15건 표시</div>" if len(spike_df) > 15 else "")
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
+                    {rows_html}
+                </div>
+                {more_note}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="glass-card">
+                <div class="status-row">
+                    <div class="status-item"><div class="status-dot dot-blue"></div>
+                    <div class="status-text">상장 이후 하루 +100% 이상 급등 이력이 없습니다 (조회 가능한 전체 기간 기준)</div></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-    st.markdown(f"""
-    <div class="glass-card">
-        <div class="status-row">
-            <div class="status-item"><div class="status-dot {vol_dot}"></div><div class="status-text">{vol_text}</div></div>
-            <div class="status-item"><div class="status-dot {tv_dot}"></div><div class="status-text">{tv_text}</div></div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── 이동평균선 배열 ──────────────────────────────────────────
-    ui_section_header(mono_icon_badge("trend", color="var(--c-teal)"), "이동평균선 배열", "icon-teal", "title-teal")
-
-    if today['MA5'] > today['MA20'] > today['MA120']:
-        ma_dot, ma_text = "dot-green", "<strong>완전 정배열</strong> — 강력한 상승 추세 유지 중"
-    elif today['Close'] > today['MA120'] and yesterday['Close'] <= yesterday['MA120']:
-        ma_dot, ma_text = "dot-green", "<strong>120일선 돌파!</strong> — 급등 초입 타점"
-    else:
-        ma_dot, ma_text = "dot-blue", f"이평선 밀집 — 에너지 응축 횡보 구간 &nbsp;|&nbsp; MA5 <strong>${today['MA5']:.1f}</strong> / MA20 <strong>${today['MA20']:.1f}</strong>"
-
-    # ── RSI ──────────────────────────────────────────────────────
-    if rsi_val >= 70:
-        rsi_dot, rsi_txt = "dot-yellow", f"<strong>RSI {rsi_val:.1f} — 과매수</strong> 단기 조정 가능성 주의"
-    elif rsi_val <= 30:
-        rsi_dot, rsi_txt = "dot-green",  f"<strong>RSI {rsi_val:.1f} — 과매도</strong> 반등 매수 타점"
-    else:
-        rsi_dot, rsi_txt = "dot-blue",   f"RSI <strong>{rsi_val:.1f}</strong> — 중립 구간 (30~70)"
-
-    # ── 볼린저밴드 ───────────────────────────────────────────────
-    bb_range = today['BB_UPPER'] - today['BB_LOWER']
-    bb_pct   = (today['Close'] - today['BB_LOWER']) / bb_range * 100 if bb_range else 50
-    if today['Close'] >= today['BB_UPPER']:
-        bb_dot, bb_txt = "dot-yellow", f"<strong>볼린저 상단 터치 ({bb_pct:.0f}%)</strong> — 과열 구간"
-    elif today['Close'] <= today['BB_LOWER']:
-        bb_dot, bb_txt = "dot-green",  f"<strong>볼린저 하단 터치 ({bb_pct:.0f}%)</strong> — 반등 구간"
-    else:
-        bb_dot, bb_txt = "dot-blue",   f"밴드 내부 <strong>{bb_pct:.0f}%</strong> 위치 &nbsp;|&nbsp; 밴드폭 {today['BB_WIDTH']:.1f}%"
-
-    # ── MACD ─────────────────────────────────────────────────────
-    hist_val  = today['MACD_HIST']
-    prev_hist = yesterday['MACD_HIST']
-    if macd_cross:
-        mc_dot, mc_txt = "dot-green",  "<strong>MACD 골든크로스 발생!</strong> — 상승 전환 신호"
-    elif macd_dead:
-        mc_dot, mc_txt = "dot-red",    "<strong>MACD 데드크로스 발생</strong> — 하락 전환 주의"
-    elif hist_val > 0 and hist_val > prev_hist:
-        mc_dot, mc_txt = "dot-blue",   "MACD 히스토그램 확대 — 상승 모멘텀 강화"
-    else:
-        mc_dot, mc_txt = "dot-yellow", f"MACD <strong>{macd_val:.3f}</strong> / Signal <strong>{macd_sig_val:.3f}</strong> / Hist {hist_val:.3f}"
-
-    st.markdown(f"""
-    <div class="glass-card">
-        <div class="status-row">
-            <div class="status-item"><div class="status-dot {ma_dot}"></div><div class="status-text">{ma_text}</div></div>
-            <div class="status-item"><div class="status-dot {rsi_dot}"></div><div class="status-text">{rsi_txt}</div></div>
-            <div class="status-item"><div class="status-dot {bb_dot}"></div><div class="status-text">{bb_txt}</div></div>
-            <div class="status-item"><div class="status-dot {mc_dot}"></div><div class="status-text">{mc_txt}</div></div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    with col_offering:
+        ui_section_header(mono_icon_badge("doc", color="var(--c-amber)"), "오퍼링(유상증자) 관련 공시 이력", "icon-amber", "title-amber")
+        if offering_list:
+            rows_html = ""
+            for o in offering_list[:3]:
+                link_html = f"<a class='news-link' href='{o['url']}' target='_blank'>공시 원문 →</a>" if o.get("url") else ""
+                rows_html += (
+                    f"<div class='status-item'><div class='status-dot dot-yellow'></div>"
+                    f"<div class='status-text'>📅 {o['date']} &nbsp;<strong>{o['type']}</strong> — {o['title']} {link_html}</div></div>"
+                )
+            more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
+                          f"총 {len(offering_list)}건 중 최근 3건 표시</div>" if len(offering_list) > 3 else "")
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="status-row" style="flex-direction:column;align-items:stretch;gap:0.5rem;">
+                    {rows_html}
+                </div>
+                {more_note}
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="glass-card">
+                <div class="status-row">
+                    <div class="status-item"><div class="status-dot dot-blue"></div>
+                    <div class="status-text">S-1 / S-3 / 424B 계열 오퍼링 관련 공시 이력이 조회되지 않았습니다</div></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
     # ── 📝 분석 메모 ─────────────────────────────────────────────
     ui_section_header(mono_icon_badge("note", color="var(--c-violet)"), "분석 메모", "icon-violet", "title-violet")
@@ -2769,7 +2920,7 @@ def render_news_section(ticker_input):
     """스톡타이탄 뉴스 & Rhea-AI 호재 검증 (탭2 또는 우측 컬럼)"""
     ui_section_header(mono_icon_badge("fire", color="var(--c-rose)"), "스톡타이탄 실시간 호재 & Rhea-AI 분석", "icon-rose", "title-rose")
 
-    news_data = get_stock_titan_data(ticker_input)
+    news_data = get_stock_titan_data(ticker_input)[:3]
 
     if not news_data:
         st.markdown("""
@@ -2782,7 +2933,7 @@ def render_news_section(ticker_input):
         """, unsafe_allow_html=True)
 
         # #6 fallback 뉴스 병렬 번역
-        raw_news_list = fetch_yahoo_news(ticker_input)[:5]
+        raw_news_list = fetch_yahoo_news(ticker_input)[:3]
         parsed_list   = [parse_yahoo_news_item(r) for r in raw_news_list]
         titles_en     = [n["title"] for n in parsed_list]
 
@@ -2919,7 +3070,7 @@ if st.session_state.get("has_searched"):
                 "rsi":               current_rsi,
             })
 
-            render_top_summary_metrics(today, yesterday, hist, score=ticker_score, desktop_mode=desktop_mode)
+            render_top_summary_metrics(today, yesterday, hist, vol_ma20_ratio, score=ticker_score, desktop_mode=desktop_mode)
 
             if desktop_mode:
                 col1, col2 = st.columns([4, 5])
@@ -2963,14 +3114,14 @@ if st.session_state.get("has_searched"):
                 # build_top_summary_cards_html()로 뽑아 기술분석 카드 5개와 합쳐
                 # 하나의 metric-grid로 렌더링한다(render_top_summary_metrics는
                 # 모바일에서 아무것도 렌더링하지 않도록 위에서 이미 no-op 처리됨).
-                top_cards_html = build_top_summary_cards_html(today, yesterday, hist, score=ticker_score)
+                top_cards_front, top_cards_end = build_top_summary_cards_html(today, yesterday, hist, vol_ma20_ratio, score=ticker_score)
                 render_technical_analysis(
                     active_ticker, hist, today, yesterday,
                     vol_ratio, vol_ma20_ratio,
                     trading_value_krw_eok, TRADING_THRESHOLD,
                     high_52w, low_52w,
                     spike_df, offering_list, nasdaq_compliance,
-                    top_cards_html=top_cards_html,
+                    top_cards_front=top_cards_front, top_cards_end=top_cards_end,
                 )
                 st.markdown("---")
                 mobile_view = st.segmented_control(
