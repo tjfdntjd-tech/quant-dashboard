@@ -113,14 +113,12 @@ LIGHT_MODE_OVERRIDE_CSS = """
     .news-link:hover { color: #6d28d9 !important; }
     .scan-title { color: #92600a !important; }
     .status-text { color: #334155 !important; }
-    .metric-label, .news-meta, .social-meta, .social-stats,
-    .sector-ticker, .legend-item, .news-orig { color: #64748b !important; }
 
     /* 인라인 style="color:..." 로 하드코딩된 파스텔 색상 보정
-       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비) */
-    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] { color: #475569 !important; }
-    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] { color: #334155 !important; }
-    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] { color: #7f1d1d !important; }
+       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비)
+       #개선: rgba(148,163,184/255,255,255)류는 이제 다크/라이트 공통으로
+       inject_css() 안의 통합 대비 보정(unified_contrast_css)에서 처리하므로
+       여기서는 중복 제거. */
     [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
     [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
     [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
@@ -646,26 +644,44 @@ def _save_translate_cache(cache: dict) -> None:
     except Exception:
         pass
 
-def translate_text(text: str) -> str:
-    """GoogleTranslator 호출 결과를 파일 기반으로 영구 캐싱 — 동일 문장 재번역 방지."""
-    if not text:
-        return text
+def translate_texts_batch(texts: list) -> dict:
+    """
+    여러 문장을 한 번에 병렬로 번역하고, 캐시 파일에는 배치당 단 1회만 저장합니다.
 
+    #성능개선: 기존 translate_text()는 문장 하나마다 번역 API를 호출하고 그때마다
+    캐시 파일 전체를 디스크에 다시 썼습니다. 뉴스/소셜 섹션에서 이 함수를 최대
+    8회까지 "순차" 호출했기 때문에 (번역 왕복 + 디스크 I/O) × 문장 수 만큼
+    지연이 직렬로 누적되어 체감 로딩 속도가 느린 주된 원인이었습니다.
+    → 신규 번역이 필요한 문장만 골라 스레드풀로 동시에 번역 요청을 보내고,
+      캐시 저장은 배치 전체가 끝난 뒤 딱 한 번만 수행합니다.
+    반환값: {원문: 번역문} 매핑 딕셔너리.
+    """
     if "_translate_cache" not in st.session_state:
         st.session_state["_translate_cache"] = _load_translate_cache()
     cache = st.session_state["_translate_cache"]
 
-    if text in cache:
-        return cache[text]
+    unique_texts = list(dict.fromkeys(t for t in texts if t))
+    to_translate = [t for t in unique_texts if t not in cache]
 
-    try:
-        translated = GoogleTranslator(source='en', target='ko').translate(text)
-    except Exception:
-        translated = text
+    if to_translate:
+        def _do(t: str):
+            try:
+                return t, GoogleTranslator(source='en', target='ko').translate(t)
+            except Exception:
+                return t, t
 
-    cache[text] = translated
-    _save_translate_cache(cache)
-    return translated
+        with ThreadPoolExecutor(max_workers=min(8, len(to_translate))) as ex:
+            for original, translated in ex.map(_do, to_translate):
+                cache[original] = translated
+        _save_translate_cache(cache)   # 배치 전체 완료 후 단 1회만 디스크에 저장
+
+    return {t: cache.get(t, t) for t in unique_texts}
+
+def translate_text(text: str) -> str:
+    """단일 문장 번역 — 내부적으로 translate_texts_batch()를 재사용합니다."""
+    if not text:
+        return text
+    return translate_texts_batch([text]).get(text, text)
 
 def parse_yahoo_news_item(raw_item: dict) -> dict:
     """
@@ -1161,7 +1177,7 @@ def get_stock_titan_data(ticker: str) -> list:
         )
         link_tags = soup.find_all('a', href=pattern)
 
-        # 1단계: 기사 목록 파싱
+        # 1단계: 기사 목록 파싱 (번역은 여기서 하지 않음 — 2단계와 동시 실행)
         raw_list   = []
         seen_links = set()
         for link_tag in link_tags:
@@ -1177,27 +1193,34 @@ def get_stock_titan_data(ticker: str) -> list:
             # #4 날짜 파싱 — 부모 태그에서 날짜 요소 탐색 (별도 함수로 캡슐화)
             date_str = _extract_titan_date(link_tag)
 
-            title_ko = translate_text(title)
-            raw_list.append({"date": date_str, "title": title_ko, "title_en": title, "link": link})
+            raw_list.append({"date": date_str, "title_en": title, "link": link})
             if len(raw_list) >= 3:
                 break
 
-        # 2단계: 상세 페이지 병렬 요청
+        # 2단계: 상세 페이지 병렬 요청 + 제목 번역을 "동시에" 실행
+        # #성능개선: 기존엔 제목 3개를 순차 번역(+매번 디스크 캐시 저장)한 뒤에야
+        # 상세 페이지 병렬 요청을 시작해 완전 직렬 대기였음. 서로 의존관계가 없으므로
+        # 같은 스레드풀에 번역 작업도 함께 제출해 병렬로 겹쳐 실행되게 한다.
         detail_results = {}
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             future_to_link = {
                 executor.submit(_fetch_detail, item["link"], _random_headers()): item["link"]
                 for item in raw_list
             }
+            translate_future = executor.submit(
+                translate_texts_batch, [item["title_en"] for item in raw_list]
+            )
             for future in as_completed(future_to_link):
                 link = future_to_link[future]
                 detail_results[link] = future.result()
+            translations = translate_future.result()
 
         # 3단계: 결합
         news_list = []
         for item in raw_list:
             sentiment, impact = detail_results.get(item["link"], ("Unknown", "Normal"))
-            news_list.append({**item, "sentiment": sentiment, "impact": impact})
+            title_ko = translations.get(item["title_en"], item["title_en"])
+            news_list.append({**item, "title": title_ko, "sentiment": sentiment, "impact": impact})
 
         return news_list
     except Exception:
@@ -1265,7 +1288,10 @@ def fetch_stocktwits(ticker: str) -> dict:
     except Exception:
         raw_news = []
 
-    messages  = []
+    # #성능개선: 제목별로 순차 번역(+매번 디스크 저장)하던 것을 먼저 후보를 모두
+    # 추린 뒤 한 번에 병렬 번역하도록 변경 (translate_texts_batch가 캐시 저장도
+    # 배치당 1회로 처리).
+    entries    = []
     bull, bear = 0, 0
     for item in raw_news[:10]:
         parsed  = parse_yahoo_news_item(item)
@@ -1281,16 +1307,23 @@ def fetch_stocktwits(ticker: str) -> dict:
             sentiment = "Bearish"; bear += 1
         else:
             sentiment = ""
-        pub       = parsed["publisher"]
-        link      = parsed["link"]
-        title_ko  = translate_text(title)
-        messages.append({
-            "user": pub, "body": title_ko, "body_en": title,
+        entries.append({
+            "user": parsed["publisher"], "title_en": title,
             "sentiment": sentiment, "likes": 0,
-            "date": "", "link": link,
+            "date": "", "link": parsed["link"],
         })
-        if len(messages) >= 8:
+        if len(entries) >= 8:
             break
+
+    translations = translate_texts_batch([e["title_en"] for e in entries])
+    messages = [
+        {
+            "user": e["user"], "body": translations.get(e["title_en"], e["title_en"]),
+            "body_en": e["title_en"], "sentiment": e["sentiment"], "likes": e["likes"],
+            "date": e["date"], "link": e["link"],
+        }
+        for e in entries
+    ]
 
     return {"bull": bull, "bear": bear, "messages": messages, "source": "yahoo"}
 
@@ -1590,8 +1623,7 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         )
         return
 
-    st.line_chart(candles["Close"], height=180, use_container_width=True)
-
+    # #개선 요청: 차트 해석 탭에서는 그래프를 표시하지 않음 (텍스트 분석만 제공)
     # 좌측 컬럼에서 이미 계산된 악성매물대와 동일 기준·파라미터로 저항 구간을 다시 산출
     supply_data = calc_supply_zones(
         hist_daily, current_price,
@@ -1666,19 +1698,23 @@ def inject_css(dark: bool = True):
         hr_color     = "rgba(255,255,255,0.07)"
         text_primary = "#f1f5f9"
         text_sec     = "#e2e8f0"
-        text_muted   = "rgba(148,163,184,0.7)"
-        text_dimmed  = "rgba(148,163,184,0.55)"
+        # #개선 요청: 배경색과 비슷하거나 투명도(알파)만으로 흐릿하게 표현하던
+        # 보조 텍스트를 전부 불투명(alpha=1) + 뚜렷이 구분되는 색상으로 교체.
+        # - text_muted:  스틸 블루 계열(솔리드) — 메타 정보/라벨
+        # - text_dimmed: 웜 골드 계열(솔리드) — 원문/부가 설명 (muted와 아예 다른 색상군)
+        text_muted   = "#8fc4e8"
+        text_dimmed  = "#e0b374"
         text_status  = "#cbd5e1"
-        metric_label = "rgba(148,163,184,0.7)"
+        metric_label = "#8fc4e8"
         sidebar_input_bg  = "rgba(255,255,255,0.05)"
         sidebar_input_bdr = "rgba(139,92,246,0.4)"
         sidebar_input_clr = "#e2e8f0"
         textarea_bg  = "rgba(255,255,255,0.04)"
         plotly_tmpl  = "plotly_dark"
-        sector_name_clr  = "rgba(255,255,255,0.7)"
-        sector_ticker_clr= "rgba(255,255,255,0.4)"
+        sector_name_clr  = "#f8fafc"
+        sector_ticker_clr= "#8fc4e8"
         social_selftext_bdr = "rgba(255,255,255,0.1)"
-        social_selftext_clr = "rgba(203,213,225,0.75)"
+        social_selftext_clr = "#e0b374"
 
         # ── 다이나믹 다크모드 배경: 메시 그라디언트 + 파티클(트윙클) 오버레이 ──
         mesh_bg_layers = (
@@ -1745,19 +1781,21 @@ def inject_css(dark: bool = True):
         hr_color     = "rgba(99,102,241,0.12)"
         text_primary = "#1e1b4b"
         text_sec     = "#312e81"
-        text_muted   = "#6b7280"
-        text_dimmed  = "#9ca3af"
+        # #개선 요청: 명암(밝기)만 다른 회색 대신, 다크모드와 짝을 이루는
+        # 뚜렷이 구분되는 색상군(짙은 스틸 블루 / 짙은 웜 브라운)의 솔리드 컬러로 교체.
+        text_muted   = "#1d5c85"
+        text_dimmed  = "#8a5a1e"
         text_status  = "#374151"
-        metric_label = "#6b7280"
+        metric_label = "#1d5c85"
         sidebar_input_bg  = "rgba(255,255,255,0.9)"
         sidebar_input_bdr = "rgba(99,102,241,0.4)"
         sidebar_input_clr = "#1e1b4b"
         textarea_bg  = "rgba(255,255,255,0.9)"
         plotly_tmpl  = "plotly_white"
-        sector_name_clr  = "#374151"
-        sector_ticker_clr= "#6b7280"
+        sector_name_clr  = "#1e1b4b"
+        sector_ticker_clr= "#1d5c85"
         social_selftext_bdr = "rgba(99,102,241,0.2)"
-        social_selftext_clr = "#4b5563"
+        social_selftext_clr = "#8a5a1e"
 
         # 라이트 모드는 정적 배경 유지 (다이나믹 메시/파티클은 다크모드 전용)
         mesh_bg_layers      = ""
@@ -1805,6 +1843,12 @@ def inject_css(dark: bool = True):
         grid-template-columns: repeat(2, 1fr) !important;
         gap: 0.5rem !important;
     }
+    /* 상단 요약+기술분석 카드 전용 12열 그리드 — 카드마다 grid-column: span N을
+       지정해 3개/2개/4개씩 원하는 개수로 한 줄에 배치할 수 있도록 함.
+       (다른 섹션의 .metric-grid, 예: 악성매물대 카드는 기존 2열 그대로 유지) */
+    .metric-grid.metric-grid-12 {
+        grid-template-columns: repeat(12, 1fr) !important;
+    }
     .metric-card {
         aspect-ratio: auto !important;
         min-height: 0 !important;
@@ -1828,7 +1872,27 @@ def inject_css(dark: bool = True):
     }
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}</style>\n", unsafe_allow_html=True)
+    # #개선 요청: "글씨색이 배경색과 비슷하거나 명암(투명도) 조절로만 구분되지
+    # 않도록, 항상 뚜렷이 다른 불투명한 색을 쓸 것" — 코드 곳곳에 인라인
+    # style="color:rgba(148,163,184, 0.4~0.75)" 식으로 하드코딩된 반투명 회색
+    # 텍스트(뉴스/소셜/매물대/스코어 카드 등)가 남아있어, 기존엔 라이트 모드에서만
+    # 속성 선택자로 보정하고 다크 모드는 그대로 방치돼 있었음.
+    # → 다크/라이트 모드 모두에 대해 위 패턴들을 전부 "완전 불투명 + 뚜렷이
+    #   구분되는 색"으로 강제 치환한다 (이 <style> 블록은 테마 CSS보다 뒤에
+    #   렌더링되므로 !important 없이도 우선 적용되지만, 안전하게 !important 유지).
+    unified_contrast_css = f"""
+    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] {{
+        color: {text_muted} !important;
+    }}
+    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] {{
+        color: {"#ffffff" if dark else "#1e1b4b"} !important;
+    }}
+    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] {{
+        color: {"#fecaca" if dark else "#7f1d1d"} !important;
+    }}
+    """
+
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n", unsafe_allow_html=True)
 
 inject_css(st.session_state.get("dark_mode", False))
 
@@ -2051,13 +2115,6 @@ if st.session_state.memos:
         if memo_val.strip():
             st.sidebar.caption(f"**{t_key}:** {memo_val[:40]}{'...' if len(memo_val)>40 else ''}")
 
-# ── 화면 레이아웃 모드 선택 ─────────────────────────────────────
-st.sidebar.markdown("---")
-desktop_mode = st.sidebar.checkbox(
-    "💻 PC 와이드 모드 (좌우 2분할)",
-    value=False,
-    help="체크 해제 시 폰에 최적화된 탭(Tab) 방식으로 표시됩니다."
-)
 
 # ════════════════════════════════════════════════════════════════
 # #신규 AI 차트 해석 — Claude Vision API 키 설정
@@ -2141,7 +2198,7 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
         score_color = "delta-up" if score_label == "강세" else ("delta-neu" if score_label == "보통" else "delta-down")
         # 한 줄짜리 HTML로 만들어 줄바꿈/들여쓰기로 인한 마크다운 오인식을 방지
         score_card_html = (
-            f'<div class="metric-card mc-amber">'
+            f'<div class="metric-card mc-amber" style="grid-column: span 3;">'
             f'<div class="metric-label">종합점수</div>'
             f'<div class="metric-value">{score:.1f}점</div>'
             f'<div class="metric-delta {score_color}">{score_label}</div>'
@@ -2149,24 +2206,24 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
         )
 
     front_html = (
-        f'<div class="metric-card mc-violet">'
+        f'<div class="metric-card mc-violet" style="grid-column: span 4;">'
         f'<div class="metric-label">현재가</div>'
         f'<div class="metric-value">${today_data["Close"]:.2f}</div>'
         f'<div class="metric-delta {pct_color}">{pct_arrow} {abs(price_chg):.2f}%</div>'
         f'</div>'
-        f'<div class="metric-card mc-teal">'
+        f'<div class="metric-card mc-teal" style="grid-column: span 4;">'
         f'<div class="metric-label">거래량 (MA20 대비)</div>'
         f'<div class="metric-value">{vol_ma20_ratio:.0f}%</div>'
         f'<div class="metric-delta {"delta-up" if vol_ma20_ratio >= 200 else "delta-neu"}">'
         f'{"🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}</div>'
         f'</div>'
-        f'<div class="metric-card mc-rose">'
+        f'<div class="metric-card mc-rose" style="grid-column: span 4;">'
         f'<div class="metric-label">당일 거래량</div>'
         f'<div class="metric-value" style="font-size:1.15rem;">{int(today_data["Volume"]):,}주</div>'
         f'</div>'
     )
     end_html = (
-        f'<div class="metric-card mc-cyan">'
+        f'<div class="metric-card mc-cyan" style="grid-column: span 3;">'
         f'<div class="metric-label">RSI (14)</div>'
         f'<div class="metric-value">{current_rsi:.1f}</div>'
         f'<div class="metric-delta {rsi_color}">{rsi_status}</div>'
@@ -2176,49 +2233,7 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     return front_html, end_html
 
 
-def render_top_summary_metrics(today_data, yesterday_data, df_calculated, vol_ma20_ratio, score=None, desktop_mode=True):
-    """상단 주요 지표 요약.
-    score가 주어지면 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수를 함께 표시합니다.
 
-    #개선 모바일 레이아웃: 기존엔 데스크탑과 동일하게 st.metric을 st.columns(4~5)에
-    나열했는데, 폰 너비에서는 Streamlit이 컬럼을 세로로 통째로 쌓아버려
-    (한 줄에 1개씩) 지표 5개를 보려면 스크롤을 5번 해야 했음.
-    → 모바일에서는 2열 카드 그리드(metric-grid, 기존 기술분석 카드와 동일 톤)로
-    바꿔서 한 화면에 4~5개 지표가 한눈에 들어오도록 함. 데스크탑은 기존 그대로 유지.
-
-    #개선 모바일에서는 이 함수를 단독 호출하지 않고, build_top_summary_cards_html()로
-    카드 HTML만 얻어 render_technical_analysis()의 metric-grid에 합쳐서 렌더링한다
-    (10개 카드를 하나의 섹션으로 묶기 위함). 이 함수는 데스크탑 전용 경로로만 쓰인다.
-    """
-    price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
-    current_rsi = df_calculated['RSI'].iloc[-1]
-    rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
-    score_label = None
-    if score is not None:
-        score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
-
-    if desktop_mode:
-        if score is not None:
-            m1, m2, m3, m4, m5 = st.columns(5)
-        else:
-            m1, m2, m3, m4 = st.columns(4)
-
-        m1.metric(label="현재가 (종가)", value=f"${today_data['Close']:.2f}", delta=f"{price_chg:+.2f}%")
-        m2.metric(label="거래량 (MA20 대비)", value=f"{vol_ma20_ratio:.0f}%",
-                  delta="🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조"),
-                  delta_color="normal" if vol_ma20_ratio >= 200 else "off")
-        m3.metric(label="당일 거래량", value=f"{int(today_data['Volume']):,}주")
-        m4.metric(label="RSI (14)", value=f"{current_rsi:.1f}", delta=rsi_status,
-                  delta_color="normal" if rsi_status == "보통" else "inverse")
-        if score is not None:
-            m5.metric(label="종합점수", value=f"{score:.1f}점", delta=score_label,
-                      delta_color="normal" if score_label != "약세" else "inverse",
-                      help="등락률·거래량·거래대금·RSI를 종합한 참고 지표 (급등주 검색기·즐겨찾기 스캔과 동일 기준)")
-        st.divider()
-    else:
-        # 모바일은 build_top_summary_cards_html()을 통해 render_technical_analysis()의
-        # metric-grid와 합쳐서 렌더링하므로 여기서는 아무것도 하지 않는다.
-        pass
 
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 기술적 분석
@@ -2331,24 +2346,24 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     shares_star_html = ' <span style="color:#f5b942;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">⭐</span>' if shares_star else ""
 
     st.markdown(f"""
-    <div class="metric-grid">
+    <div class="metric-grid metric-grid-12">
         {top_cards_front}
-        <div class="metric-card mc-indigo">
+        <div class="metric-card mc-indigo" style="grid-column: span 6;">
             <div class="metric-label">시가총액</div>
             <div class="metric-value" style="font-size:1.2rem;">{market_cap_str}{mc_star_html}</div>
             <div class="metric-delta {"delta-up" if mc_star else "delta-neu"}">{"$4M~$500M 최적 구간 ✓" if mc_star else "Market Cap"}</div>
         </div>
-        <div class="metric-card mc-rose" style="grid-column: span 2;">
+        <div class="metric-card mc-rose" style="grid-column: span 6;">
             <div class="metric-label">유통주식수 (Float Shares)</div>
             <div class="metric-value" style="font-size:1.2rem;">{shares_str}{shares_star_html}</div>
             <div class="metric-delta {"delta-up" if shares_star else "delta-neu"}">{"20M주 이하 저부동주 ✓" if shares_star else "Float Shares"}</div>
         </div>
-        <div class="metric-card mc-rose">
+        <div class="metric-card mc-rose" style="grid-column: span 3;">
             <div class="metric-label">52주 최고가</div>
             <div class="metric-value">${high_52w:.2f}</div>
             <div class="metric-delta delta-neu">↓ {gap_52w_high:.1f}% 하단</div>
         </div>
-        <div class="metric-card mc-cyan">
+        <div class="metric-card mc-cyan" style="grid-column: span 3;">
             <div class="metric-label">52주 최저가</div>
             <div class="metric-value">${low_52w:.2f}</div>
             <div class="metric-delta delta-up">↑ {gap_52w_low:.1f}% 상단</div>
@@ -2937,9 +2952,8 @@ def render_news_section(ticker_input):
         parsed_list   = [parse_yahoo_news_item(r) for r in raw_news_list]
         titles_en     = [n["title"] for n in parsed_list]
 
-        def _translate(t): return translate_text(t)
-        with ThreadPoolExecutor(max_workers=5) as ex:
-            translated = list(ex.map(_translate, titles_en))
+        _translations = translate_texts_batch(titles_en)
+        translated    = [_translations.get(t, t) for t in titles_en]
 
         # ── ⚠️ 주식병합(리버스 스플릿) 예정 뉴스 감지 ────────────────
         split_source = [
@@ -3070,71 +3084,30 @@ if st.session_state.get("has_searched"):
                 "rsi":               current_rsi,
             })
 
-            render_top_summary_metrics(today, yesterday, hist, vol_ma20_ratio, score=ticker_score, desktop_mode=desktop_mode)
-
-            if desktop_mode:
-                col1, col2 = st.columns([4, 5])
-                with col1:
-                    render_technical_analysis(
-                        active_ticker, hist, today, yesterday,
-                        vol_ratio, vol_ma20_ratio,
-                        trading_value_krw_eok, TRADING_THRESHOLD,
-                        high_52w, low_52w,
-                        spike_df, offering_list, nasdaq_compliance
-                    )
-                with col2:
-                    # #성능 st.tabs는 선택 안 된 탭도 매번 내부 코드를 전부 실행해
-                    # 안 보는 탭의 뉴스/소셜 API까지 계속 호출되는 문제가 있었음.
-                    # segmented_control은 선택된 값만 알려주므로, 선택된 섹션만 조건부로
-                    # 렌더링(=API 호출)하도록 바꿔 불필요한 네트워크 호출을 없앰.
-                    desktop_view = st.segmented_control(
-                        "정보 보기",
-                        ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
-                        default="📰 뉴스 & 호재",
-                        required=True,
-                        key="desktop_info_view",
-                        label_visibility="collapsed",
-                    )
-                    if desktop_view == "📰 뉴스 & 호재":
-                        render_news_section(active_ticker)
-                    elif desktop_view == "💬 소셜 미디어":
-                        render_social_section(active_ticker)
-                    else:
-                        render_chart_interpretation(active_ticker, hist, float(today['Close']))
+            # #개선 PC 와이드 모드 제거에 따라 단일 컬럼 레이아웃만 사용 —
+            # 상단 요약 카드는 build_top_summary_cards_html()로 뽑아 기술분석
+            # 카드와 합쳐서 하나의 metric-grid로 렌더링한다.
+            top_cards_front, top_cards_end = build_top_summary_cards_html(today, yesterday, hist, vol_ma20_ratio, score=ticker_score)
+            render_technical_analysis(
+                active_ticker, hist, today, yesterday,
+                vol_ratio, vol_ma20_ratio,
+                trading_value_krw_eok, TRADING_THRESHOLD,
+                high_52w, low_52w,
+                spike_df, offering_list, nasdaq_compliance,
+                top_cards_front=top_cards_front, top_cards_end=top_cards_end,
+            )
+            st.markdown("---")
+            info_view = st.segmented_control(
+                "정보 보기",
+                ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
+                default="📰 뉴스 & 호재",
+                required=True,
+                key="info_view",
+                label_visibility="collapsed",
+            )
+            if info_view == "📰 뉴스 & 호재":
+                render_news_section(active_ticker)
+            elif info_view == "💬 소셜 미디어":
+                render_social_section(active_ticker)
             else:
-                # #개선 모바일 레이아웃 — "더 많은 정보를 한눈에" 요청 반영:
-                # 기존엔 기술 분석/뉴스/소셜을 3분할 세그먼트로 나눠 매번 탭을
-                # 눌러야만 볼 수 있었고, 특히 기술 분석(차트·매물대·수급)은
-                # 화면 진입 시 가장 먼저 확인하는 핵심 정보인데도 별도 탭 뒤에
-                # 숨어 있었음. 기술 분석 데이터는 이미 위에서 다 받아온 상태라
-                # 추가 API 호출 없이 항상 펼쳐 보여줄 수 있음.
-                # → 기술 분석은 항상 표시하고, 네트워크 호출이 있는 뉴스/소셜만
-                # 2지선다 세그먼트로 전환(터치 1회로 부담 없이 전환).
-                # #개선 "10개 카드를 한 섹션으로" 요청 반영: 상단 요약 카드 5개를
-                # build_top_summary_cards_html()로 뽑아 기술분석 카드 5개와 합쳐
-                # 하나의 metric-grid로 렌더링한다(render_top_summary_metrics는
-                # 모바일에서 아무것도 렌더링하지 않도록 위에서 이미 no-op 처리됨).
-                top_cards_front, top_cards_end = build_top_summary_cards_html(today, yesterday, hist, vol_ma20_ratio, score=ticker_score)
-                render_technical_analysis(
-                    active_ticker, hist, today, yesterday,
-                    vol_ratio, vol_ma20_ratio,
-                    trading_value_krw_eok, TRADING_THRESHOLD,
-                    high_52w, low_52w,
-                    spike_df, offering_list, nasdaq_compliance,
-                    top_cards_front=top_cards_front, top_cards_end=top_cards_end,
-                )
-                st.markdown("---")
-                mobile_view = st.segmented_control(
-                    "정보 보기",
-                    ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
-                    default="📰 뉴스 & 호재",
-                    required=True,
-                    key="mobile_info_view",
-                    label_visibility="collapsed",
-                )
-                if mobile_view == "📰 뉴스 & 호재":
-                    render_news_section(active_ticker)
-                elif mobile_view == "💬 소셜 미디어":
-                    render_social_section(active_ticker)
-                else:
-                    render_chart_interpretation(active_ticker, hist, float(today['Close']))
+                render_chart_interpretation(active_ticker, hist, float(today['Close']))
