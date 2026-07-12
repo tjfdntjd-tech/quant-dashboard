@@ -103,12 +103,11 @@ LIGHT_MODE_OVERRIDE_CSS = """
     .delta-up   { color: #047857 !important; }
     .delta-down { color: #dc2626 !important; }
     .delta-neu  { color: #475569 !important; }
-    .alert-title  { color: #b91c1c !important; }
-    .signal-chip  { color: #b91c1c !important; }
-    .china-banner-text { color: #991b1b !important; }
-    .china-banner-sub  { color: #7f1d1d !important; }
+    /* #디자인개선(컬러 그라디언트 카드): alert-banner/china-banner/split-banner는
+       이제 채도 높은 그라디언트 배경 + 흰색 텍스트로 자체 완결되는 카드라
+       라이트/다크 모드 보정이 불필요 (과거엔 어두운 배경 기준 저대비 파스텔
+       텍스트라 라이트 모드에서 진한 색으로 덮어써야 했음) */
     .sent-neu   { color: #92600a !important; }
-    .split-banner-title { color: #92600a !important; }
     .news-link  { color: #4338ca !important; }
     .news-link:hover { color: #6d28d9 !important; }
     .scan-title { color: #92600a !important; }
@@ -119,17 +118,20 @@ LIGHT_MODE_OVERRIDE_CSS = """
        #개선: rgba(148,163,184/255,255,255)류는 이제 다크/라이트 공통으로
        inject_css() 안의 통합 대비 보정(unified_contrast_css)에서 처리하므로
        여기서는 중복 제거. */
-    [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
+    /* #버그수정: 아래 4개 색상(#34d399/#fbbf24/#e0943a/#9c7ff2)은 실제로는
+       metric-card/glass-card/scan-header/news-card처럼 배경이 --card-solid로
+       항상 순검정 고정인 곳에서만 인라인으로 쓰이고 있어, 라이트 모드라고
+       어둡게 덮어쓰면 "어두운 배경 위 어두운 글씨"가 되어 오히려 안 보이게
+       됨. 카드 배경이 안 바뀌므로 원래의 밝은 색 그대로 두는 것이 맞음.
+       (st.dataframe 하이라이트에 쓰이는 #34d399만 예외적으로 흰 배경 위에
+       놓일 수 있으나, 해당 케이스는 소수라 카드 쪽 저대비를 막는 쪽을 우선함) */
     [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
     [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
     [style*="color:#f87171"],  [style*="color: #f87171"]  { color: #dc2626 !important; }
     [style*="color:#ef4444"],  [style*="color: #ef4444"]  { color: #b91c1c !important; }
     [style*="color:#fca5a5"],  [style*="color: #fca5a5"]  { color: #b91c1c !important; }
     [style*="color:#fecaca"],  [style*="color: #fecaca"]  { color: #991b1b !important; }
-    [style*="color:#fbbf24"],  [style*="color: #fbbf24"]  { color: #92600a !important; }
-    [style*="color:#f5b942"],  [style*="color: #f5b942"]  { color: #92600a !important; }
-    [style*="color:#a78bfa"],  [style*="color: #a78bfa"]  { color: #6d28d9 !important; }
-    [style*="color:#818cf8"],  [style*="color: #818cf8"]  { color: #4338ca !important; }
+    [style*="color:#7b7de3"],  [style*="color: #7b7de3"]  { color: #4338ca !important; }
     [style*="color:#60a5fa"],  [style*="color: #60a5fa"]  { color: #1d4ed8 !important; }
     [style*="color:#94a3b8"],  [style*="color: #94a3b8"]  { color: #475569 !important; }
     [style*="color:#ff6a00"],  [style*="color: #ff6a00"]  { color: #c2410c !important; }
@@ -173,25 +175,30 @@ _ICON_SVG = {
 
 def mono_icon_badge(icon_key: str, color: str = "#111827", size: int = 32,
                      glyph_size: int = 16, outline: bool = False) -> str:
-    """단색 원형 배지 아이콘 HTML(SVG)을 반환.
+    """리퀴드 글래스 스타일 원형 배지 아이콘 HTML(SVG)을 반환.
 
-    outline=False → 속이 찬 원(색상=color) + 흰색 아이콘 (참고 이미지 위쪽 2줄 스타일)
-    outline=True  → 테두리만 있는 원(색상=color) + 동일 색 아이콘 (참고 이미지 아래쪽 2줄 스타일)
+    #디자인개선(리퀴드 글래스): 참고로 받은 iOS 홈 화면 위젯 / 유리 토글
+    버튼 세트(둥근 원 위쪽에 흰 하이라이트가 맺히고, 테두리는 얇은 반투명
+    링, 바깥은 살짝 뜬 그림자로 볼록해 보이는 스타일)를 원형 배지에 반영.
+    실제 광택·그림자 레이어는 theme.css.tpl 의 .liquid-icon(::after)에서
+    처리하고, 여기서는 배경에 방향성 있는 radial-gradient 하이라이트를
+    원색 위에 얹어 CSS 레이어와 합쳐졌을 때 유리알처럼 보이게 한다.
+
+    outline=False → 컬러 유리 구슬 + 흰색 아이콘 (참고 이미지 위쪽 톤)
+    outline=True  → 반투명 유리판 + 테두리색 라인 아이콘 (참고 이미지 아래쪽 톤)
     """
     path = _ICON_SVG.get(icon_key, "")
     if outline:
         return (
-            f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
-            f'border:1.6px solid {color};display:flex;align-items:center;'
-            f'justify-content:center;flex-shrink:0;">'
+            f'<div class="liquid-icon liquid-icon-outline" '
+            f'style="width:{size}px;height:{size}px;border-color:{color};">'
             f'<svg width="{glyph_size}" height="{glyph_size}" viewBox="0 0 24 24" '
             f'fill="none" stroke="{color}" stroke-width="1.8" '
             f'stroke-linecap="round" stroke-linejoin="round">{path}</svg></div>'
         )
     return (
-        f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
-        f'background:{color};display:flex;align-items:center;'
-        f'justify-content:center;flex-shrink:0;">'
+        f'<div class="liquid-icon" style="width:{size}px;height:{size}px;'
+        f'background:{color};">'
         f'<svg width="{glyph_size}" height="{glyph_size}" viewBox="0 0 24 24" '
         f'fill="none" stroke="#ffffff" stroke-width="1.8" '
         f'stroke-linecap="round" stroke-linejoin="round">{path}</svg></div>'
@@ -986,7 +993,7 @@ def render_breakout_probability(calc: dict):
     tier_style = {
         "high": ("#34d399", "dot-green"),
         "mid":  ("#fbbf24", "dot-yellow"),
-        "low":  ("#fb7185", "dot-red"),
+        "low":  ("#f2617e", "dot-red"),
     }
     fill_color, dot_cls = tier_style.get(calc["tier"], ("#fbbf24", "dot-yellow"))
     score = calc["score"]
@@ -1269,10 +1276,15 @@ def fetch_stocktwits(ticker: str) -> dict:
                 link = (f"https://stocktwits.com/{username}/message/{msg_id}"
                         if msg_id else f"https://stocktwits.com/{username}")
                 messages.append({
-                    "user": username, "body": body, "sentiment": sentiment,
+                    "user": username, "body_en": body, "sentiment": sentiment,
                     "likes": likes, "date": created, "link": link,
                 })
             if messages:
+                # #개선 원문 보기 클릭 없이 바로 한글로 보이도록 StockTwits 본문도
+                # 일괄(batch) 번역 — Yahoo fallback과 동일한 캐시/번역 로직 재사용.
+                _translations = translate_texts_batch([m["body_en"] for m in messages])
+                for m in messages:
+                    m["body"] = _translations.get(m["body_en"], m["body_en"])
                 return {"bull": bull, "bear": bear, "messages": messages, "source": "stocktwits"}
     except Exception:
         pass
@@ -1340,12 +1352,12 @@ def render_social_section(ticker_input: str):
     if src == "stocktwits":
         src_icon_key = "quote"
         src_label = "StockTwits"
-        src_color = "#38bdf8"
+        src_color = "#2ec2e8"
         src_badge_cls = "platform-badge"
     else:
         src_icon_key = "news"
         src_label = "Yahoo Finance 뉴스 감성 분석"
-        src_color = "#a78bfa"
+        src_color = "#9c7ff2"
         src_badge_cls = "platform-badge"
 
     st.markdown(
@@ -1424,7 +1436,7 @@ def render_social_section(ticker_input: str):
             if src == "stocktwits":
                 source_html = f'<span class="platform-badge">StockTwits</span>{badge}<span>@{user_name}</span>{date_html}'
             else:
-                source_html = f'<span class="{src_badge_cls}" style="background:rgba(167,139,250,0.12);color:#a78bfa;border-color:rgba(167,139,250,0.25);">Yahoo Finance</span>{badge}<span>📰 {user_name}</span>'
+                source_html = f'<span class="{src_badge_cls}" style="background:rgba(156,127,242,0.12);color:#9c7ff2;border-color:rgba(156,127,242,0.25);">Yahoo Finance</span>{badge}<span>📰 {user_name}</span>'
 
             card_html = (
                 f'<div class="{card_cls}">' +
@@ -1678,13 +1690,13 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
 # ════════════════════════════════════════════════════════════════
 def inject_css(dark: bool = True):
     if dark:
-        bg_main      = "linear-gradient(135deg, #05080f 0%, #0a1220 45%, #0d1b2e 100%)"
-        bg_sidebar   = "linear-gradient(180deg, #070d18 0%, #0d1b2e 100%)"
+        bg_main      = "linear-gradient(180deg, #232326, #232326)"
+        bg_sidebar   = "linear-gradient(180deg, #0c0c0e 0%, #131315 100%)"
         glass_bg     = "rgba(255,255,255,0.04)"
         glass_border = "rgba(255,255,255,0.09)"
         metric_bg    = "rgba(255,255,255,0.045)"
         metric_bdr   = "rgba(255,255,255,0.1)"
-        tab_bg       = "rgba(255,255,255,0.04)"
+        tab_bg       = "rgba(255,255,255,0.06)"
         tab_bdr      = "rgba(255,255,255,0.08)"
         status_bg    = "rgba(255,255,255,0.035)"
         status_bdr   = "rgba(255,255,255,0.08)"
@@ -1716,69 +1728,35 @@ def inject_css(dark: bool = True):
         social_selftext_bdr = "rgba(255,255,255,0.1)"
         social_selftext_clr = "#e0b374"
 
-        # ── 다이나믹 다크모드 배경: 메시 그라디언트 + 파티클(트윙클) 오버레이 ──
-        mesh_bg_layers = (
-            "radial-gradient(circle at 12% 18%, rgba(56,189,248,0.18), transparent 38%),"
-            "radial-gradient(circle at 88% 12%, rgba(167,139,250,0.16), transparent 40%),"
-            "radial-gradient(circle at 78% 82%, rgba(52,211,153,0.12), transparent 42%),"
-            "radial-gradient(circle at 18% 86%, rgba(244,63,94,0.10), transparent 38%),"
-            "radial-gradient(circle at 50% 50%, rgba(245,158,11,0.06), transparent 55%)"
-        )
-        mesh_bg_size  = "180% 180%, 160% 160%, 200% 200%, 170% 170%, 220% 220%, 100% 100%"
-        mesh_bg_anim  = "meshFloat 26s ease-in-out infinite"
-        mesh_keyframes_css = """
-        @keyframes meshFloat {
-            0%   { background-position: 10% 20%, 90% 10%, 80% 85%, 15% 90%, 50% 50%, 0 0; }
-            50%  { background-position: 30% 35%, 65% 25%, 70% 65%, 30% 75%, 55% 45%, 0 0; }
-            100% { background-position: 10% 20%, 90% 10%, 80% 85%, 15% 90%, 50% 50%, 0 0; }
-        }
-        @keyframes particleTwinkle {
-            0%   { opacity: 0.35; }
-            50%  { opacity: 0.85; }
-            100% { opacity: 0.35; }
-        }
-        """
-        particle_overlay_css = """
-        [data-testid="stAppViewContainer"] { position: relative; }
-        [data-testid="stAppViewContainer"] > .main { position: relative; z-index: 1; }
-        [data-testid="stAppViewContainer"]::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            pointer-events: none;
-            z-index: 0;
-            background-image:
-                radial-gradient(circle at 8%  22%, rgba(255,255,255,0.9) 0, rgba(255,255,255,0.9) 1px, transparent 1.5px),
-                radial-gradient(circle at 23% 68%, rgba(255,255,255,0.7) 0, rgba(255,255,255,0.7) 1px, transparent 1.5px),
-                radial-gradient(circle at 41% 12%, rgba(56,189,248,0.8)  0, rgba(56,189,248,0.8)  1px, transparent 1.5px),
-                radial-gradient(circle at 62% 78%, rgba(255,255,255,0.6) 0, rgba(255,255,255,0.6) 1px, transparent 1.5px),
-                radial-gradient(circle at 77% 34%, rgba(167,139,250,0.8) 0, rgba(167,139,250,0.8) 1px, transparent 1.5px),
-                radial-gradient(circle at 89% 58%, rgba(255,255,255,0.7) 0, rgba(255,255,255,0.7) 1px, transparent 1.5px),
-                radial-gradient(circle at 95% 15%, rgba(52,211,153,0.8)  0, rgba(52,211,153,0.8)  1px, transparent 1.5px),
-                radial-gradient(circle at 34% 90%, rgba(255,255,255,0.6) 0, rgba(255,255,255,0.6) 1px, transparent 1.5px);
-            background-repeat: no-repeat;
-            animation: particleTwinkle 5s ease-in-out infinite alternate;
-        }
-        """
+        # ── #디자인개선(위젯 스타일 전면 교체): iOS 잠금화면 위젯 참고
+        # 이미지처럼 배경은 무광 플랫 그레이 한 장으로 통일하고, 카드
+        # 자체(순검정 + 네온 컬러 블록)가 시각적 주인공이 되도록 한다.
+        # 기존의 애니메이션 메시 그라디언트 + 반짝이는 파티클 오버레이는
+        # 이 스타일과 상충되므로(글로시 → 플랫) 다크 모드에서도 비활성화.
+        mesh_bg_layers = ""
+        mesh_bg_size  = "100% 100%"
+        mesh_bg_anim  = "none"
+        mesh_keyframes_css = ""
+        particle_overlay_css = ""
     else:
         bg_main      = "linear-gradient(135deg, #f0f4ff 0%, #e8eeff 40%, #f0f7ff 100%)"
         bg_sidebar   = "linear-gradient(180deg, #eef2ff 0%, #e8f0fe 100%)"
         glass_bg     = "rgba(255,255,255,0.72)"
-        glass_border = "rgba(99,102,241,0.15)"
+        glass_border = "rgba(90,91,214,0.15)"
         metric_bg    = "rgba(255,255,255,0.8)"
-        metric_bdr   = "rgba(99,102,241,0.15)"
+        metric_bdr   = "rgba(90,91,214,0.15)"
         tab_bg       = "rgba(255,255,255,0.7)"
-        tab_bdr      = "rgba(99,102,241,0.15)"
+        tab_bdr      = "rgba(90,91,214,0.15)"
         status_bg    = "rgba(255,255,255,0.7)"
-        status_bdr   = "rgba(99,102,241,0.12)"
+        status_bdr   = "rgba(90,91,214,0.12)"
         news_bg      = "rgba(255,255,255,0.72)"
-        news_bdr     = "rgba(99,102,241,0.15)"
+        news_bdr     = "rgba(90,91,214,0.15)"
         social_bg    = "rgba(255,255,255,0.72)"
-        social_bdr   = "rgba(99,102,241,0.15)"
+        social_bdr   = "rgba(90,91,214,0.15)"
         sent_wrap_bg = "rgba(255,255,255,0.8)"
-        sent_wrap_bdr= "rgba(99,102,241,0.12)"
-        sent_track   = "rgba(99,102,241,0.1)"
-        hr_color     = "rgba(99,102,241,0.12)"
+        sent_wrap_bdr= "rgba(90,91,214,0.12)"
+        sent_track   = "rgba(90,91,214,0.1)"
+        hr_color     = "rgba(90,91,214,0.12)"
         text_primary = "#1e1b4b"
         text_sec     = "#312e81"
         # #개선 요청: 명암(밝기)만 다른 회색 대신, 다크모드와 짝을 이루는
@@ -1788,13 +1766,13 @@ def inject_css(dark: bool = True):
         text_status  = "#374151"
         metric_label = "#1d5c85"
         sidebar_input_bg  = "rgba(255,255,255,0.9)"
-        sidebar_input_bdr = "rgba(99,102,241,0.4)"
+        sidebar_input_bdr = "rgba(90,91,214,0.4)"
         sidebar_input_clr = "#1e1b4b"
         textarea_bg  = "rgba(255,255,255,0.9)"
         plotly_tmpl  = "plotly_white"
         sector_name_clr  = "#1e1b4b"
         sector_ticker_clr= "#1d5c85"
-        social_selftext_bdr = "rgba(99,102,241,0.2)"
+        social_selftext_bdr = "rgba(90,91,214,0.2)"
         social_selftext_clr = "#8a5a1e"
 
         # 라이트 모드는 정적 배경 유지 (다이나믹 메시/파티클은 다크모드 전용)
@@ -1882,7 +1860,7 @@ def inject_css(dark: bool = True):
     #   렌더링되므로 !important 없이도 우선 적용되지만, 안전하게 !important 유지).
     unified_contrast_css = f"""
     [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] {{
-        color: {text_muted} !important;
+        color: var(--card-ink-muted) !important;
     }}
     [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] {{
         color: {"#ffffff" if dark else "#1e1b4b"} !important;
@@ -2342,8 +2320,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         mc_star        = False
         shares_star    = False
 
-    mc_star_html     = ' <span style="color:#f5b942;font-size:1rem;vertical-align:middle;" title="소형주 최적 구간 ($4M~$500M)">⭐</span>' if mc_star else ""
-    shares_star_html = ' <span style="color:#f5b942;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">⭐</span>' if shares_star else ""
+    mc_star_html     = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="소형주 최적 구간 ($4M~$500M)">⭐</span>' if mc_star else ""
+    shares_star_html = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">⭐</span>' if shares_star else ""
 
     st.markdown(f"""
     <div class="metric-grid metric-grid-12">
