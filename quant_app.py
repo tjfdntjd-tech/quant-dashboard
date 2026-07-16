@@ -525,6 +525,134 @@ def fetch_offering_history(ticker: str) -> list:
     except Exception:
         return []
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_short_interest(ticker: str) -> dict:
+    """
+    yfinance .info에서 공매도 관련 지표(공매도 수량, 전월 대비 변동,
+    Days-to-Cover, 유통주식 대비 공매도 비율)를 추출합니다.
+    Yahoo Finance의 공매도 데이터는 FINRA 집계 기준 통상 격주(2주) 간격으로만
+    갱신되므로 실시간 수치가 아니라 '가장 최근 발표된 결산일 기준' 값입니다.
+    """
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        return {}
+
+    shares_short = info.get("sharesShort")
+    if not shares_short:
+        return {}
+
+    prior_month     = info.get("sharesShortPriorMonth")
+    short_ratio     = info.get("shortRatio")               # Days-to-Cover
+    short_pct_float = info.get("shortPercentOfFloat")       # 유통주식 대비 비율 (0~1)
+    date_raw        = info.get("dateShortInterest")
+
+    pct_change_mom = None
+    if prior_month:
+        try:
+            pct_change_mom = (shares_short - prior_month) / prior_month * 100
+        except Exception:
+            pct_change_mom = None
+
+    date_str = ""
+    if date_raw:
+        try:
+            if isinstance(date_raw, (int, float)):
+                date_str = datetime.fromtimestamp(date_raw).strftime("%Y-%m-%d")
+            else:
+                date_str = pd.Timestamp(date_raw).strftime("%Y-%m-%d")
+        except Exception:
+            date_str = ""
+
+    return {
+        "shares_short":    shares_short,
+        "prior_month":     prior_month,
+        "pct_change_mom":  pct_change_mom,
+        "short_ratio":     short_ratio,
+        "short_pct_float": short_pct_float,
+        "date":            date_str,
+    }
+
+
+def calc_execution_strength(candles: pd.DataFrame) -> dict:
+    """
+    당일 3분봉(캔들)의 양봉/음봉 거래량 비율로 '체결강도'를 근사 추정합니다.
+    한국 HTS의 체결강도(매수체결량/매도체결량*100)는 틱 단위 호가 체결 데이터가
+    있어야 정확히 계산되지만, 미국 주식은 그런 실시간 체결 데이터를 공개 API로
+    구할 수 없습니다. 대안으로 각 3분봉의 방향(양봉=매수 우위, 음봉=매도 우위)에
+    거래량을 배분해 근사치를 산출합니다 — 참고용 프록시 지표입니다.
+    """
+    if candles is None or candles.empty or len(candles) < 2:
+        return {}
+    df = candles.copy()
+    up_vol   = float(df.loc[df["Close"] > df["Open"], "Volume"].sum())
+    down_vol = float(df.loc[df["Close"] < df["Open"], "Volume"].sum())
+    flat_vol = float(df.loc[df["Close"] == df["Open"], "Volume"].sum())
+
+    if up_vol <= 0 and down_vol <= 0:
+        return {}
+
+    if down_vol <= 0:
+        strength = 300.0  # 매도 체결이 거의 없어 상한 표시용 값
+        capped = True
+    else:
+        strength = (up_vol / down_vol) * 100
+        capped = strength > 300.0
+        strength = min(strength, 300.0)
+
+    return {
+        "strength":    strength,
+        "capped":      capped,
+        "up_volume":   up_vol,
+        "down_volume": down_vol,
+        "flat_volume": flat_vol,
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def calc_dilution_since_offering(ticker: str, offering_date: str) -> dict:
+    """
+    가장 최근 오퍼링(유상증자) 관련 공시일 이후, 실제 유통주식수가 얼마나
+    늘었는지를 yfinance의 과거 발행주식수 시계열(get_shares_full)로 추정합니다.
+
+    주의: ATM(시장가발행) 프로그램의 '승인 한도'나 '잔여 한도(달러 기준)'는
+    공시 원문(424B5 등)에서만 확인 가능하며 시세 데이터만으로는 알 수 없습니다.
+    본 함수는 그 대신 '공시일 이후 실제로 증가한 주식수(=이미 발행되어 시장에
+    풀린 것으로 추정되는 희석 물량)'를 근사 계산한 것입니다.
+    """
+    if not offering_date:
+        return {}
+    try:
+        offer_dt = pd.to_datetime(offering_date)
+    except Exception:
+        return {}
+    try:
+        shares_series = yf.Ticker(ticker).get_shares_full(
+            start=(offer_dt - timedelta(days=7)).strftime("%Y-%m-%d"),
+            end=datetime.now().strftime("%Y-%m-%d"),
+        )
+    except Exception:
+        return {}
+    if shares_series is None or shares_series.empty:
+        return {}
+
+    try:
+        shares_series = shares_series.sort_index()
+        before = shares_series[shares_series.index <= offer_dt]
+        base_shares   = float(before.iloc[-1]) if not before.empty else float(shares_series.iloc[0])
+        latest_shares = float(shares_series.iloc[-1])
+        diluted_shares = latest_shares - base_shares
+        diluted_pct = (diluted_shares / base_shares * 100) if base_shares else None
+        return {
+            "base_shares":    base_shares,
+            "latest_shares":  latest_shares,
+            "diluted_shares": diluted_shares,
+            "diluted_pct":    diluted_pct,
+        }
+    except Exception:
+        return {}
+
+
 def calc_nasdaq_compliance(hist: pd.DataFrame, today_close: float) -> dict:
     """
     나스닥 최소 호가 요건(Listing Rule 5550(a)(2)) 관련 잔여 유예기간을 추정합니다.
@@ -2219,7 +2347,8 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
 def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                                vol_ma20_ratio, trading_value_krw_eok, threshold_eok,
                                high_52w, low_52w, spike_df=None, offering_list=None,
-                               nasdaq_compliance=None, top_cards_front="", top_cards_end=""):
+                               nasdaq_compliance=None, top_cards_front="", top_cards_end="",
+                               short_interest=None, execution_strength=None):
     """기술적 조건 & 수급 점검 + 차트 (탭1 또는 좌측 컬럼)
 
     top_cards_front/top_cards_end이 주어지면(모바일) 상단 요약 카드들을 이 함수의
@@ -2323,6 +2452,52 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     mc_star_html     = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="소형주 최적 구간 ($4M~$500M)">⭐</span>' if mc_star else ""
     shares_star_html = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">⭐</span>' if shares_star else ""
 
+    # ── 공매도 수량 카드 문자열 준비 ──────────────────────────────
+    short_interest = short_interest or {}
+    if short_interest.get("shares_short"):
+        ss = short_interest["shares_short"]
+        if ss >= 1_000_000_000:
+            short_str = f"{ss / 1_000_000_000:.2f}B주"
+        elif ss >= 1_000_000:
+            short_str = f"{ss / 1_000_000:.1f}M주"
+        else:
+            short_str = f"{ss:,.0f}주"
+        pct_mom = short_interest.get("pct_change_mom")
+        if pct_mom is not None:
+            short_delta_cls  = "delta-up" if pct_mom >= 0 else "delta-down"
+            short_delta_text = f"전월 대비 {'▲' if pct_mom >= 0 else '▼'} {abs(pct_mom):.1f}%"
+        else:
+            short_delta_cls, short_delta_text = "delta-neu", "공매도 수량 (Short Interest)"
+        short_sub = f"기준일: {short_interest['date']}" if short_interest.get("date") else ""
+    else:
+        short_str, short_delta_cls, short_delta_text, short_sub = "N/A", "delta-neu", "데이터 없음", ""
+
+    short_pct_float = short_interest.get("short_pct_float")
+    short_ratio     = short_interest.get("short_ratio")
+    if short_pct_float is not None or short_ratio is not None:
+        float_pct_str = f"{short_pct_float * 100:.1f}%" if short_pct_float is not None else "N/A"
+        dtc_str       = f"{short_ratio:.1f}일" if short_ratio is not None else "N/A"
+        short_ratio_star = (short_pct_float is not None) and (short_pct_float >= 0.20)
+        short_ratio_html = (
+            f'유통주식 대비 <strong>{float_pct_str}</strong>'
+            + (' <span style="color:#e0943a;" title="숏스퀴즈 가능 구간(20%↑)">⭐</span>' if short_ratio_star else "")
+            + f' · Days-to-Cover <strong>{dtc_str}</strong>'
+        )
+        short_ratio_delta_cls = "delta-up" if short_ratio_star else "delta-neu"
+    else:
+        short_ratio_html, short_ratio_delta_cls = "데이터 없음", "delta-neu"
+
+    # ── 체결강도 카드 문자열 준비 (당일 3분봉 양봉/음봉 거래량 비율 근사치) ──
+    execution_strength = execution_strength or {}
+    if execution_strength.get("strength") is not None:
+        es_val = execution_strength["strength"]
+        es_capped_mark = "+" if execution_strength.get("capped") else ""
+        es_delta_cls = "delta-up" if es_val >= 100 else "delta-down"
+        es_delta_txt = "매수 우위" if es_val >= 100 else "매도 우위"
+        es_str = f"{es_val:.0f}{es_capped_mark}"
+    else:
+        es_str, es_delta_cls, es_delta_txt = "N/A", "delta-neu", "장중 데이터 없음"
+
     st.markdown(f"""
     <div class="metric-grid metric-grid-12">
         {top_cards_front}
@@ -2347,6 +2522,22 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             <div class="metric-delta delta-up">↑ {gap_52w_low:.1f}% 상단</div>
         </div>
         {top_cards_end}
+        <div class="metric-card mc-rose" style="grid-column: span 4;">
+            <div class="metric-label">공매도 수량 (Short Interest)</div>
+            <div class="metric-value" style="font-size:1.15rem;">{short_str}</div>
+            <div class="metric-delta {short_delta_cls}">{short_delta_text}</div>
+            {f'<div style="font-size:0.65rem;color:rgba(148,163,184,0.55);margin-top:0.15rem;">{short_sub}</div>' if short_sub else ''}
+        </div>
+        <div class="metric-card mc-amber" style="grid-column: span 4;">
+            <div class="metric-label">공매도 비율 · Days-to-Cover</div>
+            <div class="metric-value" style="font-size:1.0rem;">{short_ratio_html}</div>
+            <div class="metric-delta {short_ratio_delta_cls}">FINRA 격주 집계 기준</div>
+        </div>
+        <div class="metric-card mc-teal" style="grid-column: span 4;">
+            <div class="metric-label">체결강도 (당일, 근사치)</div>
+            <div class="metric-value">{es_str}</div>
+            <div class="metric-delta {es_delta_cls}">{es_delta_txt}</div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2551,6 +2742,38 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 {more_note}
             </div>
             """, unsafe_allow_html=True)
+
+            # ── 최근 오퍼링(ATM 등) 이후 추정 희석 물량 ──────────────
+            dilution = calc_dilution_since_offering(ticker_input, offering_list[0]["date"])
+            if dilution and dilution.get("diluted_shares") is not None:
+                d_shares = dilution["diluted_shares"]
+                d_pct    = dilution.get("diluted_pct")
+                if d_shares > 0:
+                    d_dot  = "dot-red" if (d_pct or 0) >= 5 else "dot-yellow"
+                    d_text = (
+                        f"최근 공시(<strong>{offering_list[0]['date']}</strong>) 이후 유통주식수 약 "
+                        f"<strong>{d_shares:,.0f}주</strong> 증가"
+                        + (f" (<strong>+{d_pct:.1f}%</strong>)" if d_pct is not None else "")
+                        + " — 이미 시장에 풀린 것으로 추정되는 희석 물량입니다."
+                    )
+                elif d_shares < 0:
+                    d_dot, d_text = "dot-green", (
+                        f"최근 공시(<strong>{offering_list[0]['date']}</strong>) 이후 유통주식수는 오히려 "
+                        f"약 {abs(d_shares):,.0f}주 감소했습니다 (자사주 매입/역병합 등의 영향일 수 있음)."
+                    )
+                else:
+                    d_dot, d_text = "dot-blue", f"최근 공시(<strong>{offering_list[0]['date']}</strong>) 이후 유통주식수 변화가 감지되지 않았습니다."
+                st.markdown(f"""
+                <div class="glass-card" style="margin-top:0.6rem;">
+                    <div class="status-row">
+                        <div class="status-item"><div class="status-dot {d_dot}"></div><div class="status-text">{d_text}</div></div>
+                    </div>
+                    <div style="font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;">
+                        ⚠️ ATM(시장가발행) 프로그램의 승인·잔여 한도(달러 기준)는 공시 원문에서만 확인 가능합니다.
+                        위 수치는 공시일 이후 실제 유통주식수 증감을 근사 추적한 것이며, 잔여 한도 자체가 아닙니다.
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
         else:
             st.markdown("""
             <div class="glass-card">
@@ -3008,18 +3231,23 @@ if st.session_state.get("has_searched"):
         # 기존엔 history → spike_history → offering_history → 환율 이 순차 대기라
         # 체감 속도가 느렸음. fetch_ticker_info는 이후 render_technical_analysis에서
         # 다시 호출되지만 1시간 캐시라 여기서 미리 예열해두면 그때는 즉시 반환됨.
-        with ThreadPoolExecutor(max_workers=5) as _prefetch_ex:
+        with ThreadPoolExecutor(max_workers=7) as _prefetch_ex:
             _fut_hist     = _prefetch_ex.submit(fetch_history, active_ticker)
             _fut_spike    = _prefetch_ex.submit(fetch_spike_history, active_ticker)
             _fut_offering = _prefetch_ex.submit(fetch_offering_history, active_ticker)
             _fut_info     = _prefetch_ex.submit(fetch_ticker_info, active_ticker)
             _fut_fx       = _prefetch_ex.submit(fetch_usd_to_krw)
+            _fut_short    = _prefetch_ex.submit(fetch_short_interest, active_ticker)
+            _fut_intraday = _prefetch_ex.submit(fetch_intraday_3min, active_ticker)
 
             hist          = _fut_hist.result()
             spike_df      = _fut_spike.result()
             offering_list = _fut_offering.result()
             _fut_info.result()   # 캐시 예열 목적 — 결과는 render_technical_analysis에서 재조회
-            usd_krw       = _fut_fx.result()
+            usd_krw        = _fut_fx.result()
+            short_interest = _fut_short.result()
+            intraday_3min  = _fut_intraday.result()
+            execution_strength = calc_execution_strength(intraday_3min)
 
         if hist.empty:
             st.error("❌ 올바르지 않은 티커명이거나 데이터를 불러올 수 없습니다. 영문 티커를 확인해 주세요.")
@@ -3073,6 +3301,7 @@ if st.session_state.get("has_searched"):
                 high_52w, low_52w,
                 spike_df, offering_list, nasdaq_compliance,
                 top_cards_front=top_cards_front, top_cards_end=top_cards_end,
+                short_interest=short_interest, execution_strength=execution_strength,
             )
             st.markdown("---")
             info_view = st.segmented_control(
