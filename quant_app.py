@@ -398,8 +398,11 @@ def enrich_screener_results(tickers: tuple) -> dict:
             rsi     = round(float(rsi_val), 1) if pd.notna(rsi_val) else None
 
             vol_ratio = (today['Volume'] / yesterday['Volume'] * 100) if yesterday['Volume'] else 0
-            vol_ma20  = today['VOL_MA20'] if today['VOL_MA20'] > 0 else 1
-            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100
+            # #버그수정: VOL_MA20이 20일 미만 데이터로 NaN이 될 수 있음(calc_indicators 참고).
+            # 예전처럼 1주로 나누면 수백만% 같은 말도 안 되는 값이 나와 "거래량 급증"이
+            # 오탐지됨 → 데이터 부족 시 현재 거래량 자체를 기준으로 삼아 중립(100%)로 처리.
+            vol_ma20  = today['VOL_MA20'] if pd.notna(today['VOL_MA20']) and today['VOL_MA20'] > 0 else today['Volume']
+            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100 if vol_ma20 else 0
 
             trading_value_usd     = today['Close'] * today['Volume']
             trading_value_krw_eok = (trading_value_usd * usd_krw) / 100_000_000
@@ -845,23 +848,28 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     c = df['Close']
 
     # 이동평균선
-    df['MA5']   = c.rolling(5,   min_periods=1).mean()
-    df['MA20']  = c.rolling(20,  min_periods=1).mean()
-    df['MA120'] = c.rolling(120, min_periods=1).mean()
+    # #버그수정: min_periods=1이면 상장 초기(데이터 20~120일 미만) 종목에서
+    # 실제 창 크기보다 훨씬 적은 데이터로 평균을 내버려 "MA120 돌파" 같은
+    # 신호가 사실상 최근 종가와 거의 같은 값을 기준으로 왜곡되어 발생했음.
+    # → 각 지표는 자신의 룩백 기간만큼 데이터가 쌓이기 전까지 NaN으로 두고,
+    # 신호 판정부에서 NaN을 "데이터 부족"으로 명시적으로 처리한다.
+    df['MA5']   = c.rolling(5,   min_periods=5).mean()
+    df['MA20']  = c.rolling(20,  min_periods=20).mean()
+    df['MA120'] = c.rolling(120, min_periods=120).mean()
 
     # #8 거래량 20일 이동평균
-    df['VOL_MA20'] = df['Volume'].rolling(20, min_periods=1).mean()
+    df['VOL_MA20'] = df['Volume'].rolling(20, min_periods=20).mean()
 
     # RSI (14일)
     delta = c.diff()
-    gain  = delta.clip(lower=0).rolling(14, min_periods=1).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+    gain  = delta.clip(lower=0).rolling(14, min_periods=14).mean()
+    loss  = (-delta.clip(upper=0)).rolling(14, min_periods=14).mean()
     rs    = gain / loss.replace(0, float('nan'))
     df['RSI'] = 100 - (100 / (1 + rs))
 
     # 볼린저밴드 (20일, ±2σ)
-    mid            = c.rolling(20, min_periods=1).mean()
-    std            = c.rolling(20, min_periods=1).std()
+    mid            = c.rolling(20, min_periods=20).mean()
+    std            = c.rolling(20, min_periods=20).std()
     df['BB_MID']   = mid
     df['BB_UPPER'] = mid + 2 * std
     df['BB_LOWER'] = mid - 2 * std
@@ -886,7 +894,8 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def calc_supply_zones(hist: pd.DataFrame, current_price: float,
                        n_bins: int = 40, lookback_days: int = 252,
-                       heavy_mult: float = 1.3, max_zones: int = 4) -> dict:
+                       heavy_mult: float = 1.3, max_zones: int = 4,
+                       max_zone_width_pct: float = 3.0) -> dict:
     """
     최근 lookback_days(기본 1년) 동안의 일별 High~Low 구간에 그날의 거래량을
     균등 분산시켜 '거래량 프로파일(Volume Profile)'을 만든 뒤, 현재가보다 위쪽에서
@@ -896,6 +905,12 @@ def calc_supply_zones(hist: pd.DataFrame, current_price: float,
     #개선 render_technical_analysis()와 render_chart_interpretation()이
     동일한 (hist, current_price, 파라미터) 조합으로 매번 이 함수를 중복 호출하고
     있었음 → st.cache_data로 캐싱해 같은 화면 렌더링 내 중복 계산을 제거.
+
+    #개선 인접한 '매물대 판정' 구간(bin)을 조건 없이 통째로 하나의 매물대로
+    합치다 보니, 거래량이 넓은 가격대에 걸쳐 몰린 종목은 매물대 폭이 지나치게
+    넓게(예: 현재가 대비 10%+) 잡혀 실전에서 저항선으로 쓰기 어려웠음.
+    → max_zone_width_pct(현재가 대비 최대 폭 %)를 넘는 병합 구간은 거래량
+    가중치를 유지한 채 여러 개의 좁은 매물대로 재분할한다.
     """
     df = hist.tail(lookback_days).dropna(subset=["High", "Low", "Volume"])
     if df.empty or len(df) < 10 or current_price <= 0:
@@ -957,26 +972,46 @@ def calc_supply_zones(hist: pd.DataFrame, current_price: float,
         zones.append(group)
 
     zone_infos = []
+    max_allowed_width = (current_price * (max_zone_width_pct / 100.0)) if max_zone_width_pct and max_zone_width_pct > 0 else None
+
     for group in zones:
-        g_low  = bin_edges[group[0]]
-        g_high = bin_edges[group[-1] + 1]
-        g_vol  = bin_vols[group].sum()
-        g_mid  = float((bin_mids[group] * bin_vols[group]).sum() / g_vol) if g_vol > 0 else float(np.mean([g_low, g_high]))
-        pct_of_total = g_vol / total_volume * 100
-        gap_pct = (g_mid - current_price) / current_price * 100
-        avg_bin_in_zone = avg_vol * len(group)
-        ratio = g_vol / avg_bin_in_zone if avg_bin_in_zone > 0 else 1
-        if ratio >= 2.0:
-            strength = "매우 강함"
-        elif ratio >= 1.5:
-            strength = "강함"
+        group = list(group)
+        g_low_full  = bin_edges[group[0]]
+        g_high_full = bin_edges[group[-1] + 1]
+        width_full  = g_high_full - g_low_full
+
+        # 병합된 구간이 허용 폭보다 넓으면 거래량 가중치를 유지한 채
+        # 여러 개의 좁은 하위 매물대로 재분할한다.
+        if max_allowed_width and width_full > max_allowed_width and len(group) > 1:
+            n_splits = min(len(group), int(np.ceil(width_full / max_allowed_width)))
+            sub_groups = [list(a) for a in np.array_split(np.array(group), n_splits)]
         else:
-            strength = "보통"
-        zone_infos.append({
-            "low": float(g_low), "high": float(g_high), "mid": g_mid,
-            "volume": float(g_vol), "pct_of_total": pct_of_total,
-            "gap_pct": gap_pct, "strength": strength, "ratio": ratio,
-        })
+            sub_groups = [group]
+
+        for sub in sub_groups:
+            if not sub:
+                continue
+            g_low  = bin_edges[sub[0]]
+            g_high = bin_edges[sub[-1] + 1]
+            g_vol  = bin_vols[sub].sum()
+            if g_vol <= 0:
+                continue
+            g_mid  = float((bin_mids[sub] * bin_vols[sub]).sum() / g_vol)
+            pct_of_total = g_vol / total_volume * 100
+            gap_pct = (g_mid - current_price) / current_price * 100
+            avg_bin_in_zone = avg_vol * len(sub)
+            ratio = g_vol / avg_bin_in_zone if avg_bin_in_zone > 0 else 1
+            if ratio >= 2.0:
+                strength = "매우 강함"
+            elif ratio >= 1.5:
+                strength = "강함"
+            else:
+                strength = "보통"
+            zone_infos.append({
+                "low": float(g_low), "high": float(g_high), "mid": g_mid,
+                "volume": float(g_vol), "pct_of_total": pct_of_total,
+                "gap_pct": gap_pct, "strength": strength, "ratio": ratio,
+            })
 
     zone_infos.sort(key=lambda z: z["mid"])
     zone_infos = zone_infos[:max_zones]
@@ -1060,7 +1095,11 @@ def calc_breakout_probability(current_price: float, supply_data: dict,
 
     # 3) 수급 압력 — 거래량(15점) + RSI 모멘텀(15점)
     vol_score = min(max((vol_ma20_ratio - 80.0) / 220.0, 0.0), 1.0) * 15.0
-    if 50 <= rsi_val <= 75:
+    # #버그수정: 상장 14거래일 미만 종목은 RSI가 NaN → 예전엔 이 값이 그대로
+    # 산식에 들어가 total 점수 전체가 NaN("nan점")으로 새는 문제가 있었음.
+    if pd.isna(rsi_val):
+        rsi_score = 7.5   # 데이터 부족 시 중립(만점의 절반)으로 처리
+    elif 50 <= rsi_val <= 75:
         rsi_score = 15.0
     elif rsi_val < 50:
         rsi_score = 15.0 * max(0.0, rsi_val / 50.0)
@@ -1097,7 +1136,7 @@ def calc_breakout_probability(current_price: float, supply_data: dict,
         "factors": [
             ("저항까지 거리", proximity_score, 30.0, f"매물대 하단까지 +{gap_low_pct:.1f}%"),
             ("매물벽 두께",   strength_score, 25.0, f"강도: {zone['strength']} (평균 대비 {ratio:.1f}배)"),
-            ("수급 압력",     pressure_score, 30.0, f"거래량 MA20 대비 {vol_ma20_ratio:.0f}% · RSI {rsi_val:.0f}"),
+            ("수급 압력",     pressure_score, 30.0, f"거래량 MA20 대비 {vol_ma20_ratio:.0f}% · RSI {'데이터 부족' if pd.isna(rsi_val) else f'{rsi_val:.0f}'}"),
             ("MACD 흐름",     macd_score,     15.0, "골든크로스" if macd_cross else ("상승 배열" if macd_val > macd_sig_val else "약세 배열")),
         ],
     }
@@ -1362,8 +1401,208 @@ def get_stock_titan_data(ticker: str) -> list:
         return []
 
 # ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # 소셜 미디어 — StockTwits & Reddit
 # ════════════════════════════════════════════════════════════════
+# 간단 키워드 기반 감성 분류 — StockTwits(야후 대체 경로)·레딧에서 공통 사용
+SENTIMENT_POS_KW = {"beat", "bullish", "surge", "soar", "rally", "up", "gain", "buy",
+                     "upgrade", "strong", "growth", "profit", "record", "positive",
+                     "moon", "squeeze", "calls", "long", "breakout", "rocket"}
+SENTIMENT_NEG_KW = {"miss", "bearish", "drop", "fall", "decline", "cut", "downgrade",
+                     "loss", "weak", "lawsuit", "fraud", "sell", "negative", "concern",
+                     "puts", "dump", "scam", "short", "crash", "bagholders"}
+
+# 모멘텀/소형주 관련 논의가 활발한 서브레딧 위주로 선정
+REDDIT_SUBREDDITS = ["wallstreetbets", "stocks", "pennystocks", "Shortsqueeze", "smallstreetbets"]
+
+def _ticker_actually_mentioned(text: str, ticker: str) -> bool:
+    """
+    레딧 검색 API가 느슨하게 매칭한 결과(제목/본문 어디에도 티커가 없는 글)를
+    걸러내기 위한 필터. '$TSLA', 'TSLA', 'tsla'는 인정하고, 'TSLAX'처럼 티커가
+    더 긴 단어의 일부로 등장하는 경우(오탐)는 제외한다.
+    """
+    if not text or not ticker:
+        return False
+    pattern = r'(?<![A-Za-z0-9])\$?' + re.escape(ticker) + r'(?![A-Za-z0-9])'
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+# 레딧 API 규정상 요구되는 형식: "platform:app ID:version (by /u/username)"
+# ⚠️ 반드시 아래 "quant_dashboard_user"를 본인의 실제 레딧 계정명으로 바꾸세요.
+# Reddit Responsible Builder Policy(App Transparency 조항)는 API 접근 주체를
+# 실제와 다르게 표시하는 것을 금지합니다 — placeholder를 그대로 배포하면 안 됩니다.
+REDDIT_USER_AGENT = "web:quant-dashboard-app:v1.1 (by /u/quant_dashboard_user)"
+
+
+@st.cache_data(ttl=3300, show_spinner=False)  # 토큰 실제 만료(1시간)보다 살짝 짧게 캐시
+def fetch_reddit_oauth_token(client_id: str, client_secret: str) -> str:
+    """
+    레딧 공식 OAuth2 API(application-only, client_credentials 방식)로 액세스
+    토큰을 발급받습니다. 비인증 공개 JSON 엔드포인트(www.reddit.com/.../search.json)는
+    데이터센터 IP를 봇으로 간주해 403/429로 차단하는 경우가 흔한 반면, 등록된 앱
+    자격증명으로 인증하는 이 방식은 신원이 확인되므로 클라우드 호스팅 환경에서도
+    정상적으로 동작합니다. reddit.com/prefs/apps 에서 'script' 타입 앱을 만들면
+    무료로 client_id/secret을 발급받을 수 있습니다.
+    """
+    if not client_id or not client_secret:
+        return ""
+    try:
+        resp = requests.post(
+            "https://www.reddit.com/api/v1/access_token",
+            auth=(client_id, client_secret),
+            data={"grant_type": "client_credentials"},
+            headers={"User-Agent": REDDIT_USER_AGENT},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            return ""
+        return resp.json().get("access_token", "") or ""
+    except Exception:
+        return ""
+
+
+def _reddit_children_oauth(sub: str, ticker: str, token: str) -> tuple[list, str]:
+    """공식 OAuth API(oauth.reddit.com)로 서브레딧 내 검색 — IP 차단 없이 동작."""
+    url = f"https://oauth.reddit.com/r/{sub}/search"
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": REDDIT_USER_AGENT}
+    params = {"q": ticker, "restrict_sr": "1", "sort": "new", "t": "month", "limit": 8}
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=8)
+    except Exception as e:
+        return [], f"r/{sub}(공식 API): 연결 실패 ({e})"
+    if resp.status_code != 200:
+        return [], f"r/{sub}(공식 API): HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except Exception:
+        return [], f"r/{sub}(공식 API): 응답 파싱 실패"
+    return ((data.get("data") or {}).get("children")) or [], ""
+
+
+def _reddit_children_public(sub: str, ticker: str, session: requests.Session) -> tuple[list, str]:
+    """
+    비인증 공개 JSON 엔드포인트 — OAuth 자격증명이 없을 때의 fallback.
+    데이터센터 IP(클라우드 호스팅)에서는 403/429로 차단되기 쉽다.
+    """
+    domains = ["https://www.reddit.com", "https://old.reddit.com"]
+    last_error = ""
+    for domain in domains:
+        url = f"{domain}/r/{sub}/search.json"
+        params = {"q": ticker, "restrict_sr": "1", "sort": "new", "t": "month", "limit": 8}
+        try:
+            resp = session.get(url, headers=_random_headers(), params=params, timeout=6)
+        except Exception as e:
+            last_error = f"r/{sub}: 연결 실패 ({e})"
+            continue
+        if resp.status_code != 200:
+            last_error = f"r/{sub}: HTTP {resp.status_code}"
+            continue
+        try:
+            data = resp.json()
+        except Exception:
+            last_error = f"r/{sub}: 응답 파싱 실패"
+            continue
+        return ((data.get("data") or {}).get("children")) or [], ""
+    return [], last_error
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_reddit_posts(ticker: str, client_id: str = "", client_secret: str = "") -> dict:
+    """
+    관련 서브레딧에서 티커 언급 게시글을 수집합니다. StockTwits 외 추가 투자자
+    여론 소스로, 밈주식/급등주 논의가 활발한 서브레딧(wallstreetbets, pennystocks
+    등) 위주로 검색합니다.
+
+    client_id/client_secret이 주어지면 레딧 공식 OAuth API(oauth.reddit.com)를
+    우선 사용합니다 — 클라우드 호스팅(데이터센터 IP)에서도 차단되지 않는 정식
+    경로입니다. 자격증명이 없거나 실패하면 비인증 공개 JSON 엔드포인트로
+    자동 폴백합니다 (이 경로는 403/429로 막힐 수 있음).
+
+    반환: {"posts": list[dict], "source": "reddit"|"", "bull": int, "bear": int,
+           "error": str, "used_oauth": bool}
+    """
+    token = fetch_reddit_oauth_token(client_id, client_secret) if (client_id and client_secret) else ""
+    used_oauth = bool(token)
+    session = get_http_session()
+
+    all_posts  = []
+    seen_ids   = set()
+    last_error = ""
+
+    for sub in REDDIT_SUBREDDITS:
+        children: list = []
+        if token:
+            children, err = _reddit_children_oauth(sub, ticker, token)
+            if err:
+                last_error = err
+                # 토큰이 만료/무효화됐을 가능성 등 — 공개 엔드포인트로 한 번 더 시도
+                children, err2 = _reddit_children_public(sub, ticker, session)
+                if err2 and not children:
+                    last_error = err2
+        else:
+            children, err = _reddit_children_public(sub, ticker, session)
+            if err:
+                last_error = err
+
+        for child in children:
+            d = child.get("data") or {}
+            post_id = d.get("id")
+            if not post_id or post_id in seen_ids:
+                continue
+            title    = (d.get("title") or "").strip()
+            selftext = (d.get("selftext") or "")
+            if not title:
+                continue
+            # #신규 레딧 검색이 반환하는 느슨한(유사어 포함) 매칭 결과 중
+            # 실제로 제목/본문에 티커가 등장하지 않는 노이즈를 제거
+            if not _ticker_actually_mentioned(f"{title} {selftext}", ticker):
+                continue
+            seen_ids.add(post_id)
+            all_posts.append({
+                "id":           post_id,
+                "subreddit":    d.get("subreddit", sub),
+                "title_en":     title,
+                "body_en":      selftext[:400].strip(),
+                "score":        d.get("score", 0) or 0,
+                "num_comments": d.get("num_comments", 0) or 0,
+                "created_utc":  d.get("created_utc", 0) or 0,
+                "permalink":    f"https://www.reddit.com{d.get('permalink', '')}" if d.get("permalink") else "",
+                "author":       d.get("author", "익명") or "익명",
+            })
+
+    if not all_posts:
+        return {"posts": [], "source": "", "bull": 0, "bear": 0,
+                "error": last_error or "알 수 없는 오류", "used_oauth": used_oauth}
+
+    all_posts.sort(key=lambda p: p["created_utc"], reverse=True)
+    all_posts = all_posts[:15]
+
+    for p in all_posts:
+        words   = set(p["title_en"].lower().split())
+        is_bull = bool(words & SENTIMENT_POS_KW)
+        is_bear = bool(words & SENTIMENT_NEG_KW)
+        if is_bull and not is_bear:
+            p["sentiment"] = "Bullish"
+        elif is_bear and not is_bull:
+            p["sentiment"] = "Bearish"
+        else:
+            p["sentiment"] = ""
+        try:
+            p["date"] = datetime.fromtimestamp(p["created_utc"]).strftime("%Y-%m-%d") if p["created_utc"] else ""
+        except Exception:
+            p["date"] = ""
+
+    translations = translate_texts_batch([p["title_en"] for p in all_posts])
+    for p in all_posts:
+        p["title"] = translations.get(p["title_en"], p["title_en"])
+
+    bull = sum(1 for p in all_posts if p["sentiment"] == "Bullish")
+    bear = sum(1 for p in all_posts if p["sentiment"] == "Bearish")
+
+    return {"posts": all_posts, "source": "reddit", "bull": bull, "bear": bear,
+            "error": "", "used_oauth": used_oauth}
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_stocktwits(ticker: str) -> dict:
     """
@@ -1418,10 +1657,8 @@ def fetch_stocktwits(ticker: str) -> dict:
         pass
 
     # ── 2차 fallback: yfinance 뉴스 + 키워드 감성 분류 ──────────
-    POS_KW = {"beat", "bullish", "surge", "soar", "rally", "up", "gain", "buy",
-              "upgrade", "strong", "growth", "profit", "record", "positive"}
-    NEG_KW = {"miss", "bearish", "drop", "fall", "decline", "cut", "downgrade",
-              "loss", "weak", "lawsuit", "fraud", "sell", "negative", "concern"}
+    POS_KW = SENTIMENT_POS_KW
+    NEG_KW = SENTIMENT_NEG_KW
 
     try:
         raw_news = yf.Ticker(ticker).news or []
@@ -1574,6 +1811,93 @@ def render_social_section(ticker_input: str):
                 f'<div class="social-stats">' +
                 likes_html +
                 (f'<a href="{msg_link}" target="_blank" style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">원문 보기 →</a>' if msg_link else "") +
+                f'</div></div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════
+    # 레딧 — StockTwits 외 추가 투자자 여론 소스
+    # ════════════════════════════════════════════════════════════
+    st.markdown("<div style='margin-top:1.2rem;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        f'''<div class="section-header" style="margin-top:0.3rem;">
+            {mono_icon_badge("chat", color="#ff5700", size=26, glyph_size=13)}
+            <div class="section-title" style="color:#ff5700;font-size:0.88rem;">Reddit</div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner("Reddit 관련 서브레딧에서 언급 게시글 수집 중..."):
+        _reddit_cid = st.session_state.get("reddit_client_id", "")
+        _reddit_csec = st.session_state.get("reddit_client_secret", "")
+        reddit_data = fetch_reddit_posts(ticker_input, _reddit_cid, _reddit_csec)
+
+    if reddit_data and reddit_data.get("used_oauth"):
+        st.markdown(
+            '''<div style="font-size:0.7rem;color:rgba(52,211,153,0.8);margin:-0.1rem 0 0.5rem 0;">
+            ✅ Reddit 공식 API(OAuth)로 조회 — 접속 차단 없이 안정적으로 동작합니다.</div>''',
+            unsafe_allow_html=True,
+        )
+
+    if not reddit_data or not reddit_data.get("posts"):
+        err = (reddit_data or {}).get("error", "")
+        err_html = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.35rem;'>사유: {err}</div>"
+                    if err else "")
+        oauth_hint = "" if (reddit_data or {}).get("used_oauth") else (
+            "<div style='font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.35rem;'>"
+            "💡 사이드바 'Reddit API 설정'에 무료 자격증명을 등록하면 접속 차단 없이 안정적으로 조회할 수 있습니다.</div>"
+        )
+        st.markdown(f'''
+        <div class="glass-card"><div class="status-row"><div class="status-item">
+            <div class="status-dot dot-yellow"></div>
+            <div class="status-text">최근 관련 게시글을 찾지 못했습니다 (검색 대상: {", ".join("r/"+s for s in REDDIT_SUBREDDITS)}). 클라우드 호스팅 환경에서는 Reddit이 접속을 차단하는 경우가 있습니다.</div>
+        </div></div>{err_html}{oauth_hint}</div>
+        ''', unsafe_allow_html=True)
+    else:
+        r_bull, r_bear = reddit_data.get("bull", 0), reddit_data.get("bear", 0)
+        r_total = r_bull + r_bear
+        r_bull_pct = round(r_bull / r_total * 100) if r_total else 50
+
+        st.markdown(f"""
+        <div class="sentiment-bar-wrap">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+                <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">레딧 여론 게이지</span>
+                <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);">총 {len(reddit_data["posts"])}건 &nbsp;·&nbsp; 🟢 {r_bull} &nbsp;🔴 {r_bear}</span>
+            </div>
+            <div class="sentiment-bar-track">
+                <div class="sentiment-bar-fill" style="width:{r_bull_pct}%;"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.25rem;">
+                <span>🟢 Bullish {r_bull_pct}%</span>
+                <span>🔴 Bearish {100 - r_bull_pct}%</span>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+        for p in reddit_data["posts"]:
+            sent = p["sentiment"]
+            if sent == "Bullish":
+                card_cls = "social-card social-bull"
+                badge    = '<span class="bull-badge">🟢 Bullish</span>'
+            elif sent == "Bearish":
+                card_cls = "social-card social-bear"
+                badge    = '<span class="bear-badge">🔴 Bearish</span>'
+            else:
+                card_cls = "social-card"
+                badge    = ""
+
+            sub_badge  = f'<span class="platform-badge" style="background:rgba(255,87,0,0.12);color:#ff5700;border-color:rgba(255,87,0,0.28);">r/{p["subreddit"]}</span>'
+            stats_html = f'<span>⬆️ {p["score"]:,}</span><span>💬 {p["num_comments"]:,}</span>'
+            date_html  = f'<span>·</span><span>{p["date"]}</span>' if p.get("date") else ""
+            body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{p["title_en"]}</div>')
+
+            card_html = (
+                f'<div class="{card_cls}">' +
+                f'<div class="social-meta">{sub_badge}{badge}<span>u/{p["author"]}</span>{date_html}</div>' +
+                f'<div class="social-body">{p["title"]}</div>' +
+                body_en_html +
+                f'<div class="social-stats">' +
+                stats_html +
+                (f'<a href="{p["permalink"]}" target="_blank" style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">원문 보기 →</a>' if p.get("permalink") else "") +
                 f'</div></div>'
             )
             st.markdown(card_html, unsafe_allow_html=True)
@@ -1769,6 +2093,7 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         hist_daily, current_price,
         n_bins=supply_n_bins, lookback_days=supply_lookback_days,
         heavy_mult=supply_heavy_mult, max_zones=supply_max_zones,
+        max_zone_width_pct=supply_max_width_pct,
     )
 
     extra_question = st.text_input(
@@ -1846,9 +2171,9 @@ def inject_css(dark: bool = True):
         text_dimmed  = "#e0b374"
         text_status  = "#cbd5e1"
         metric_label = "#8fc4e8"
-        sidebar_input_bg  = "rgba(255,255,255,0.05)"
+        sidebar_input_bg  = "rgba(255,255,255,0.92)"
         sidebar_input_bdr = "rgba(139,92,246,0.4)"
-        sidebar_input_clr = "#e2e8f0"
+        sidebar_input_clr = "#000000"
         textarea_bg  = "rgba(255,255,255,0.04)"
         plotly_tmpl  = "plotly_dark"
         sector_name_clr  = "#f8fafc"
@@ -1895,7 +2220,7 @@ def inject_css(dark: bool = True):
         metric_label = "#1d5c85"
         sidebar_input_bg  = "rgba(255,255,255,0.9)"
         sidebar_input_bdr = "rgba(90,91,214,0.4)"
-        sidebar_input_clr = "#1e1b4b"
+        sidebar_input_clr = "#000000"
         textarea_bg  = "rgba(255,255,255,0.9)"
         plotly_tmpl  = "plotly_white"
         sector_name_clr  = "#1e1b4b"
@@ -2154,8 +2479,10 @@ if st.session_state.favorites:
                     y          = fav_hist.iloc[-2]
                     pct        = (t['Close'] - y['Close']) / y['Close'] * 100
                     # #8 거래량 20일 MA 대비 비율
-                    vol_ma20   = t['VOL_MA20'] if t['VOL_MA20'] > 0 else 1
-                    vol_r      = (t['Volume'] / vol_ma20) * 100
+                    # #버그수정: 데이터 부족(20일 미만)으로 VOL_MA20이 NaN일 때 1로 나누면
+                    # 거래량 수십만%가 되어 "🔥거래량" 신호가 오탐지됨 → 중립(100%) 처리.
+                    vol_ma20   = t['VOL_MA20'] if pd.notna(t['VOL_MA20']) and t['VOL_MA20'] > 0 else t['Volume']
+                    vol_r      = (t['Volume'] / vol_ma20) * 100 if vol_ma20 else 0
                     vol_ratio  = (t['Volume'] / y['Volume'] * 100) if y['Volume'] else 0
                     rsi        = t['RSI']
                     macd_cross = t['MACD'] > t['MACD_SIG'] and y['MACD'] <= y['MACD_SIG']
@@ -2251,6 +2578,55 @@ with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
                    "무료 티어(분당 요청 제한)로 충분히 사용 가능합니다.")
 
 # ════════════════════════════════════════════════════════════════
+# #신규 레딧 공식 API(OAuth) 자격증명 설정 — 클라우드 IP 차단 우회
+# 비인증 공개 JSON 엔드포인트(www.reddit.com/.../search.json)는 데이터센터 IP를
+# 봇으로 간주해 403/429로 차단하는 경우가 흔함. 여기에 무료로 발급받은
+# client_id/secret을 입력하면 레딧 공식 OAuth API(oauth.reddit.com)를 우선
+# 사용해 이 문제를 근본적으로 회피한다. 입력하지 않으면 기존처럼 비인증
+# 공개 엔드포인트로 자동 폴백.
+#
+# ⚠️ Reddit Responsible Builder Policy 준수 필요:
+# https://support.reddithelp.com/hc/en-us/articles/42728983564564
+# - 개인/비상업적 이용 목적 범위 내에서만 사용 (상업화·유료 서비스 전환 시
+#   별도의 서면 승인이 Reddit으로부터 필요)
+# - 수집한 데이터를 AI/ML 모델 학습에 사용하거나 재판매/재라이선싱 금지
+# - REDDIT_USER_AGENT를 실제 계정명으로 바꿔 접근 주체를 투명하게 표시할 것
+# - API 호출 한도를 초과하거나 우회하지 말 것 (현재 구현은 5분 캐시 +
+#   서브레딧당 요청 1회로 낮은 호출량 유지)
+# ════════════════════════════════════════════════════════════════
+st.sidebar.markdown("---")
+with st.sidebar.expander("🧵 Reddit API 설정 (선택사항)", expanded=False):
+    _reddit_id_secret, _reddit_secret_secret = "", ""
+    try:
+        _reddit_id_secret     = st.secrets.get("REDDIT_CLIENT_ID", "")
+        _reddit_secret_secret = st.secrets.get("REDDIT_CLIENT_SECRET", "")
+    except Exception:
+        pass
+
+    if _reddit_id_secret and _reddit_secret_secret:
+        st.session_state["reddit_client_id"]     = _reddit_id_secret
+        st.session_state["reddit_client_secret"] = _reddit_secret_secret
+        st.caption("✅ Reddit API 자격증명이 앱 설정(secrets)에 등록되어 있습니다.")
+    else:
+        st.text_input(
+            "Client ID", key="reddit_client_id",
+            help="reddit.com/prefs/apps 에서 'script' 타입 앱을 만들면 무료로 발급받습니다. "
+                 "앱 이름 아래 표시되는 짧은 문자열입니다.",
+            placeholder="예: aBcD1234efGh",
+        )
+        st.text_input(
+            "Client Secret", type="password", key="reddit_client_secret",
+            placeholder="secret 항목의 값",
+        )
+        st.caption(
+            "🔒 입력한 값은 저장되지 않고 현재 세션에서만 사용됩니다. "
+            "비워두면 비인증 공개 엔드포인트로 자동 동작하며, 지금은 이 방식만으로 "
+            "충분히 사용 가능합니다. 참고로 레딧이 최근 정책을 강화해 신규 Data API "
+            "앱 승인은 주로 모더레이션(서브레딧 운영) 용도에 한정하고 있어, 개인용 "
+            "조회 목적으로는 승인이 안 날 수 있습니다 — 급하게 발급받으실 필요는 없습니다."
+        )
+
+# ════════════════════════════════════════════════════════════════
 # #개선 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
 # 기존엔 calc_supply_zones()의 n_bins/lookback_days/heavy_mult가
 # 코드에 고정값으로 박혀 있어 종목별 민감도 조절이 불가능했음.
@@ -2277,6 +2653,12 @@ with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
     supply_max_zones = st.slider(
         "표시할 매물대 개수", min_value=2, max_value=8, value=4, step=1,
     )
+    supply_max_width_pct = st.slider(
+        "매물대 최대 폭 (현재가 대비 %)", min_value=1.0, max_value=10.0, value=3.0, step=0.5,
+        help="하나의 매물대가 가질 수 있는 최대 가격 폭을 현재가 대비 %로 제한합니다. "
+             "거래량이 넓은 가격대에 걸쳐 몰린 종목은 이 값을 넘는 매물대를 여러 개의 "
+             "좁은 매물대로 자동 분할해서 보여줍니다. 값이 작을수록 더 잘게 쪼개집니다."
+    )
 
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
@@ -2290,14 +2672,18 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     RSI/종합점수는 맨 뒤로 보낸다."""
     price_chg   = ((today_data['Close'] - yesterday_data['Close']) / yesterday_data['Close']) * 100
     current_rsi = df_calculated['RSI'].iloc[-1]
-    rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
+    rsi_available = pd.notna(current_rsi)
+    # #버그수정: 상장 14일 미만 종목은 RSI가 NaN → 예전엔 "보통"으로 잘못 표시되고
+    # {:.1f} 포맷팅 시 "nan"이 그대로 찍혔음. 데이터 부족 상태를 명시적으로 분기.
+    rsi_status  = ("과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")) if rsi_available else "데이터 부족"
     score_label = None
     if score is not None:
         score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
 
     pct_color = "delta-up" if price_chg >= 0 else "delta-down"
     pct_arrow = "▲" if price_chg >= 0 else "▼"
-    rsi_color = "delta-down" if current_rsi >= 70 else ("delta-up" if current_rsi <= 30 else "delta-neu")
+    rsi_color = ("delta-down" if current_rsi >= 70 else ("delta-up" if current_rsi <= 30 else "delta-neu")) if rsi_available else "delta-neu"
+    rsi_value_html = f"{current_rsi:.1f}" if rsi_available else "—"
 
     score_card_html = ""
     if score is not None:
@@ -2331,7 +2717,7 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     end_html = (
         f'<div class="metric-card mc-cyan" style="grid-column: span 3;">'
         f'<div class="metric-label">RSI (14)</div>'
-        f'<div class="metric-value">{current_rsi:.1f}</div>'
+        f'<div class="metric-value">{rsi_value_html}</div>'
         f'<div class="metric-delta {rsi_color}">{rsi_status}</div>'
         f'</div>'
         f'{score_card_html}'
@@ -2479,9 +2865,9 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         dtc_str       = f"{short_ratio:.1f}일" if short_ratio is not None else "N/A"
         short_ratio_star = (short_pct_float is not None) and (short_pct_float >= 0.20)
         short_ratio_html = (
-            f'유통주식 대비 <strong>{float_pct_str}</strong>'
+            f'유통주식 대비 <strong style="font-size:1em;">{float_pct_str}</strong>'
             + (' <span style="color:#e0943a;" title="숏스퀴즈 가능 구간(20%↑)">⭐</span>' if short_ratio_star else "")
-            + f' · Days-to-Cover <strong>{dtc_str}</strong>'
+            + f' · Days-to-Cover <strong style="font-size:1em;">{dtc_str}</strong>'
         )
         short_ratio_delta_cls = "delta-up" if short_ratio_star else "delta-neu"
     else:
@@ -2601,6 +2987,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         lookback_days=supply_lookback_days,
         heavy_mult=supply_heavy_mult,
         max_zones=supply_max_zones,
+        max_zone_width_pct=supply_max_width_pct,
     )
     breakout_calc = calc_breakout_probability(
         float(today['Close']), supply_data,
@@ -2638,7 +3025,11 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         # ── 이동평균선 배열 ──────────────────────────────────────
         ui_section_header(mono_icon_badge("trend", color="var(--c-teal)"), "이동평균선 배열", "icon-teal", "title-teal")
 
-        if today['MA5'] > today['MA20'] > today['MA120']:
+        # #버그수정: 상장 120일 미만 종목은 MA120이 NaN이라 아래 조건이 모두 False가 되어
+        # 예전엔 "이평선 밀집" 문구로 얼버무려졌음(값도 nan으로 찍힘) → 데이터 부족을 명시.
+        if pd.isna(today['MA120']):
+            ma_dot, ma_text = "dot-blue", "상장 120거래일 미만 — MA120 데이터 부족 (신뢰도 낮은 구간)"
+        elif today['MA5'] > today['MA20'] > today['MA120']:
             ma_dot, ma_text = "dot-green", "<strong>완전 정배열</strong> — 강력한 상승 추세 유지 중"
         elif today['Close'] > today['MA120'] and yesterday['Close'] <= yesterday['MA120']:
             ma_dot, ma_text = "dot-green", "<strong>120일선 돌파!</strong> — 급등 초입 타점"
@@ -2646,7 +3037,9 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             ma_dot, ma_text = "dot-blue", f"이평선 밀집 — 에너지 응축 횡보 구간 &nbsp;|&nbsp; MA5 <strong>${today['MA5']:.1f}</strong> / MA20 <strong>${today['MA20']:.1f}</strong>"
 
         # ── RSI ──────────────────────────────────────────────────
-        if rsi_val >= 70:
+        if pd.isna(rsi_val):
+            rsi_dot, rsi_txt = "dot-blue", "상장 14거래일 미만 — RSI 데이터 부족"
+        elif rsi_val >= 70:
             rsi_dot, rsi_txt = "dot-yellow", f"<strong>RSI {rsi_val:.1f} — 과매수</strong> 단기 조정 가능성 주의"
         elif rsi_val <= 30:
             rsi_dot, rsi_txt = "dot-green",  f"<strong>RSI {rsi_val:.1f} — 과매도</strong> 반등 매수 타점"
@@ -2654,14 +3047,18 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             rsi_dot, rsi_txt = "dot-blue",   f"RSI <strong>{rsi_val:.1f}</strong> — 중립 구간 (30~70)"
 
         # ── 볼린저밴드 ─────────────────────────────────────────────
-        bb_range = today['BB_UPPER'] - today['BB_LOWER']
-        bb_pct   = (today['Close'] - today['BB_LOWER']) / bb_range * 100 if bb_range else 50
-        if today['Close'] >= today['BB_UPPER']:
-            bb_dot, bb_txt = "dot-yellow", f"<strong>볼린저 상단 터치 ({bb_pct:.0f}%)</strong> — 과열 구간"
-        elif today['Close'] <= today['BB_LOWER']:
-            bb_dot, bb_txt = "dot-green",  f"<strong>볼린저 하단 터치 ({bb_pct:.0f}%)</strong> — 반등 구간"
+        if pd.isna(today['BB_UPPER']) or pd.isna(today['BB_LOWER']):
+            bb_dot, bb_txt = "dot-blue", "상장 20거래일 미만 — 볼린저밴드 데이터 부족"
         else:
-            bb_dot, bb_txt = "dot-blue",   f"밴드 내부 <strong>{bb_pct:.0f}%</strong> 위치 &nbsp;|&nbsp; 밴드폭 {today['BB_WIDTH']:.1f}%"
+            bb_range = today['BB_UPPER'] - today['BB_LOWER']
+            bb_pct   = (today['Close'] - today['BB_LOWER']) / bb_range * 100 if bb_range else 50
+            if today['Close'] >= today['BB_UPPER']:
+                bb_dot, bb_txt = "dot-yellow", f"<strong>볼린저 상단 터치 ({bb_pct:.0f}%)</strong> — 과열 구간"
+            elif today['Close'] <= today['BB_LOWER']:
+                bb_dot, bb_txt = "dot-green",  f"<strong>볼린저 하단 터치 ({bb_pct:.0f}%)</strong> — 반등 구간"
+            else:
+                bb_dot, bb_txt = "dot-blue",   f"밴드 내부 <strong>{bb_pct:.0f}%</strong> 위치 &nbsp;|&nbsp; 밴드폭 {today['BB_WIDTH']:.1f}%"
+
 
         # ── MACD ───────────────────────────────────────────────────
         hist_val  = today['MACD_HIST']
@@ -3264,8 +3661,10 @@ if st.session_state.get("has_searched"):
 
             # 거래량 — 전일 대비 + MA20 대비
             vol_ratio      = (today['Volume'] / yesterday['Volume']) * 100 if yesterday['Volume'] else 0
-            vol_ma20       = today['VOL_MA20'] if today['VOL_MA20'] > 0 else 1
-            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100   # #8
+            # #버그수정: 상장 20일 미만 종목은 VOL_MA20이 NaN → 1로 나누면 "거래량(MA20 대비)"
+            # 카드에 수백만%가 찍히는 오류가 있었음. 데이터 부족 시 중립(100%)으로 처리.
+            vol_ma20       = today['VOL_MA20'] if pd.notna(today['VOL_MA20']) and today['VOL_MA20'] > 0 else today['Volume']
+            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100 if vol_ma20 else 0   # #8
 
             # 거래대금 (실시간 환율 적용 — 위에서 병렬로 이미 받아온 값 재사용)
             trading_value_usd     = today['Close'] * today['Volume']
