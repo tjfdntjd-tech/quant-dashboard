@@ -333,10 +333,96 @@ for _k, _v in _defaults.items():
 # ════════════════════════════════════════════════════════════════
 # 캐시 래퍼 함수
 # ════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_history(ticker: str) -> pd.DataFrame:
     """yfinance 1년치 OHLCV — 동일 티커 재검색 시 재다운로드 없이 즉시 반환"""
     return yf.Ticker(ticker).history(period="1y")
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_extended_price(ticker: str) -> dict:
+    """
+    장전(Pre-Market) / 장후(After-Hours) / 데이장 실시간 가격 조회.
+    - 미국주식: marketState PRE/POST + preMarketPrice/postMarketPrice
+    - 한국주식(.KS/.KQ): regularMarketPrice를 실시간으로 읽어 현재가로 표시
+                         (야후 파이낸스가 KRX 데이장 가격을 regularMarketPrice에 반영)
+
+    반환:
+        {
+          "market_state":    str,    # PRE | REGULAR | POST | CLOSED
+          "regular_price":   float,  # 정규장 기준가
+          "extended_price":  float,  # 장전/장후/데이장 가격 (없으면 None)
+          "extended_pct":    float,  # 기준가 대비 등락률
+          "label":           str,    # 표시 레이블
+          "is_korean":       bool,   # 한국 주식 여부
+          "currency":        str,    # "USD" | "KRW"
+        }
+    """
+    is_korean = ticker.upper().endswith(".KS") or ticker.upper().endswith(".KQ")
+    try:
+        info  = yf.Ticker(ticker).info or {}
+        state = info.get("marketState", "CLOSED")
+        reg   = float(info.get("regularMarketPrice") or info.get("currentPrice") or 0.0)
+        currency = "KRW" if is_korean else "USD"
+
+        if is_korean:
+            # 한국 거래소: 데이장(08:00~09:00 KST)과 정규장(09:00~15:30 KST)
+            # 야후 파이낸스는 데이장 가격을 regularMarketPrice에 실시간 반영함
+            # preMarketPrice/postMarketPrice 필드는 한국 주식에서 보통 없음
+            pre_price  = info.get("preMarketPrice")
+            post_price = info.get("postMarketPrice")
+            prev_close = float(info.get("regularMarketPreviousClose") or
+                               info.get("previousClose") or reg or 0.0)
+
+            if state in ("PRE", "PREPRE") and pre_price:
+                ext = float(pre_price)
+                lbl = "데이장 (장전)"
+            elif state in ("POST", "POSTPOST") and post_price:
+                ext = float(post_price)
+                lbl = "시간외 (장후)"
+            elif state == "REGULAR":
+                # 정규장 중: regularMarketPrice가 실시간 가격
+                ext = reg
+                lbl = "정규장 (실시간)"
+            else:
+                # CLOSED: 가장 최근 종가
+                ext = reg if reg else None
+                lbl = "장 마감"
+
+            base = prev_close if prev_close else reg
+            ext_pct = ((ext - base) / base * 100) if (ext and base) else None
+        else:
+            # 미국 주식 기존 로직
+            if state in ("PRE", "PREPRE"):
+                ext = info.get("preMarketPrice")
+                lbl = "장전 거래 (Pre-Market)"
+            elif state in ("POST", "POSTPOST"):
+                ext = info.get("postMarketPrice")
+                lbl = "장후 거래 (After-Hours)"
+            elif state == "REGULAR":
+                ext = None
+                lbl = "정규장"
+            else:
+                ext = None
+                lbl = "시장 마감"
+            ext = float(ext) if ext else None
+            ext_pct = ((ext - reg) / reg * 100) if (ext and reg) else None
+
+        return {
+            "market_state":   state,
+            "regular_price":  reg,
+            "extended_price": ext,
+            "extended_pct":   ext_pct,
+            "label":          lbl,
+            "is_korean":      is_korean,
+            "currency":       currency,
+        }
+    except Exception:
+        return {
+            "market_state": "CLOSED", "regular_price": 0.0,
+            "extended_price": None, "extended_pct": None,
+            "label": "시장 마감", "is_korean": is_korean, "currency": "KRW" if is_korean else "USD",
+        }
+
 
 @st.cache_data(ttl=120, show_spinner=False)
 def fetch_top_gainers(min_pct: float, min_price: float, max_price: float,
@@ -531,13 +617,13 @@ def fetch_offering_history(ticker: str) -> list:
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_short_interest(ticker: str) -> dict:
     """
-    yfinance .info에서 공매도 관련 지표(공매도 수량, 전월 대비 변동,
-    Days-to-Cover, 유통주식 대비 공매도 비율)를 추출합니다.
-    Yahoo Finance의 공매도 데이터는 FINRA 집계 기준 통상 격주(2주) 간격으로만
-    갱신되므로 실시간 수치가 아니라 '가장 최근 발표된 결산일 기준' 값입니다.
+    yfinance .info에서 공매도 관련 지표를 추출합니다.
+    fetch_ticker_info() 캐시를 재사용해 중복 네트워크 요청을 방지합니다.
     """
     try:
-        info = yf.Ticker(ticker).info or {}
+        info = fetch_ticker_info(ticker) or {}
+        if not info:
+            info = yf.Ticker(ticker).info or {}
     except Exception:
         return {}
 
@@ -1334,7 +1420,7 @@ def _fetch_detail(link: str, headers: dict):
         pass
     return sentiment, impact
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def get_stock_titan_data(ticker: str) -> list:
     url     = f"https://www.stocktitan.net/overview/{ticker}/"
     session = get_http_session()  # 커넥션 풀 재사용
@@ -1402,7 +1488,7 @@ def get_stock_titan_data(ticker: str) -> list:
 
 # ════════════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════════════
-# 소셜 미디어 — StockTwits & Reddit
+# 소셜 미디어 — StockTwits
 # ════════════════════════════════════════════════════════════════
 # 간단 키워드 기반 감성 분류 — StockTwits(야후 대체 경로)·레딧에서 공통 사용
 SENTIMENT_POS_KW = {"beat", "bullish", "surge", "soar", "rally", "up", "gain", "buy",
@@ -1412,198 +1498,8 @@ SENTIMENT_NEG_KW = {"miss", "bearish", "drop", "fall", "decline", "cut", "downgr
                      "loss", "weak", "lawsuit", "fraud", "sell", "negative", "concern",
                      "puts", "dump", "scam", "short", "crash", "bagholders"}
 
-# 모멘텀/소형주 관련 논의가 활발한 서브레딧 위주로 선정
-REDDIT_SUBREDDITS = ["wallstreetbets", "stocks", "pennystocks", "Shortsqueeze", "smallstreetbets"]
 
-def _ticker_actually_mentioned(text: str, ticker: str) -> bool:
-    """
-    레딧 검색 API가 느슨하게 매칭한 결과(제목/본문 어디에도 티커가 없는 글)를
-    걸러내기 위한 필터. '$TSLA', 'TSLA', 'tsla'는 인정하고, 'TSLAX'처럼 티커가
-    더 긴 단어의 일부로 등장하는 경우(오탐)는 제외한다.
-    """
-    if not text or not ticker:
-        return False
-    pattern = r'(?<![A-Za-z0-9])\$?' + re.escape(ticker) + r'(?![A-Za-z0-9])'
-    return re.search(pattern, text, re.IGNORECASE) is not None
-
-
-# 레딧 API 규정상 요구되는 형식: "platform:app ID:version (by /u/username)"
-# ⚠️ 반드시 아래 "quant_dashboard_user"를 본인의 실제 레딧 계정명으로 바꾸세요.
-# Reddit Responsible Builder Policy(App Transparency 조항)는 API 접근 주체를
-# 실제와 다르게 표시하는 것을 금지합니다 — placeholder를 그대로 배포하면 안 됩니다.
-REDDIT_USER_AGENT = "web:quant-dashboard-app:v1.1 (by /u/quant_dashboard_user)"
-
-
-@st.cache_data(ttl=3300, show_spinner=False)  # 토큰 실제 만료(1시간)보다 살짝 짧게 캐시
-def fetch_reddit_oauth_token(client_id: str, client_secret: str) -> str:
-    """
-    레딧 공식 OAuth2 API(application-only, client_credentials 방식)로 액세스
-    토큰을 발급받습니다. 비인증 공개 JSON 엔드포인트(www.reddit.com/.../search.json)는
-    데이터센터 IP를 봇으로 간주해 403/429로 차단하는 경우가 흔한 반면, 등록된 앱
-    자격증명으로 인증하는 이 방식은 신원이 확인되므로 클라우드 호스팅 환경에서도
-    정상적으로 동작합니다. reddit.com/prefs/apps 에서 'script' 타입 앱을 만들면
-    무료로 client_id/secret을 발급받을 수 있습니다.
-    """
-    if not client_id or not client_secret:
-        return ""
-    try:
-        resp = requests.post(
-            "https://www.reddit.com/api/v1/access_token",
-            auth=(client_id, client_secret),
-            data={"grant_type": "client_credentials"},
-            headers={"User-Agent": REDDIT_USER_AGENT},
-            timeout=8,
-        )
-        if resp.status_code != 200:
-            return ""
-        return resp.json().get("access_token", "") or ""
-    except Exception:
-        return ""
-
-
-def _reddit_children_oauth(sub: str, ticker: str, token: str) -> tuple[list, str]:
-    """공식 OAuth API(oauth.reddit.com)로 서브레딧 내 검색 — IP 차단 없이 동작."""
-    url = f"https://oauth.reddit.com/r/{sub}/search"
-    headers = {"Authorization": f"Bearer {token}", "User-Agent": REDDIT_USER_AGENT}
-    params = {"q": ticker, "restrict_sr": "1", "sort": "new", "t": "month", "limit": 8}
-    try:
-        resp = requests.get(url, headers=headers, params=params, timeout=8)
-    except Exception as e:
-        return [], f"r/{sub}(공식 API): 연결 실패 ({e})"
-    if resp.status_code != 200:
-        return [], f"r/{sub}(공식 API): HTTP {resp.status_code}"
-    try:
-        data = resp.json()
-    except Exception:
-        return [], f"r/{sub}(공식 API): 응답 파싱 실패"
-    return ((data.get("data") or {}).get("children")) or [], ""
-
-
-def _reddit_children_public(sub: str, ticker: str, session: requests.Session) -> tuple[list, str]:
-    """
-    비인증 공개 JSON 엔드포인트 — OAuth 자격증명이 없을 때의 fallback.
-    데이터센터 IP(클라우드 호스팅)에서는 403/429로 차단되기 쉽다.
-    """
-    domains = ["https://www.reddit.com", "https://old.reddit.com"]
-    last_error = ""
-    for domain in domains:
-        url = f"{domain}/r/{sub}/search.json"
-        params = {"q": ticker, "restrict_sr": "1", "sort": "new", "t": "month", "limit": 8}
-        try:
-            resp = session.get(url, headers=_random_headers(), params=params, timeout=6)
-        except Exception as e:
-            last_error = f"r/{sub}: 연결 실패 ({e})"
-            continue
-        if resp.status_code != 200:
-            last_error = f"r/{sub}: HTTP {resp.status_code}"
-            continue
-        try:
-            data = resp.json()
-        except Exception:
-            last_error = f"r/{sub}: 응답 파싱 실패"
-            continue
-        return ((data.get("data") or {}).get("children")) or [], ""
-    return [], last_error
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_reddit_posts(ticker: str, client_id: str = "", client_secret: str = "") -> dict:
-    """
-    관련 서브레딧에서 티커 언급 게시글을 수집합니다. StockTwits 외 추가 투자자
-    여론 소스로, 밈주식/급등주 논의가 활발한 서브레딧(wallstreetbets, pennystocks
-    등) 위주로 검색합니다.
-
-    client_id/client_secret이 주어지면 레딧 공식 OAuth API(oauth.reddit.com)를
-    우선 사용합니다 — 클라우드 호스팅(데이터센터 IP)에서도 차단되지 않는 정식
-    경로입니다. 자격증명이 없거나 실패하면 비인증 공개 JSON 엔드포인트로
-    자동 폴백합니다 (이 경로는 403/429로 막힐 수 있음).
-
-    반환: {"posts": list[dict], "source": "reddit"|"", "bull": int, "bear": int,
-           "error": str, "used_oauth": bool}
-    """
-    token = fetch_reddit_oauth_token(client_id, client_secret) if (client_id and client_secret) else ""
-    used_oauth = bool(token)
-    session = get_http_session()
-
-    all_posts  = []
-    seen_ids   = set()
-    last_error = ""
-
-    for sub in REDDIT_SUBREDDITS:
-        children: list = []
-        if token:
-            children, err = _reddit_children_oauth(sub, ticker, token)
-            if err:
-                last_error = err
-                # 토큰이 만료/무효화됐을 가능성 등 — 공개 엔드포인트로 한 번 더 시도
-                children, err2 = _reddit_children_public(sub, ticker, session)
-                if err2 and not children:
-                    last_error = err2
-        else:
-            children, err = _reddit_children_public(sub, ticker, session)
-            if err:
-                last_error = err
-
-        for child in children:
-            d = child.get("data") or {}
-            post_id = d.get("id")
-            if not post_id or post_id in seen_ids:
-                continue
-            title    = (d.get("title") or "").strip()
-            selftext = (d.get("selftext") or "")
-            if not title:
-                continue
-            # #신규 레딧 검색이 반환하는 느슨한(유사어 포함) 매칭 결과 중
-            # 실제로 제목/본문에 티커가 등장하지 않는 노이즈를 제거
-            if not _ticker_actually_mentioned(f"{title} {selftext}", ticker):
-                continue
-            seen_ids.add(post_id)
-            all_posts.append({
-                "id":           post_id,
-                "subreddit":    d.get("subreddit", sub),
-                "title_en":     title,
-                "body_en":      selftext[:400].strip(),
-                "score":        d.get("score", 0) or 0,
-                "num_comments": d.get("num_comments", 0) or 0,
-                "created_utc":  d.get("created_utc", 0) or 0,
-                "permalink":    f"https://www.reddit.com{d.get('permalink', '')}" if d.get("permalink") else "",
-                "author":       d.get("author", "익명") or "익명",
-            })
-
-    if not all_posts:
-        return {"posts": [], "source": "", "bull": 0, "bear": 0,
-                "error": last_error or "알 수 없는 오류", "used_oauth": used_oauth}
-
-    all_posts.sort(key=lambda p: p["created_utc"], reverse=True)
-    all_posts = all_posts[:15]
-
-    for p in all_posts:
-        words   = set(p["title_en"].lower().split())
-        is_bull = bool(words & SENTIMENT_POS_KW)
-        is_bear = bool(words & SENTIMENT_NEG_KW)
-        if is_bull and not is_bear:
-            p["sentiment"] = "Bullish"
-        elif is_bear and not is_bull:
-            p["sentiment"] = "Bearish"
-        else:
-            p["sentiment"] = ""
-        try:
-            p["date"] = datetime.fromtimestamp(p["created_utc"]).strftime("%Y-%m-%d") if p["created_utc"] else ""
-        except Exception:
-            p["date"] = ""
-
-    translations = translate_texts_batch([p["title_en"] for p in all_posts])
-    for p in all_posts:
-        p["title"] = translations.get(p["title_en"], p["title_en"])
-
-    bull = sum(1 for p in all_posts if p["sentiment"] == "Bullish")
-    bear = sum(1 for p in all_posts if p["sentiment"] == "Bearish")
-
-    return {"posts": all_posts, "source": "reddit", "bull": bull, "bear": bear,
-            "error": "", "used_oauth": used_oauth}
-
-
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_stocktwits(ticker: str) -> dict:
     """
     StockTwits 공개 API → 실패 시 yfinance 뉴스 감성 분석으로 자동 대체.
@@ -1709,8 +1605,14 @@ def render_social_section(ticker_input: str):
     """소셜 미디어 의견 탭 — StockTwits"""
     ui_section_header(mono_icon_badge("chat", color="var(--c-cyan)"), "소셜 미디어 투자자 의견")
 
-    with st.spinner("StockTwits 실시간 데이터 수집 중..."):
-        st_data = fetch_stocktwits(ticker_input)
+    _st_cache_key = "_st_cache_" + ticker_input
+    if _st_cache_key in st.session_state:
+        st_data = st.session_state[_st_cache_key]
+    else:
+        with st.spinner("StockTwits 실시간 데이터 수집 중..."):
+            st_data = fetch_stocktwits(ticker_input)
+        st.session_state[_st_cache_key]     = st_data
+    st.session_state["_st_data_cache"] = st_data
 
     # ── StockTwits / Yahoo Finance fallback ─────────────────────
     src = st_data.get("source", "") if st_data else ""
@@ -1822,85 +1724,12 @@ def render_social_section(ticker_input: str):
     st.markdown(
         f'''<div class="section-header" style="margin-top:0.3rem;">
             {mono_icon_badge("chat", color="#ff5700", size=26, glyph_size=13)}
-            <div class="section-title" style="color:#ff5700;font-size:0.88rem;">Reddit</div>
+
         </div>''',
         unsafe_allow_html=True,
     )
 
-    with st.spinner("Reddit 관련 서브레딧에서 언급 게시글 수집 중..."):
-        _reddit_cid = st.session_state.get("reddit_client_id", "")
-        _reddit_csec = st.session_state.get("reddit_client_secret", "")
-        reddit_data = fetch_reddit_posts(ticker_input, _reddit_cid, _reddit_csec)
 
-    if reddit_data and reddit_data.get("used_oauth"):
-        st.markdown(
-            '''<div style="font-size:0.7rem;color:rgba(52,211,153,0.8);margin:-0.1rem 0 0.5rem 0;">
-            ✅ Reddit 공식 API(OAuth)로 조회 — 접속 차단 없이 안정적으로 동작합니다.</div>''',
-            unsafe_allow_html=True,
-        )
-
-    if not reddit_data or not reddit_data.get("posts"):
-        err = (reddit_data or {}).get("error", "")
-        err_html = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.35rem;'>사유: {err}</div>"
-                    if err else "")
-        oauth_hint = "" if (reddit_data or {}).get("used_oauth") else (
-            "<div style='font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.35rem;'>"
-            "💡 사이드바 'Reddit API 설정'에 무료 자격증명을 등록하면 접속 차단 없이 안정적으로 조회할 수 있습니다.</div>"
-        )
-        st.markdown(f'''
-        <div class="glass-card"><div class="status-row"><div class="status-item">
-            <div class="status-dot dot-yellow"></div>
-            <div class="status-text">최근 관련 게시글을 찾지 못했습니다 (검색 대상: {", ".join("r/"+s for s in REDDIT_SUBREDDITS)}). 클라우드 호스팅 환경에서는 Reddit이 접속을 차단하는 경우가 있습니다.</div>
-        </div></div>{err_html}{oauth_hint}</div>
-        ''', unsafe_allow_html=True)
-    else:
-        r_bull, r_bear = reddit_data.get("bull", 0), reddit_data.get("bear", 0)
-        r_total = r_bull + r_bear
-        r_bull_pct = round(r_bull / r_total * 100) if r_total else 50
-
-        st.markdown(f"""
-        <div class="sentiment-bar-wrap">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
-                <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">레딧 여론 게이지</span>
-                <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);">총 {len(reddit_data["posts"])}건 &nbsp;·&nbsp; 🟢 {r_bull} &nbsp;🔴 {r_bear}</span>
-            </div>
-            <div class="sentiment-bar-track">
-                <div class="sentiment-bar-fill" style="width:{r_bull_pct}%;"></div>
-            </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.25rem;">
-                <span>🟢 Bullish {r_bull_pct}%</span>
-                <span>🔴 Bearish {100 - r_bull_pct}%</span>
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-        for p in reddit_data["posts"]:
-            sent = p["sentiment"]
-            if sent == "Bullish":
-                card_cls = "social-card social-bull"
-                badge    = '<span class="bull-badge">🟢 Bullish</span>'
-            elif sent == "Bearish":
-                card_cls = "social-card social-bear"
-                badge    = '<span class="bear-badge">🔴 Bearish</span>'
-            else:
-                card_cls = "social-card"
-                badge    = ""
-
-            sub_badge  = f'<span class="platform-badge" style="background:rgba(255,87,0,0.12);color:#ff5700;border-color:rgba(255,87,0,0.28);">r/{p["subreddit"]}</span>'
-            stats_html = f'<span>⬆️ {p["score"]:,}</span><span>💬 {p["num_comments"]:,}</span>'
-            date_html  = f'<span>·</span><span>{p["date"]}</span>' if p.get("date") else ""
-            body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{p["title_en"]}</div>')
-
-            card_html = (
-                f'<div class="{card_cls}">' +
-                f'<div class="social-meta">{sub_badge}{badge}<span>u/{p["author"]}</span>{date_html}</div>' +
-                f'<div class="social-body">{p["title"]}</div>' +
-                body_en_html +
-                f'<div class="social-stats">' +
-                stats_html +
-                (f'<a href="{p["permalink"]}" target="_blank" style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">원문 보기 →</a>' if p.get("permalink") else "") +
-                f'</div></div>'
-            )
-            st.markdown(card_html, unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2579,53 +2408,7 @@ with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
 
 # ════════════════════════════════════════════════════════════════
 # #신규 레딧 공식 API(OAuth) 자격증명 설정 — 클라우드 IP 차단 우회
-# 비인증 공개 JSON 엔드포인트(www.reddit.com/.../search.json)는 데이터센터 IP를
-# 봇으로 간주해 403/429로 차단하는 경우가 흔함. 여기에 무료로 발급받은
-# client_id/secret을 입력하면 레딧 공식 OAuth API(oauth.reddit.com)를 우선
-# 사용해 이 문제를 근본적으로 회피한다. 입력하지 않으면 기존처럼 비인증
-# 공개 엔드포인트로 자동 폴백.
-#
-# ⚠️ Reddit Responsible Builder Policy 준수 필요:
-# https://support.reddithelp.com/hc/en-us/articles/42728983564564
-# - 개인/비상업적 이용 목적 범위 내에서만 사용 (상업화·유료 서비스 전환 시
-#   별도의 서면 승인이 Reddit으로부터 필요)
-# - 수집한 데이터를 AI/ML 모델 학습에 사용하거나 재판매/재라이선싱 금지
-# - REDDIT_USER_AGENT를 실제 계정명으로 바꿔 접근 주체를 투명하게 표시할 것
-# - API 호출 한도를 초과하거나 우회하지 말 것 (현재 구현은 5분 캐시 +
-#   서브레딧당 요청 1회로 낮은 호출량 유지)
 # ════════════════════════════════════════════════════════════════
-st.sidebar.markdown("---")
-with st.sidebar.expander("🧵 Reddit API 설정 (선택사항)", expanded=False):
-    _reddit_id_secret, _reddit_secret_secret = "", ""
-    try:
-        _reddit_id_secret     = st.secrets.get("REDDIT_CLIENT_ID", "")
-        _reddit_secret_secret = st.secrets.get("REDDIT_CLIENT_SECRET", "")
-    except Exception:
-        pass
-
-    if _reddit_id_secret and _reddit_secret_secret:
-        st.session_state["reddit_client_id"]     = _reddit_id_secret
-        st.session_state["reddit_client_secret"] = _reddit_secret_secret
-        st.caption("✅ Reddit API 자격증명이 앱 설정(secrets)에 등록되어 있습니다.")
-    else:
-        st.text_input(
-            "Client ID", key="reddit_client_id",
-            help="reddit.com/prefs/apps 에서 'script' 타입 앱을 만들면 무료로 발급받습니다. "
-                 "앱 이름 아래 표시되는 짧은 문자열입니다.",
-            placeholder="예: aBcD1234efGh",
-        )
-        st.text_input(
-            "Client Secret", type="password", key="reddit_client_secret",
-            placeholder="secret 항목의 값",
-        )
-        st.caption(
-            "🔒 입력한 값은 저장되지 않고 현재 세션에서만 사용됩니다. "
-            "비워두면 비인증 공개 엔드포인트로 자동 동작하며, 지금은 이 방식만으로 "
-            "충분히 사용 가능합니다. 참고로 레딧이 최근 정책을 강화해 신규 Data API "
-            "앱 승인은 주로 모더레이션(서브레딧 운영) 용도에 한정하고 있어, 개인용 "
-            "조회 목적으로는 승인이 안 날 수 있습니다 — 급하게 발급받으실 필요는 없습니다."
-        )
-
 # ════════════════════════════════════════════════════════════════
 # #개선 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
 # 기존엔 calc_supply_zones()의 n_bins/lookback_days/heavy_mult가
@@ -2697,11 +2480,53 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
             f'</div>'
         )
 
+    # 장전/장후 가격 — build_top_summary_cards_html에 ticker가 없으므로
+    # session_state에서 active_ticker를 읽어 조회한다
+    _ext = st.session_state.get("_ext_price_cache", {})
+    ext_price   = _ext.get("extended_price")
+    ext_pct     = _ext.get("extended_pct")
+    ext_label   = _ext.get("label", "")
+    mkt_state   = _ext.get("market_state", "")
+    show_ext    = ext_price is not None and mkt_state not in ("REGULAR", "")
+
+    is_korean = _ext.get("is_korean", False)
+    currency  = _ext.get("currency", "USD")
+
+    # 가격 포맷 함수 (한국: ₩정수, 미국: $소수)
+    def fmt_price(p, decimals=None):
+        if currency == "KRW":
+            return f"₩{int(p):,}"
+        d = decimals if decimals is not None else (0 if p >= 100 else 3)
+        return f"${p:.{d}f}"
+
+    # 현재가 표시: 한국 장중이면 ext_price(실시간)를 메인으로, 아니면 hist 종가
+    if is_korean and show_ext and mkt_state == "REGULAR":
+        main_price_str = fmt_price(ext_price)
+        show_ext = False  # 이미 메인에 반영했으므로 별도 배지 불필요
+    else:
+        main_price_str = fmt_price(float(today_data["Close"]))
+
+    if show_ext:
+        ext_arrow = "▲" if (ext_pct or 0) >= 0 else "▼"
+        ext_color = "delta-up" if (ext_pct or 0) >= 0 else "delta-down"
+        vs_label  = "vs 전일 종가" if is_korean else "vs 정규장"
+        ext_badge = (
+            f'<div class="metric-delta" style="margin-top:0.15rem;font-size:0.7rem;'
+            f'color:rgba(148,163,184,0.5);">{ext_label}</div>'
+            f'<div class="metric-value" style="font-size:1.1rem;margin-top:0.1rem;">'
+            f'{fmt_price(ext_price)}</div>'
+            f'<div class="metric-delta {ext_color}" style="font-size:0.75rem;">'
+            f'{ext_arrow} {abs(ext_pct or 0):.2f}% {vs_label}</div>'
+        )
+    else:
+        ext_badge = ""
+
     front_html = (
         f'<div class="metric-card mc-violet" style="grid-column: span 4;">'
-        f'<div class="metric-label">현재가</div>'
-        f'<div class="metric-value">${today_data["Close"]:.2f}</div>'
+        f'<div class="metric-label">현재가{"" if not is_korean else " (KRX)"}</div>'
+        f'<div class="metric-value">{main_price_str}</div>'
         f'<div class="metric-delta {pct_color}">{pct_arrow} {abs(price_chg):.2f}%</div>'
+        + ext_badge +
         f'</div>'
         f'<div class="metric-card mc-teal" style="grid-column: span 4;">'
         f'<div class="metric-label">거래량 (MA20 대비)</div>'
@@ -3206,6 +3031,344 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 
 
 # ════════════════════════════════════════════════════════════════
+# 매매 규율 패널 — 손절·익절·물타기 경고 + AI 퀀트 리포트
+# ════════════════════════════════════════════════════════════════
+def generate_ai_report_prompt(ticker, price_data, tech_indicators, sentiment_score, trade_plan):
+    return f"""당신은 스몰캡 퀀트 전문 애널리스트입니다.
+아래 데이터를 보고 "{ticker}" 종목의 단기 매수 진입 여부를 판단하는 간결한 브리핑을 작성하세요.
+
+[데이터]
+가격/수급: {price_data}
+기술적 지표: {tech_indicators}
+감성: {sentiment_score}
+매매 계획: {trade_plan}
+
+[작성 규칙]
+- 전체 500자 이내, 명사형 종결
+- 숫자 근거 없는 문장 금지
+- 긍정/부정 각 1개 이상 반드시 포함
+
+[출력 포맷 — 이 형식만 사용]
+## {ticker} 진입 판단
+
+**✅ 진입 근거**
+- (데이터 기반 매수 근거 1~2개)
+
+**⚠️ 리스크**
+- (데이터 기반 리스크 1~2개)
+
+**📋 매매 계획 검토**
+- (입력된 손절가·목표가·R:R의 적정성 한 줄 평가)
+
+**💡 결론: [매수 진입 / 관망 / 회피]**
+(이유 1~2문장)
+"""
+
+
+def call_claude_api(prompt: str) -> str:
+    """Gemini API 호출 — AI 퀀트 리포트 생성 (기존 gemini_api_key 재사용)"""
+    api_key = st.session_state.get("gemini_api_key", "")
+    if not api_key:
+        return "⚠️ API 키 미설정 — 사이드바 'AI 차트 해석 설정'에서 Gemini API 키를 입력해 주세요."
+    try:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{CHART_ANALYSIS_MODEL}:generateContent?key={api_key}"
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "maxOutputTokens": 3000,
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
+        }
+        resp = requests.post(url, json=payload, timeout=60)
+        if resp.status_code != 200:
+            try:
+                err_msg = resp.json().get("error", {}).get("message", resp.text)
+            except Exception:
+                err_msg = resp.text
+            return f"⚠️ API 오류 ({resp.status_code}): {err_msg}"
+        candidates = resp.json().get("candidates", [])
+        if not candidates:
+            return "⚠️ 모델로부터 응답을 받지 못했습니다."
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return "\n".join(p.get("text", "") for p in parts if "text" in p).strip()
+    except Exception as e:
+        return f"⚠️ 요청 실패: {e}"
+
+
+def render_discipline_panel(ticker_input, today, yesterday, hist, vol_ma20_ratio,
+                             high_52w, low_52w):
+    """매매 규율 패널 — 손절/익절 설정 + 물타기 경고 + 분할 익절 플래너 + AI 리포트"""
+
+    cur_price = float(today["Close"])
+    rsi_val   = float(today["RSI"])
+    macd_val  = float(today["MACD"])
+    macd_sig  = float(today["MACD_SIG"])
+    atr       = float((hist["High"] - hist["Low"]).rolling(14).mean().iloc[-1])
+
+    # ══════════════════════════════════════════════════
+    # [약점1·2] 손절 / 익절가 설정 & 실시간 경고
+    # ══════════════════════════════════════════════════
+    ui_section_header(mono_icon_badge("target", color="var(--c-rose)"), "손절 · 익절 기준선 설정", "icon-rose", "title-rose")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        entry_price = st.number_input(
+            "매수가 ($)", min_value=0.001,
+            value=float(round(cur_price, 3)),
+            step=0.01, format="%.3f",
+            key=f"entry_{ticker_input}"
+        )
+    with c2:
+        stop_pct = st.number_input(
+            "손절 기준 (%)", min_value=1.0, max_value=50.0,
+            value=8.0, step=0.5, format="%.1f",
+            key=f"stop_pct_{ticker_input}",
+            help="매수가 대비 손절 하락폭. 초소형주 권장: 7~10%"
+        )
+    with c3:
+        target_pct = st.number_input(
+            "목표 수익 (%)", min_value=1.0, max_value=500.0,
+            value=20.0, step=1.0, format="%.1f",
+            key=f"target_pct_{ticker_input}",
+            help="손익비 2:1 이상 권장 (손절 8% → 목표 16%+)"
+        )
+
+    stop_price   = entry_price * (1 - stop_pct / 100)
+    target_price = entry_price * (1 + target_pct / 100)
+    rr_ratio     = target_pct / stop_pct
+    atr_stop     = cur_price - 1.5 * atr
+    atr_target   = cur_price + 3.0 * atr
+    pnl_pct      = (cur_price - entry_price) / entry_price * 100 if entry_price > 0 else 0.0
+
+    rr_ok     = rr_ratio >= 2.0
+    rr_color  = "#22c55e" if rr_ok else "#f87171"
+    pnl_color = "#22c55e" if pnl_pct >= 0 else "#f87171"
+
+    st.markdown(f"""
+    <div class="glass-card" style="padding:1rem 1.2rem;">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.8rem;margin-bottom:0.8rem;">
+        <div>
+          <div class="metric-label">손절가</div>
+          <div class="metric-value" style="font-size:1.15rem;color:#f87171;">${stop_price:.3f}</div>
+          <div class="metric-delta delta-down">−{stop_pct:.1f}% from entry</div>
+        </div>
+        <div>
+          <div class="metric-label">목표가</div>
+          <div class="metric-value" style="font-size:1.15rem;color:#22c55e;">${target_price:.3f}</div>
+          <div class="metric-delta delta-up">+{target_pct:.1f}% from entry</div>
+        </div>
+        <div>
+          <div class="metric-label">손익비 (R:R)</div>
+          <div class="metric-value" style="font-size:1.15rem;color:{rr_color};">{rr_ratio:.2f}</div>
+          <div class="metric-delta" style="color:{rr_color};">{"✅ 적정 (2:1 이상)" if rr_ok else "⚠️ 낮음 (2:1 미만)"}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.8rem;
+                  padding-top:0.7rem;border-top:1px solid var(--border-card);">
+        <div>
+          <div class="metric-label">현재 손익</div>
+          <div class="metric-value" style="font-size:1.1rem;color:{pnl_color};">{pnl_pct:+.2f}%</div>
+        </div>
+        <div>
+          <div class="metric-label">ATR 권장 손절</div>
+          <div class="metric-value" style="font-size:1.0rem;color:#fbbf24;">${atr_stop:.3f}</div>
+          <div class="metric-delta delta-neu">1.5× ATR({atr:.3f})</div>
+        </div>
+        <div>
+          <div class="metric-label">ATR 권장 목표</div>
+          <div class="metric-value" style="font-size:1.0rem;color:#fbbf24;">${atr_target:.3f}</div>
+          <div class="metric-delta delta-neu">3.0× ATR</div>
+        </div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    # 실시간 경고 배너
+    warnings = []
+    if cur_price <= stop_price:
+        warnings.append(("🔴 손절 구간 진입!", f"현재가 ${cur_price:.3f} ≤ 손절가 ${stop_price:.3f} — 즉시 손절 검토 필요", "rgba(239,68,68,0.18)", "#f87171"))
+    elif cur_price <= stop_price * 1.05:
+        gap = (cur_price - stop_price) / stop_price * 100
+        warnings.append(("🟠 손절가 근접!", f"손절가까지 {gap:.1f}% 남음", "rgba(245,158,11,0.15)", "#f59e0b"))
+    if cur_price >= target_price:
+        warnings.append(("🟢 목표가 달성!", f"현재가 ${cur_price:.3f} ≥ 목표가 ${target_price:.3f} — 분할 익절 고려", "rgba(34,197,94,0.18)", "#22c55e"))
+    if not rr_ok:
+        warnings.append(("⚠️ 손익비 부족", f"R:R = {rr_ratio:.2f} — 목표가를 높이거나 손절을 좁혀 2:1 이상 유지 권장", "rgba(245,158,11,0.12)", "#f59e0b"))
+    for title, msg, bg, bc in warnings:
+        st.markdown(f"""
+        <div style="background:{bg};border:1px solid {bc};border-radius:10px;
+                    padding:0.7rem 1rem;margin-bottom:0.5rem;font-size:0.84rem;">
+            <strong style="color:{bc};">{title}</strong>
+            <span style="color:var(--txt-muted);margin-left:0.5rem;">{msg}</span>
+        </div>""", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════
+    # [약점3] 물타기 안전성 검사기
+    # ══════════════════════════════════════════════════
+    with st.expander("💧 물타기(추가매수) 안전성 검사", expanded=False):
+        st.markdown(
+            '<p style="font-size:0.8rem;color:var(--txt-faint);margin-bottom:0.7rem;">'
+            '하락 중 추가매수 전 반드시 확인하세요. 추세 반전 근거 없는 물타기는 손실을 키웁니다.</p>',
+            unsafe_allow_html=True
+        )
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            hold_qty  = st.number_input("기존 보유 수량 (주)", min_value=0, value=100, step=10, key=f"hold_qty_{ticker_input}")
+            add_qty   = st.number_input("추가매수 예정 수량 (주)", min_value=0, value=100, step=10, key=f"add_qty_{ticker_input}")
+        with wc2:
+            avg_entry = st.number_input("기존 평단가 ($)", min_value=0.001,
+                                        value=float(round(entry_price, 3)),
+                                        step=0.01, format="%.3f", key=f"avg_entry_{ticker_input}")
+
+        if hold_qty > 0 and add_qty > 0 and avg_entry > 0:
+            new_avg  = (hold_qty * avg_entry + add_qty * cur_price) / (hold_qty + add_qty)
+            new_stop = new_avg * (1 - stop_pct / 100)
+            still_ok = cur_price > new_stop
+            macd_up  = macd_val > macd_sig
+
+            checks = [
+                ("RSI 35 이하 (과매도 구간)", rsi_val <= 35, f"RSI {rsi_val:.1f}"),
+                ("MACD 상승 전환 or 골든크로스", macd_up,
+                 "MACD > Signal" if macd_up else "MACD < Signal"),
+                ("거래량 MA20 대비 150% 이상", vol_ma20_ratio >= 150, f"거래량 {vol_ma20_ratio:.0f}%"),
+                ("새 평단가 손절가 위 유지", still_ok,
+                 f"새평단 ${new_avg:.3f} vs 손절 ${new_stop:.3f}"),
+            ]
+            passed = sum(1 for _, ok, _ in checks if ok)
+            sc = "#22c55e" if passed >= 3 else ("#f59e0b" if passed >= 2 else "#f87171")
+            sl = "✅ 추가매수 가능" if passed >= 3 else ("⚠️ 조건 미흡 — 신중히" if passed >= 2 else "🚫 추가매수 비권장")
+
+            st.markdown(f"""
+            <div style="background:var(--bg-card);border:1px solid {sc};
+                        border-radius:10px;padding:0.9rem 1.1rem;margin-bottom:0.5rem;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.6rem;">
+                <span style="font-size:0.85rem;font-weight:700;color:{sc};">{sl} ({passed}/4 충족)</span>
+                <span class="metric-label">새 평단: <strong style="color:var(--txt-primary);">${new_avg:.3f}</strong></span>
+              </div>""", unsafe_allow_html=True)
+            for label, ok, detail in checks:
+                ic = "✅" if ok else "❌"
+                co = "#22c55e" if ok else "#f87171"
+                st.markdown(f"""
+                <div style="font-size:0.78rem;color:var(--txt-muted);margin-bottom:0.25rem;">
+                  <span style="color:{co};margin-right:0.4rem;">{ic}</span>
+                  {label}
+                  <span style="color:var(--txt-faint);margin-left:0.4rem;">({detail})</span>
+                </div>""", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════
+    # [약점4] 분할 익절 플래너
+    # ══════════════════════════════════════════════════
+    with st.expander("📤 분할 익절 플래너", expanded=False):
+        st.markdown(
+            '<p style="font-size:0.8rem;color:var(--txt-faint);margin-bottom:0.7rem;">'
+            '초소형주는 한 번에 전량 익절보다 3단계 분할 매도가 평균 수익을 극대화합니다.</p>',
+            unsafe_allow_html=True
+        )
+        total_qty = st.number_input("총 보유 수량 (주)", min_value=1, value=200, step=10, key=f"total_qty_{ticker_input}")
+        p1 = entry_price * (1 + target_pct / 100 * 0.5)
+        p2 = target_price
+        p3 = entry_price * (1 + target_pct / 100 * 1.5)
+        q1 = int(total_qty * 0.3)
+        q2 = int(total_qty * 0.4)
+        q3 = total_qty - q1 - q2
+        rows = [
+            ("1차 익절 (30%)", p1, q1, f"+{target_pct*0.5:.0f}%"),
+            ("2차 익절 (40%)", p2, q2, f"+{target_pct:.0f}%"),
+            ("3차 익절 (30%)", p3, q3, f"+{target_pct*1.5:.0f}%"),
+        ]
+        rows_html = ""
+        for lbl, pr, qty, pp in rows:
+            gain = (pr - entry_price) * qty
+            rows_html += (
+                f"<tr>"
+                f"<td style='padding:0.5rem 0.6rem;color:var(--txt-muted);font-size:0.8rem;'>{lbl}</td>"
+                f"<td style='padding:0.5rem 0.6rem;color:#22c55e;font-family:var(--font-mono);font-size:0.82rem;'>"
+                f"${pr:.3f} ({pp})</td>"
+                f"<td style='padding:0.5rem 0.6rem;color:var(--txt-secondary);font-size:0.8rem;'>{qty}주</td>"
+                f"<td style='padding:0.5rem 0.6rem;color:#22c55e;font-family:var(--font-mono);font-size:0.82rem;'>"
+                f"+${gain:.0f}</td>"
+                f"</tr>"
+            )
+        st.markdown(f"""
+        <div class="glass-card" style="padding:0.5rem 0;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="border-bottom:1px solid var(--border-card);">
+              <th style="padding:0.4rem 0.6rem;text-align:left;font-size:0.7rem;color:var(--txt-faint);">구간</th>
+              <th style="padding:0.4rem 0.6rem;text-align:left;font-size:0.7rem;color:var(--txt-faint);">목표가</th>
+              <th style="padding:0.4rem 0.6rem;text-align:left;font-size:0.7rem;color:var(--txt-faint);">수량</th>
+              <th style="padding:0.4rem 0.6rem;text-align:left;font-size:0.7rem;color:var(--txt-faint);">예상 수익</th>
+            </tr></thead>
+            <tbody>{rows_html}</tbody>
+          </table>
+        </div>""", unsafe_allow_html=True)
+
+    # ══════════════════════════════════════════════════
+    # AI 퀀트 브리핑 리포트
+    # ══════════════════════════════════════════════════
+    st.markdown("<hr>", unsafe_allow_html=True)
+    ui_section_header(mono_icon_badge("cpu", color="var(--c-violet)"), "AI 퀀트 브리핑 리포트", "icon-violet", "title-violet")
+
+    if st.button("⚡ AI 리포트 생성", key=f"ai_report_{ticker_input}", use_container_width=True):
+        pct_chg = (float(today["Close"]) - float(yesterday["Close"])) / float(yesterday["Close"]) * 100
+        gap_h   = (high_52w - cur_price) / high_52w * 100
+        gap_l   = (cur_price - low_52w)  / low_52w  * 100
+        price_data = (
+            f"현재가 ${cur_price:.3f} | 전일대비 {pct_chg:+.2f}% | "
+            f"거래량 MA20 대비 {vol_ma20_ratio:.0f}% | "
+            f"52주 최고 ${high_52w:.3f}({gap_h:.1f}% 하단) / 최저 ${low_52w:.3f}({gap_l:.1f}% 상단)"
+        )
+        ma_parts = []
+        for ma in [20, 60, 120]:
+            k = f"MA{ma}"
+            if k in today.index:
+                d = (float(today["Close"]) - float(today[k])) / float(today[k]) * 100
+                ma_parts.append(f"MA{ma} {d:+.1f}%")
+        rsi_desc  = "과매수" if rsi_val >= 70 else ("과매도" if rsi_val <= 30 else "중립")
+        macd_desc = (
+            "골든크로스" if (macd_val > macd_sig and float(yesterday["MACD"]) <= float(yesterday["MACD_SIG"]))
+            else "데드크로스" if (macd_val < macd_sig and float(yesterday["MACD"]) >= float(yesterday["MACD_SIG"]))
+            else ("상승" if macd_val > macd_sig else "하락")
+        )
+        tech_indicators = (
+            f"RSI(14) {rsi_val:.1f}({rsi_desc}) | MACD {macd_val:.3f}/Signal {macd_sig:.3f}({macd_desc}) | "
+            + " / ".join(ma_parts)
+        )
+        st_data     = st.session_state.get("_st_data_cache", {})
+        bull  = (st_data or {}).get("bull", 0)
+        bear  = (st_data or {}).get("bear", 0)
+        total = bull + bear
+        bull_pct = round(bull / total * 100) if total else 50
+        sentiment_score = (
+            f"Bullish {bull_pct}% / Bearish {100-bull_pct}% (총 {total}건)"
+        )
+        trade_plan = (
+            "- 매수가: $" + f"{entry_price:.3f}" + "\n"
+            + "- 손절가: $" + f"{stop_price:.3f}" + f" (−{stop_pct:.1f}%)" + "\n"
+            + "- 목표가: $" + f"{target_price:.3f}" + f" (+{target_pct:.1f}%)" + "\n"
+            + f"- 손익비(R:R): {rr_ratio:.2f}" + "\n"
+            + "- ATR 기반 권장 손절: $" + f"{atr_stop:.3f}" + " / 목표: $" + f"{atr_target:.3f}"
+        )
+        with st.spinner("🤖 AI 분석 중... (약 15~25초)"):
+            prompt      = generate_ai_report_prompt(ticker_input, price_data, tech_indicators, sentiment_score, trade_plan)
+            report_text = call_claude_api(prompt)
+        st.session_state[f"ai_report_cache_{ticker_input}"] = report_text
+
+    cached = st.session_state.get(f"ai_report_cache_{ticker_input}", "")
+    if cached:
+        st.markdown(
+            f'<div class="glass-card" style="margin-top:0.5rem;">{cached}</div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            '<p style="font-size:0.7rem;color:var(--txt-faint);margin-top:0.3rem;">'
+            '⚠️ 본 리포트는 AI 참고 자료이며 투자 권유가 아닙니다. 투자 결정의 최종 책임은 본인에게 있습니다.</p>',
+            unsafe_allow_html=True
+        )
+
+# ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 섹터 히트맵
 # ════════════════════════════════════════════════════════════════
 def _sector_color(pct: float) -> tuple[str, str]:
@@ -3533,7 +3696,12 @@ def render_news_section(ticker_input):
     """스톡타이탄 뉴스 & Rhea-AI 호재 검증 (탭2 또는 우측 컬럼)"""
     ui_section_header(mono_icon_badge("fire", color="var(--c-rose)"), "스톡타이탄 실시간 호재 & Rhea-AI 분석", "icon-rose", "title-rose")
 
-    news_data = get_stock_titan_data(ticker_input)[:3]
+    # 메인 prefetch에서 미리 가져온 캐시 우선 사용 → 탭 전환 시 즉시 렌더
+    _cache_key = "_news_cache_" + ticker_input
+    if _cache_key in st.session_state:
+        news_data = st.session_state[_cache_key][:3]
+    else:
+        news_data = get_stock_titan_data(ticker_input)[:3]
 
     if not news_data:
         st.markdown("""
@@ -3623,12 +3791,12 @@ if search_button:
 if st.session_state.get("has_searched"):
     active_ticker = st.session_state.get("active_ticker", ticker_input)
 
-    with st.spinner("야후 파이낸스 및 스톡타이탄에서 실시간 데이터를 분석 중입니다..."):
+    with st.spinner("데이터 병렬 수집 중... (차트·지표·뉴스·소셜 동시 로딩)"):
         # ── 성능 개선: 서로 의존관계 없는 네트워크 호출을 동시에 실행 ──
         # 기존엔 history → spike_history → offering_history → 환율 이 순차 대기라
         # 체감 속도가 느렸음. fetch_ticker_info는 이후 render_technical_analysis에서
         # 다시 호출되지만 1시간 캐시라 여기서 미리 예열해두면 그때는 즉시 반환됨.
-        with ThreadPoolExecutor(max_workers=7) as _prefetch_ex:
+        with ThreadPoolExecutor(max_workers=10) as _prefetch_ex:
             _fut_hist     = _prefetch_ex.submit(fetch_history, active_ticker)
             _fut_spike    = _prefetch_ex.submit(fetch_spike_history, active_ticker)
             _fut_offering = _prefetch_ex.submit(fetch_offering_history, active_ticker)
@@ -3636,6 +3804,9 @@ if st.session_state.get("has_searched"):
             _fut_fx       = _prefetch_ex.submit(fetch_usd_to_krw)
             _fut_short    = _prefetch_ex.submit(fetch_short_interest, active_ticker)
             _fut_intraday = _prefetch_ex.submit(fetch_intraday_3min, active_ticker)
+            _fut_ext      = _prefetch_ex.submit(fetch_extended_price, active_ticker)
+            _fut_news     = _prefetch_ex.submit(get_stock_titan_data, active_ticker)
+            _fut_twits    = _prefetch_ex.submit(fetch_stocktwits, active_ticker)
 
             hist          = _fut_hist.result()
             spike_df      = _fut_spike.result()
@@ -3645,6 +3816,10 @@ if st.session_state.get("has_searched"):
             short_interest = _fut_short.result()
             intraday_3min  = _fut_intraday.result()
             execution_strength = calc_execution_strength(intraday_3min)
+            st.session_state["_ext_price_cache"]             = _fut_ext.result()
+            st.session_state["_news_cache_" + active_ticker] = _fut_news.result()
+            st.session_state["_st_cache_" + active_ticker]   = _fut_twits.result()
+            st.session_state["_st_data_cache"]               = st.session_state["_st_cache_" + active_ticker]
 
         if hist.empty:
             st.error("❌ 올바르지 않은 티커명이거나 데이터를 불러올 수 없습니다. 영문 티커를 확인해 주세요.")
@@ -3705,7 +3880,7 @@ if st.session_state.get("has_searched"):
             st.markdown("---")
             info_view = st.segmented_control(
                 "정보 보기",
-                ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
+                ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석", "🛡️ 매매 규율"],
                 default="📰 뉴스 & 호재",
                 required=True,
                 key="info_view",
@@ -3715,5 +3890,10 @@ if st.session_state.get("has_searched"):
                 render_news_section(active_ticker)
             elif info_view == "💬 소셜 미디어":
                 render_social_section(active_ticker)
-            else:
+            elif info_view == "📷 차트 해석":
                 render_chart_interpretation(active_ticker, hist, float(today['Close']))
+            else:
+                render_discipline_panel(
+                    active_ticker, today, yesterday, hist,
+                    vol_ma20_ratio, high_52w, low_52w
+                )
