@@ -2845,6 +2845,27 @@ hr{border:0!important;border-top:4px solid #000!important;opacity:1!important;}
 [data-testid="stSidebar"]{background:var(--nb-yellow)!important;border-right:5px solid #000!important;}
 [data-testid="stSidebar"] :is(label,p,span,div,h1,h2,h3,li,small,a){color:#000!important;}
 
+
+/* 세그먼트·필 버튼: 선택 전에도 흰 바탕 + 검정 글씨로 또렷하게 (DOM 버전이 달라도 걸리도록 넓게 지정) */
+[data-testid="stSegmentedControl"],[data-testid="stButtonGroup"]{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;gap:.6rem!important;flex-wrap:wrap!important;}
+[data-testid="stSegmentedControl"] button,[data-testid="stButtonGroup"] button,[data-testid^="stBaseButton-segmented"],[data-testid^="stBaseButton-pills"],button[kind^="segmented_control"],button[kind^="pills"]{background:#fff!important;background-color:#fff!important;background-image:none!important;color:#000!important;-webkit-text-fill-color:#000!important;border:3px solid #000!important;border-radius:0!important;box-shadow:4px 4px 0 #000!important;opacity:1!important;font-family:var(--font-display)!important;font-weight:400!important;font-size:1rem!important;}
+[data-testid="stSegmentedControl"] button *,[data-testid="stButtonGroup"] button *,[data-testid^="stBaseButton-segmented"] *,[data-testid^="stBaseButton-pills"] *,button[kind^="segmented_control"] *,button[kind^="pills"] *,[data-testid="stSegmentedControl"] button p,[data-testid="stButtonGroup"] button p,[data-testid^="stBaseButton-segmented"] p,[data-testid^="stBaseButton-pills"] p,button[kind^="segmented_control"] p,button[kind^="pills"] p{color:#000!important;-webkit-text-fill-color:#000!important;fill:#000!important;opacity:1!important;}
+[data-testid="stSegmentedControl"] button:hover,[data-testid="stButtonGroup"] button:hover,[data-testid^="stBaseButton-segmented"]:hover,[data-testid^="stBaseButton-pills"]:hover,button[kind^="segmented_control"]:hover,button[kind^="pills"]:hover{background:var(--nb-yellow)!important;background-color:var(--nb-yellow)!important;color:#000!important;}
+[data-testid="stSegmentedControl"] button[aria-checked="true"],[data-testid="stSegmentedControl"] button[aria-pressed="true"],[data-testid="stSegmentedControl"] button[aria-selected="true"],[data-testid$="Active"],button[kind$="Active"]{background:var(--nb-pink)!important;background-color:var(--nb-pink)!important;color:#000!important;}
+[data-testid="stSegmentedControl"] button[aria-checked="true"] *,[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,[data-testid="stSegmentedControl"] button[aria-selected="true"] *,[data-testid$="Active"] *,button[kind$="Active"] *{color:#000!important;-webkit-text-fill-color:#000!important;}
+
+
+/* 입력창: 선택/입력 전에도 흰 바탕 + 검정 글씨 */
+[data-testid="stTextInput"] :is(div[data-baseweb],input),[data-testid="stNumberInput"] :is(div[data-baseweb],input),[data-testid="stTextArea"] :is(div[data-baseweb],textarea){background:#fff!important;background-color:#fff!important;color:#000!important;-webkit-text-fill-color:#000!important;opacity:1!important;}
+[data-testid="stTextInput"] div[data-baseweb="input"],[data-testid="stNumberInput"] div[data-baseweb="input"],[data-testid="stTextArea"] div[data-baseweb="textarea"]{border:3px solid #000!important;border-radius:0!important;box-shadow:3px 3px 0 #000!important;}
+[data-testid="stTextInput"] input::placeholder,[data-testid="stTextArea"] textarea::placeholder{color:#555!important;-webkit-text-fill-color:#555!important;}
+[data-testid="stForm"]{border:4px solid #000!important;border-radius:0!important;box-shadow:5px 5px 0 #000!important;background:transparent!important;}
+/* 체크박스: 흰 네모, 체크 시 핑크 */
+[data-testid="stCheckbox"] label>span:first-child{background:#fff!important;border:3px solid #000!important;border-radius:0!important;}
+[data-testid="stCheckbox"] label:has(input:checked)>span:first-child{background:var(--nb-pink)!important;}
+[data-testid="stCheckbox"] label:has(input:checked)>span:first-child svg{color:#000!important;fill:#000!important;}
+[data-testid="stTooltipIcon"] svg{color:#000!important;fill:#000!important;opacity:1!important;}
+
 /* 하단 띠 글자 */
 .nb-ticker{position:fixed;left:0;right:0;bottom:0;z-index:999;border-top:5px solid #000;background:#000;overflow:hidden;}
 .nb-track{display:flex;width:max-content;animation:nbSlide 22s linear infinite;}
@@ -3102,17 +3123,17 @@ st.sidebar.header("🔍 주식 분석 설정")
 tcol1, tcol2, tcol3 = st.sidebar.columns(3)
 with tcol1:
     st.checkbox(
-        "📊 섹터 히트맵", key="show_heatmap",
+        "섹터 히트맵", key="show_heatmap",
         help="11개 섹터 ETF의 당일/1주/1개월 성과를 히트맵으로 표시합니다"
     )
 with tcol2:
     st.checkbox(
-        "🚀 급등주 검색기", key="show_screener",
+        "급등주 검색기", key="show_screener",
         help="Yahoo Finance 실시간 스크리너로 조건에 맞는 급등 종목을 찾습니다"
     )
 with tcol3:
     st.checkbox(
-        "📈 거래량 급증", key="show_vol_surge",
+        "거래량 급증", key="show_vol_surge",
         help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다"
     )
 st.sidebar.markdown("---")
