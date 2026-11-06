@@ -923,6 +923,87 @@ def inject_css(dark: bool = True):
 
     st.session_state["_plotly_template"] = plotly_tmpl
 
+    # 라이트 모드 전용 CSS.
+    # f-string 안에 """ 를 또 쓰면 파이썬 3.11 이하에서 SyntaxError 가 나므로
+    # (3.12부터만 허용) 변수로 미리 빼 두고 아래에서 {light_css} 로 끼워 넣습니다.
+    light_css = "" if dark else """
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] .stMarkdown,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] div {
+        color: #1e1b4b !important;
+    }
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
+        color: #0f0d2a !important;
+    }
+    .stMarkdown p, .stMarkdown span,
+    [data-testid="stAppViewContainer"] label,
+    [data-testid="stAppViewContainer"] .stSelectbox label,
+    [data-testid="stAppViewContainer"] .stCheckbox label,
+    [data-testid="stAppViewContainer"] .stRadio label,
+    [data-testid="stAppViewContainer"] .stTextInput label,
+    [data-testid="stAppViewContainer"] p {
+        color: #1e1b4b !important;
+    }
+
+    /* 시그니처 컬러 변수 재정의 — var(--c-*)를 쓰는 모든 요소
+       (title-*, sent-pos/neg, impact-badge, bull/bear-badge,
+       pos-card/neg-card, news-card:hover 등)에 자동 적용됨 */
+    :root {
+        --c-amber:  #92600a !important;
+        --c-teal:   #0f766e !important;
+        --c-indigo: #4338ca !important;
+        --c-violet: #6d28d9 !important;
+        --c-cyan:   #0369a1 !important;
+        --c-rose:   #be123c !important;
+        --c-green:  #047857 !important;
+        --c-red:    #dc2626 !important;
+        --c-blue:   #1d4ed8 !important;
+        --c-orange: #c2410c !important;
+    }
+
+    /* 하드코딩된 클래스 색상 보정 */
+    .delta-up   { color: #047857 !important; }
+    .delta-down { color: #dc2626 !important; }
+    .delta-neu  { color: #475569 !important; }
+    .alert-title  { color: #b91c1c !important; }
+    .signal-chip  { color: #b91c1c !important; }
+    .china-banner-text { color: #991b1b !important; }
+    .china-banner-sub  { color: #7f1d1d !important; }
+    .sent-neu   { color: #92600a !important; }
+    .split-banner-title { color: #92600a !important; }
+    .news-link  { color: #4338ca !important; }
+    .news-link:hover { color: #6d28d9 !important; }
+    .scan-title { color: #92600a !important; }
+    .status-text { color: #334155 !important; }
+    .metric-label, .news-meta, .social-meta, .social-stats,
+    .sector-ticker, .legend-item, .news-orig { color: #64748b !important; }
+
+    /* 인라인 style="color:..." 로 하드코딩된 파스텔 색상 보정
+       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비) */
+    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] { color: #475569 !important; }
+    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] { color: #334155 !important; }
+    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] { color: #7f1d1d !important; }
+    [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
+    [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
+    [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
+    [style*="color:#f87171"],  [style*="color: #f87171"]  { color: #dc2626 !important; }
+    [style*="color:#ef4444"],  [style*="color: #ef4444"]  { color: #b91c1c !important; }
+    [style*="color:#fca5a5"],  [style*="color: #fca5a5"]  { color: #b91c1c !important; }
+    [style*="color:#fecaca"],  [style*="color: #fecaca"]  { color: #991b1b !important; }
+    [style*="color:#fbbf24"],  [style*="color: #fbbf24"]  { color: #92600a !important; }
+    [style*="color:#f5b942"],  [style*="color: #f5b942"]  { color: #92600a !important; }
+    [style*="color:#a78bfa"],  [style*="color: #a78bfa"]  { color: #6d28d9 !important; }
+    [style*="color:#818cf8"],  [style*="color: #818cf8"]  { color: #4338ca !important; }
+    [style*="color:#60a5fa"],  [style*="color: #60a5fa"]  { color: #1d4ed8 !important; }
+    [style*="color:#94a3b8"],  [style*="color: #94a3b8"]  { color: #475569 !important; }
+    [style*="color:#ff6a00"],  [style*="color: #ff6a00"]  { color: #c2410c !important; }
+    """
+
+
     st.markdown(f"""
 <style>
     /* ── 폰트 임포트 ──────────────────────────────────────────────── *
@@ -1423,82 +1504,7 @@ def inject_css(dark: bool = True):
      * 실제로는 깨진 CSS( {{ ... }} )가 출력되어 라이트 모드 보정이    *
      * 하나도 적용되지 않고 있었음. 홑 중괄호로 수정 + 저대비 색상     *
      * 전반(회색 노트, 파스텔 강조색 등)에 대한 보정을 추가함.         */
-    {"" if dark else """
-    [data-testid="stSidebar"] label,
-    [data-testid="stSidebar"] .stMarkdown,
-    [data-testid="stSidebar"] p,
-    [data-testid="stSidebar"] span,
-    [data-testid="stSidebar"] div {
-        color: #1e1b4b !important;
-    }
-    [data-testid="stSidebar"] h1,
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3 {
-        color: #0f0d2a !important;
-    }
-    .stMarkdown p, .stMarkdown span,
-    [data-testid="stAppViewContainer"] label,
-    [data-testid="stAppViewContainer"] .stSelectbox label,
-    [data-testid="stAppViewContainer"] .stCheckbox label,
-    [data-testid="stAppViewContainer"] .stRadio label,
-    [data-testid="stAppViewContainer"] .stTextInput label,
-    [data-testid="stAppViewContainer"] p {
-        color: #1e1b4b !important;
-    }
-
-    /* 시그니처 컬러 변수 재정의 — var(--c-*)를 쓰는 모든 요소
-       (title-*, sent-pos/neg, impact-badge, bull/bear-badge,
-       pos-card/neg-card, news-card:hover 등)에 자동 적용됨 */
-    :root {
-        --c-amber:  #92600a !important;
-        --c-teal:   #0f766e !important;
-        --c-indigo: #4338ca !important;
-        --c-violet: #6d28d9 !important;
-        --c-cyan:   #0369a1 !important;
-        --c-rose:   #be123c !important;
-        --c-green:  #047857 !important;
-        --c-red:    #dc2626 !important;
-        --c-blue:   #1d4ed8 !important;
-        --c-orange: #c2410c !important;
-    }
-
-    /* 하드코딩된 클래스 색상 보정 */
-    .delta-up   { color: #047857 !important; }
-    .delta-down { color: #dc2626 !important; }
-    .delta-neu  { color: #475569 !important; }
-    .alert-title  { color: #b91c1c !important; }
-    .signal-chip  { color: #b91c1c !important; }
-    .china-banner-text { color: #991b1b !important; }
-    .china-banner-sub  { color: #7f1d1d !important; }
-    .sent-neu   { color: #92600a !important; }
-    .split-banner-title { color: #92600a !important; }
-    .news-link  { color: #4338ca !important; }
-    .news-link:hover { color: #6d28d9 !important; }
-    .scan-title { color: #92600a !important; }
-    .status-text { color: #334155 !important; }
-    .metric-label, .news-meta, .social-meta, .social-stats,
-    .sector-ticker, .legend-item, .news-orig { color: #64748b !important; }
-
-    /* 인라인 style="color:..." 로 하드코딩된 파스텔 색상 보정
-       (dark 테마 배경 기준으로 만들어진 값이라 밝은 배경에서 저대비) */
-    [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] { color: #475569 !important; }
-    [style*="color:rgba(255,255,255"], [style*="color: rgba(255,255,255"] { color: #334155 !important; }
-    [style*="color:rgba(254,202,202"], [style*="color: rgba(254,202,202"] { color: #7f1d1d !important; }
-    [style*="color:#34d399"],  [style*="color: #34d399"]  { color: #047857 !important; }
-    [style*="color:#6ee7b7"],  [style*="color: #6ee7b7"]  { color: #059669 !important; }
-    [style*="color:#a7f3d0"],  [style*="color: #a7f3d0"]  { color: #0d9488 !important; }
-    [style*="color:#f87171"],  [style*="color: #f87171"]  { color: #dc2626 !important; }
-    [style*="color:#ef4444"],  [style*="color: #ef4444"]  { color: #b91c1c !important; }
-    [style*="color:#fca5a5"],  [style*="color: #fca5a5"]  { color: #b91c1c !important; }
-    [style*="color:#fecaca"],  [style*="color: #fecaca"]  { color: #991b1b !important; }
-    [style*="color:#fbbf24"],  [style*="color: #fbbf24"]  { color: #92600a !important; }
-    [style*="color:#f5b942"],  [style*="color: #f5b942"]  { color: #92600a !important; }
-    [style*="color:#a78bfa"],  [style*="color: #a78bfa"]  { color: #6d28d9 !important; }
-    [style*="color:#818cf8"],  [style*="color: #818cf8"]  { color: #4338ca !important; }
-    [style*="color:#60a5fa"],  [style*="color: #60a5fa"]  { color: #1d4ed8 !important; }
-    [style*="color:#94a3b8"],  [style*="color: #94a3b8"]  { color: #475569 !important; }
-    [style*="color:#ff6a00"],  [style*="color: #ff6a00"]  { color: #c2410c !important; }
-    """}
+    {light_css}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2220,6 +2226,4 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 
     # #8 거래량: 전일 대비 + MA20 대비 둘 다 표시
     vol_dot  = "dot-green"  if vol_ma20_ratio >= 200 else "dot-yellow"
-    vol_text = (f"<strong>거래량 폭증!</strong> MA20 대비 <strong>{vol_ma20_ratio:.0f}%</strong> "
-                f"(전일 대비 {vol_ratio:.0f}%)"
-                if vol_ma20_ratio >= 200
+    vo
