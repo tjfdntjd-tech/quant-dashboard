@@ -10,7 +10,7 @@ import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from string import Template
 
@@ -694,34 +694,87 @@ def _save_translate_cache(cache: dict) -> None:
     except Exception:
         pass
 
+def _needs_translation(text: str) -> bool:
+    """티커($XXX)·URL을 뺀 뒤 영어 단어가 남아 있고 한글이 없을 때만 번역 대상."""
+    plain = re.sub(r"\$[A-Za-z.\-]+|https?://\S+", " ", text or "")
+    return bool(re.search(r"[A-Za-z]{3,}", plain)) and not re.search(r"[가-힣]", plain)
+
+def _translate_via_gemini(texts: list, api_key: str) -> dict:
+    """구글/마이메모리 번역이 모두 실패했을 때의 최후 수단 — Gemini로 한 번에 일괄 번역."""
+    if not texts or not api_key:
+        return {}
+    prompt = ("다음 영어 투자자 글 목록을 자연스러운 한국어로 번역하세요. "
+              "티커($XXX), 숫자, 고유명사는 그대로 두세요. "
+              "입력과 같은 길이·순서의 JSON 문자열 배열만 출력하세요.\n"
+              + json.dumps(texts, ensure_ascii=False))
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json",
+                             "maxOutputTokens": 4000,
+                             "thinkingConfig": {"thinkingBudget": 0}},
+    }
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{CHART_ANALYSIS_MODEL}:generateContent?key={api_key}")
+    try:
+        r = requests.post(url, json=payload, timeout=40)
+        if r.status_code != 200:
+            return {}
+        parts = r.json()["candidates"][0]["content"]["parts"]
+        arr = json.loads("".join(p.get("text", "") for p in parts))
+        if isinstance(arr, list) and len(arr) == len(texts):
+            return {t: str(k).strip() for t, k in zip(texts, arr) if str(k).strip()}
+    except Exception:
+        pass
+    return {}
+
 def translate_texts_batch(texts: list) -> dict:
     """
     여러 문장을 한 번에 병렬로 번역하고, 캐시 파일에는 배치당 단 1회만 저장합니다.
-
-    #성능개선: 기존 translate_text()는 문장 하나마다 번역 API를 호출하고 그때마다
-    캐시 파일 전체를 디스크에 다시 썼습니다. 뉴스/소셜 섹션에서 이 함수를 최대
-    8회까지 "순차" 호출했기 때문에 (번역 왕복 + 디스크 I/O) × 문장 수 만큼
-    지연이 직렬로 누적되어 체감 로딩 속도가 느린 주된 원인이었습니다.
-    → 신규 번역이 필요한 문장만 골라 스레드풀로 동시에 번역 요청을 보내고,
-      캐시 저장은 배치 전체가 끝난 뒤 딱 한 번만 수행합니다.
     반환값: {원문: 번역문} 매핑 딕셔너리.
+
+    #버그수정 예전에는 번역 API가 실패해도 "원문 그대로"를 성공한 번역처럼 캐시(디스크
+    포함)에 저장해서, 한 번 실패한 문장은 영원히 영어로만 보였습니다.
+    → 실패는 캐시하지 않고, 과거에 잘못 저장된 '원문=번역문' 항목은 자동으로 재번역.
+    → 구글 번역 → MyMemory → (Gemini 키가 있으면) Gemini 순으로 폴백.
     """
     if "_translate_cache" not in st.session_state:
-        st.session_state["_translate_cache"] = _load_translate_cache()
+        loaded = _load_translate_cache()
+        # 과거 실패가 캐시된 항목(원문==번역문인데 영어 문장)은 버려서 다시 번역
+        st.session_state["_translate_cache"] = {
+            k: v for k, v in loaded.items() if not (k == v and _needs_translation(k))
+        }
     cache = st.session_state["_translate_cache"]
 
     unique_texts = list(dict.fromkeys(t for t in texts if t))
-    to_translate = [t for t in unique_texts if t not in cache]
+    to_translate = [t for t in unique_texts if t not in cache and _needs_translation(t)]
 
     if to_translate:
         def _do(t: str):
             try:
-                return t, GoogleTranslator(source='en', target='ko').translate(t)
+                out = GoogleTranslator(source='en', target='ko').translate(t)
+                if out and out.strip() and out.strip() != t.strip():
+                    return t, out
             except Exception:
-                return t, t
+                pass
+            if len(t) <= 480:
+                try:
+                    out = MyMemoryTranslator(source='en-US', target='ko-KR').translate(t)
+                    if out and out.strip() and out.strip() != t.strip():
+                        return t, out
+                except Exception:
+                    pass
+            return t, None
 
+        failed = []
         with ThreadPoolExecutor(max_workers=min(8, len(to_translate))) as ex:
             for original, translated in ex.map(_do, to_translate):
+                if translated:
+                    cache[original] = translated
+                else:
+                    failed.append(original)
+        if failed:
+            for original, translated in _translate_via_gemini(
+                    failed, st.session_state.get("gemini_api_key", "")).items():
                 cache[original] = translated
         _save_translate_cache(cache)   # 배치 전체 완료 후 단 1회만 디스크에 저장
 
@@ -1546,7 +1599,7 @@ def render_social_section(ticker_input: str):
             date_html = f'<span>·</span><span>{msg_date}</span>' if msg_date else ""
             # yahoo fallback은 영문 원제목도 표시
             body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{msg_body_en}</div>'
-                            if msg_body_en else "")
+                            if msg_body_en and msg_body_en != msg_body else "")
             # 출처 표시: stocktwits면 @username, yahoo면 뉴스사명
             if src == "stocktwits":
                 source_html = f'<span class="platform-badge">StockTwits</span>{badge}<span>@{user_name}</span>{date_html}'
@@ -1616,7 +1669,7 @@ def render_social_section(ticker_input: str):
 
             date_html = f'<span>·</span><span>{post_date}</span>' if post_date else ""
             body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{post_body_en}</div>'
-                            if post_body_en else "")
+                            if post_body_en and post_body_en != post_body else "")
             source_html = (f'<span class="reddit-badge">r/{sub_name}</span>{badge}'
                             f'<span>u/{user_name}</span>{date_html}')
 
