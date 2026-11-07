@@ -319,6 +319,7 @@ _defaults = {
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
     "show_screener":    False,          # 급등주 검색기 토글
     "show_vol_surge":   False,          # 거래량 급증 스크리너 토글
+    "excel_scan":       None,           # 엑셀 종목 일괄 분석 결과
     "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
@@ -3113,6 +3114,183 @@ if st.session_state.scan_results:
     st.markdown("---")
 
 # ════════════════════════════════════════════════════════════════
+# 엑셀 종목 일괄 분석 — 섹터별 정리 엑셀을 올리면 전 종목을 한 번에 분석
+# ════════════════════════════════════════════════════════════════
+def _is_krw_ticker(ticker: str) -> bool:
+    return ticker.upper().endswith((".KS", ".KQ"))
+
+def parse_watchlist_excel(uploaded) -> tuple:
+    """엑셀(.xlsx)에서 (섹터, 티커[, 종목명]) 목록을 읽습니다. 티커가 빈 줄은 건너뜁니다.
+    반환: (items, skipped_names)  — items: [{"섹터":..,"티커":..,"종목명":..}, ...]"""
+    xl = pd.ExcelFile(uploaded)
+    sheet = "종목" if "종목" in xl.sheet_names else xl.sheet_names[0]
+    # "NA"(Nano Labs 티커)가 결측치로 읽히지 않도록 기본 NA 변환을 끈다
+    df = xl.parse(sheet, keep_default_na=False, na_values=[""])
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    def pick(*names):
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+    c_tic = pick("티커", "ticker", "symbol", "종목코드")
+    c_sec = pick("섹터", "sector", "업종")
+    c_nam = pick("종목명(한글)", "종목명", "name")
+    if c_tic is None:
+        raise ValueError("엑셀에 '티커' 열이 없습니다. (열 이름: 티커 / ticker / symbol)")
+    items, skipped, seen = [], [], set()
+    for _, row in df.iterrows():
+        ticker = str(row[c_tic]).strip().upper() if pd.notna(row[c_tic]) else ""
+        name   = str(row[c_nam]).strip() if c_nam is not None and pd.notna(row[c_nam]) else ""
+        sector = str(row[c_sec]).strip() if c_sec is not None and pd.notna(row[c_sec]) else "미분류"
+        if not ticker or ticker == "NAN":
+            if name:
+                skipped.append(name)
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        items.append({"섹터": sector, "티커": ticker, "종목명": name})
+    return items, skipped
+
+def scan_ticker_for_excel(item: dict, usd_krw: float) -> dict:
+    """한 종목을 분석해 표 한 줄(dict)로 반환. 실패해도 예외 대신 상태 문구를 담아 반환."""
+    ticker = item["티커"]
+    row = {"섹터": item["섹터"], "티커": ticker, "종목명": item.get("종목명", ""), "상태": "오류"}
+    try:
+        raw = fetch_history(ticker)
+        if raw is None or raw.empty or len(raw) < 2:
+            row["상태"] = "데이터 없음(티커 확인)"
+            return row
+        vol_3d = float(raw["Volume"].tail(3).mean())
+        vol_3m_w = raw["Volume"].tail(63) if len(raw) >= 20 else raw["Volume"]
+        vol_3m = float(vol_3m_w.mean())
+        surge = round(vol_3d / vol_3m, 2) if vol_3m > 0 else None
+
+        h = calc_indicators(raw.dropna())
+        t, y = h.iloc[-1], h.iloc[-2]
+        close, prev = float(t["Close"]), float(y["Close"])
+        pct = (close - prev) / prev * 100 if prev else 0.0
+        vol_ma20 = t["VOL_MA20"] if pd.notna(t["VOL_MA20"]) and t["VOL_MA20"] > 0 else 1
+        vol_r  = float(t["Volume"]) / float(vol_ma20) * 100
+        vol_dd = (float(t["Volume"]) / float(y["Volume"]) * 100) if y["Volume"] else 0.0
+        rsi = float(t["RSI"]) if pd.notna(t["RSI"]) else None
+        fx = 1.0 if _is_krw_ticker(ticker) else usd_krw
+        tv_eok = round(close * float(t["Volume"]) * fx / 100_000_000, 1)
+        gap = (float(t["Open"]) - prev) / prev * 100 if prev else 0.0
+
+        signals = []
+        if vol_r >= 200: signals.append("🔥거래량")
+        if surge is not None and surge >= 5: signals.append("📊3일5배")
+        if pd.notna(t["MACD"]) and pd.notna(t["MACD_SIG"]) and pd.notna(y["MACD"]) and pd.notna(y["MACD_SIG"]) \
+                and t["MACD"] > t["MACD_SIG"] and y["MACD"] <= y["MACD_SIG"]:
+            signals.append("⚡MACD")
+        if rsi is not None and rsi <= 35: signals.append("📉과매도")
+        if pd.notna(t["MA120"]) and pd.notna(y["MA120"]) and close > t["MA120"] and prev <= y["MA120"]:
+            signals.append("🚀120일선")
+        if gap >= 5: signals.append("⬆️갭업")
+
+        score = calc_screener_score({
+            "pct_change": pct, "vol_ma20_ratio": vol_r, "trading_value_eok": tv_eok,
+            "vol_ratio": vol_dd, "rsi": round(rsi, 1) if rsi is not None else None,
+        })
+        row.update({
+            "상태": "정상", "통화": "₩" if _is_krw_ticker(ticker) else "$",
+            "현재가": round(close, 2), "등락률(%)": round(pct, 2), "종합점수": score,
+            "거래량(MA20대비%)": round(vol_r, 0), "3일/3개월 거래량배율": surge,
+            "RSI": round(rsi, 1) if rsi is not None else None,
+            "거래대금(억원)": tv_eok, "신호": " ".join(signals) if signals else "—",
+        })
+    except Exception:
+        row["상태"] = "분석 오류"
+    return row
+
+def _excel_results_to_bytes(df_all: pd.DataFrame, df_sector: pd.DataFrame) -> bytes:
+    import io
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xw:
+        df_all.to_excel(xw, sheet_name="전체결과", index=False)
+        df_sector.to_excel(xw, sheet_name="섹터요약", index=False)
+    return buf.getvalue()
+
+def render_excel_scan_results():
+    data = st.session_state.get("excel_scan")
+    if not data:
+        return
+    rows = data["rows"]
+    df = pd.DataFrame(rows)
+    ok = df[df["상태"] == "정상"].copy()
+    bad = df[df["상태"] != "정상"]
+    sig = ok[ok["신호"] != "—"] if not ok.empty else ok
+
+    st.markdown(f"""
+    <div class="scan-header">
+        <span class="scan-title">📥 엑셀 종목 일괄 분석 &nbsp;·&nbsp; {len(ok)}/{len(df)}개 종목 분석 완료</span>
+        <span style="font-size:0.82rem;font-weight:700;">🔔 신호 {len(sig)}건 · 오류 {len(bad)}건</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if data.get("skipped"):
+        st.warning("티커가 비어 있어 건너뛴 종목 " + str(len(data["skipped"])) + "개: " + ", ".join(data["skipped"]))
+
+    if ok.empty:
+        st.error("분석된 종목이 없습니다. 티커를 확인해 주세요.")
+    else:
+        g = ok.groupby("섹터")
+        sector_df = pd.DataFrame({
+            "종목수": g.size(),
+            "평균 등락률(%)": g["등락률(%)"].mean().round(2),
+            "평균 종합점수": g["종합점수"].mean().round(1),
+            "신호 종목수": g.apply(lambda x: int((x["신호"] != "—").sum())),
+            "최고점수 종목": g.apply(lambda x: x.loc[x["종합점수"].idxmax(), "티커"]),
+        }).reset_index().sort_values("평균 종합점수", ascending=False)
+        st.markdown("**섹터 요약** (평균 종합점수 높은 순)")
+        st.dataframe(sector_df, use_container_width=True, hide_index=True)
+
+        if not sig.empty:
+            chips = "".join(f'<span class="signal-chip">{r["티커"]} {r["신호"]}</span>' for _, r in sig.iterrows())
+            st.markdown(f"""
+            <div class="alert-banner"><div class="alert-icon">🔔</div>
+            <div><div class="alert-title">신호 감지 종목</div><div class="alert-signals">{chips}</div></div></div>
+            """, unsafe_allow_html=True)
+
+        show_cols = ["티커", "종목명", "통화", "현재가", "등락률(%)", "종합점수", "거래량(MA20대비%)",
+                     "3일/3개월 거래량배율", "RSI", "거래대금(억원)", "신호"]
+        order = sector_df["섹터"].tolist()
+        for sec in order:
+            part = ok[ok["섹터"] == sec].sort_values("종합점수", ascending=False)
+            label = f"{sec} · {len(part)}종목 · 평균 {part['등락률(%)'].mean():+.2f}%"
+            with st.expander(label, expanded=False):
+                st.dataframe(
+                    part[show_cols], use_container_width=True, hide_index=True,
+                    column_config={
+                        "현재가": st.column_config.NumberColumn(format="%.2f"),
+                        "등락률(%)": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "종합점수": st.column_config.NumberColumn(format="%.1f"),
+                        "거래량(MA20대비%)": st.column_config.NumberColumn(format="%d%%"),
+                        "3일/3개월 거래량배율": st.column_config.NumberColumn(format="%.1f배"),
+                        "거래대금(억원)": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                )
+
+    if not bad.empty:
+        with st.expander(f"분석 못 한 종목 {len(bad)}개 (티커 확인 필요)"):
+            st.dataframe(bad[["섹터", "티커", "종목명", "상태"]], use_container_width=True, hide_index=True)
+
+    if not ok.empty:
+        st.download_button(
+            "결과 엑셀로 내려받기", key="dl_excel_scan",
+            data=_excel_results_to_bytes(df, sector_df),
+            file_name="섹터별_분석결과.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    if st.button("✕ 엑셀 분석 결과 닫기", key="close_excel_scan"):
+        st.session_state["excel_scan"] = None
+        st.rerun()
+    st.markdown("---")
+
+render_excel_scan_results()
+
+# ════════════════════════════════════════════════════════════════
 # 사이드바 — 티커 입력 및 파라미터
 # ════════════════════════════════════════════════════════════════
 st.sidebar.header("🔍 주식 분석 설정")
@@ -3137,6 +3315,31 @@ with tcol3:
         help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다"
     )
 st.sidebar.markdown("---")
+
+with st.sidebar.expander("엑셀 종목 일괄 분석", expanded=False):
+    st.caption("섹터·티커가 들어 있는 엑셀(.xlsx)을 올리면 전 종목을 한 번에 분석해 섹터별로 정리합니다. "
+               "('종목' 시트의 섹터/티커 열을 사용, 티커가 빈 줄은 건너뜀)")
+    _xl_file = st.file_uploader("엑셀 파일", type=["xlsx"], key="excel_watchlist_upload")
+    if _xl_file is not None and st.button("엑셀 종목 전체 분석", key="run_excel_scan", use_container_width=True):
+        try:
+            _items, _skipped = parse_watchlist_excel(_xl_file)
+        except Exception as _e:
+            st.error(f"엑셀을 읽지 못했습니다: {_e}")
+            _items, _skipped = [], []
+        if _items:
+            _items = _items[:400]
+            _prog = st.progress(0, text="분석 중...")
+            _usd = fetch_usd_to_krw()
+            _rows, _done = [], 0
+            with ThreadPoolExecutor(max_workers=8) as _ex:
+                _futs = [_ex.submit(scan_ticker_for_excel, it, _usd) for it in _items]
+                for _f in as_completed(_futs):
+                    _rows.append(_f.result())
+                    _done += 1
+                    _prog.progress(_done / len(_items), text=f"분석 중... {_done}/{len(_items)}")
+            _prog.empty()
+            st.session_state["excel_scan"] = {"rows": _rows, "skipped": _skipped}
+            st.rerun()
 
 # ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
 with st.sidebar.form(key="ticker_search_form"):
