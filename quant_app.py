@@ -1914,22 +1914,19 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
             unsafe_allow_html=True,
         )
     elif st.session_state.get("chart_analysis_result") and st.session_state.get("chart_analysis_cache_key") == cache_key:
-        # 버그 수정: st.markdown 호출마다 별도 요소로 렌더링되므로 <div>를 나눠서 열고 닫으면
-        # 빈 흰 박스만 생기고 본문은 박스 밖(연보라 배경, 연한 글자색)에 나옴 → 컨테이너 하나로 감싼다.
-        st.markdown(
+        # 결과 전체를 하나의 st.markdown 안에서 흰 박스 + 검정 글씨로 표시
+        # (st.markdown을 나눠 호출하면 div가 분리되어 빈 박스가 생기므로 한 번에 출력)
+        _ai_html = (
             "<style>"
-            ".st-key-chart_ai_result_box{background:#fff!important;border:4px solid #000!important;"
-            "box-shadow:8px 8px 0 #000;padding:18px 20px!important;margin:8px 8px 18px 0;}"
-            ".st-key-chart_ai_result_box,.st-key-chart_ai_result_box *{color:#000!important;}"
-            "</style>",
-            unsafe_allow_html=True,
+            ".ai-result-black{background:#fff;border:4px solid #000;box-shadow:8px 8px 0 #000;"
+            "padding:18px 20px;margin:8px 8px 18px 0;}"
+            ".ai-result-black, .ai-result-black *{color:#000 !important;opacity:1 !important;}"
+            "</style>"
+            '<div class="ai-result-black">\n\n'
+            + str(st.session_state["chart_analysis_result"])
+            + "\n\n</div>"
         )
-        try:
-            _result_box = st.container(key="chart_ai_result_box")
-        except TypeError:  # 구버전 Streamlit(key 미지원)
-            _result_box = st.container()
-        with _result_box:
-            st.markdown(st.session_state["chart_analysis_result"])
+        st.markdown(_ai_html, unsafe_allow_html=True)
     else:
         st.caption("버튼을 누르면 최신 3분봉 데이터를 기준으로 분석합니다.")
 
@@ -2333,4 +2330,10 @@ CSS_TEMPLATE = r"""<style>
     /* 테두리형(outline) 배지 — 플랫 카드 위에 라인 아이콘 */
     .liquid-icon-outline {
         background: rgba(255,255,255,0.06);
-        border: 1.5px solid rgba(2
+        border: 1.5px solid rgba(255,255,255,0.14);
+        box-shadow: none;
+    }
+
+
+    .title-amber  { color: var(--c-amber)  !important; }
+    .title-teal   { color: var(--c-teal)   !important; }
