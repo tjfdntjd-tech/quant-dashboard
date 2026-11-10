@@ -13,6 +13,47 @@ from datetime import datetime, timedelta
 from deep_translator import GoogleTranslator, MyMemoryTranslator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from string import Template
+import time
+import logging
+import html as _html_lib
+
+_logger = logging.getLogger("quant_app")
+
+
+def _redact(text) -> str:
+    """오류 문구에 섞여 들어갈 수 있는 API 키(?key=..., AIza...)를 가린다."""
+    s = str(text)
+    s = re.sub(r"(key=)[^&\s'\")]+", r"\1***", s)
+    s = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "AIza***", s)
+    return s
+
+
+def _log_err(where: str, exc: Exception) -> None:
+    """삼키던 예외를 서버 로그(Manage app → Logs)에 남긴다. 화면 동작은 바꾸지 않는다."""
+    try:
+        _logger.warning("[%s] %s: %s", where, type(exc).__name__, _redact(exc))
+    except Exception:
+        pass
+
+
+def _safe_error_text(exc: Exception) -> str:
+    """화면(HTML)에 출력해도 안전하도록 키를 가리고 특수문자를 이스케이프한 오류 문구."""
+    return _html_lib.escape(_redact(exc))
+
+
+def _classify_error(exc: Exception) -> str:
+    """예외를 사용자가 이해할 수 있는 종류로 분류한다."""
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    if "ratelimit" in name or "too many requests" in msg or "429" in msg or "rate limit" in msg:
+        return "요청 제한(잠시 후 재시도)"
+    if (isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+            or "timed out" in msg or "connection" in msg or "max retries" in msg):
+        return "네트워크 오류"
+    if isinstance(exc, (KeyError, IndexError, ValueError, ZeroDivisionError, TypeError, AttributeError)):
+        return "계산 오류"
+    return "분석 오류"
+
 
 # ════════════════════════════════════════════════════════════════
 # 상수
@@ -34,7 +75,8 @@ def fetch_usd_to_krw() -> float:
         data = resp.json()
         rate = data["rates"]["KRW"]
         return float(rate)
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_usd_to_krw", _e)
         return 1400.0  # 폴백: 조회 실패 시 고정값 사용
 
 TRADING_THRESHOLD = 500           # 거래대금 기준 (억 원)
@@ -266,7 +308,8 @@ def load_memos() -> dict:
         if os.path.exists(MEMO_FILE):
             with open(MEMO_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
+    except Exception as _e:
+        _log_err("load_memos", _e)
         pass
     return {}
 
@@ -275,7 +318,8 @@ def save_memos(memos: dict) -> None:
     try:
         with open(MEMO_FILE, "w", encoding="utf-8") as f:
             json.dump(memos, f, ensure_ascii=False, indent=2)
-    except Exception:
+    except Exception as _e:
+        _log_err("save_memos", _e)
         pass
 
 # ════════════════════════════════════════════════════════════════
@@ -291,7 +335,8 @@ def load_favorites() -> list:
                 data = json.load(f)
                 if isinstance(data, list):
                     return data
-    except Exception:
+    except Exception as _e:
+        _log_err("load_favorites", _e)
         pass
     return []
 
@@ -300,7 +345,8 @@ def save_favorites(favorites: list) -> None:
     try:
         with open(FAVORITES_FILE, "w", encoding="utf-8") as f:
             json.dump(favorites, f, ensure_ascii=False, indent=2)
-    except Exception:
+    except Exception as _e:
+        _log_err("save_favorites", _e)
         pass
 
 # ════════════════════════════════════════════════════════════════
@@ -368,7 +414,8 @@ def fetch_top_gainers(min_pct: float, min_price: float, max_price: float,
                 "exchange":   q.get("fullExchangeName", ""),
             })
         return out
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_top_gainers", _e)
         return []
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -403,7 +450,8 @@ def fetch_volume_surge_candidates(min_price: float, max_price: float,
                 "exchange":   q.get("fullExchangeName", ""),
             })
         return out
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_volume_surge_candidates", _e)
         return []
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -465,8 +513,9 @@ def enrich_screener_results(tickers: tuple) -> dict:
                 "nasdaq_risk":       nasdaq_risk,
                 "error":             False,
             }
-        except Exception:
-            return {"ticker": ticker, "error": True}
+        except Exception as _e:
+            _log_err("enrich_screener_results", _e)
+            return {"ticker": ticker, "error": True, "reason": _classify_error(_e)}
 
     with ThreadPoolExecutor(max_workers=10) as ex:
         results = list(ex.map(_enrich_one, tickers))
@@ -495,7 +544,8 @@ def fetch_sector_data() -> list:
                 "m1":      round(m1_pct, 2),
                 "price":   round(close.iloc[-1], 2),
             }
-        except Exception:
+        except Exception as _e:
+            _log_err("fetch_sector_data", _e)
             return None
 
     with ThreadPoolExecutor(max_workers=11) as ex:
@@ -507,7 +557,8 @@ def fetch_yahoo_news(ticker: str) -> list:
     """yfinance 뉴스 목록 캐싱 — #14 try/except 추가"""
     try:
         return yf.Ticker(ticker).news or []
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_yahoo_news", _e)
         return []
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -519,7 +570,8 @@ def fetch_ticker_info(ticker: str) -> dict:
     """
     try:
         return yf.Ticker(ticker).info or {}
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_ticker_info", _e)
         return {}
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -538,7 +590,8 @@ def fetch_spike_history(ticker: str) -> pd.DataFrame:
         spikes = df[df["PctChange"] >= 100].copy()
         spikes = spikes[["Close", "PctChange", "Volume"]].sort_index(ascending=False)
         return spikes
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_spike_history", _e)
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -566,7 +619,8 @@ def fetch_offering_history(ticker: str) -> list:
                 })
         results.sort(key=lambda x: x["date"], reverse=True)
         return results
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_offering_history", _e)
         return []
 
 def calc_nasdaq_compliance(hist: pd.DataFrame, today_close: float) -> dict:
@@ -684,7 +738,8 @@ def _load_translate_cache() -> dict:
         if os.path.exists(TRANSLATE_CACHE_FILE):
             with open(TRANSLATE_CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
+    except Exception as _e:
+        _log_err("_load_translate_cache", _e)
         pass
     return {}
 
@@ -692,7 +747,8 @@ def _save_translate_cache(cache: dict) -> None:
     try:
         with open(TRANSLATE_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False)
-    except Exception:
+    except Exception as _e:
+        _log_err("_save_translate_cache", _e)
         pass
 
 def _needs_translation(text: str) -> bool:
@@ -724,7 +780,8 @@ def _translate_via_gemini(texts: list, api_key: str) -> dict:
         arr = json.loads("".join(p.get("text", "") for p in parts))
         if isinstance(arr, list) and len(arr) == len(texts):
             return {t: str(k).strip() for t, k in zip(texts, arr) if str(k).strip()}
-    except Exception:
+    except Exception as _e:
+        _log_err("_translate_via_gemini", _e)
         pass
     return {}
 
@@ -755,14 +812,16 @@ def translate_texts_batch(texts: list) -> dict:
                 out = GoogleTranslator(source='en', target='ko').translate(t)
                 if out and out.strip() and out.strip() != t.strip():
                     return t, out
-            except Exception:
+            except Exception as _e:
+                _log_err("translate_texts_batch", _e)
                 pass
             if len(t) <= 480:
                 try:
                     out = MyMemoryTranslator(source='en-US', target='ko-KR').translate(t)
                     if out and out.strip() and out.strip() != t.strip():
                         return t, out
-                except Exception:
+                except Exception as _e:
+                    _log_err("translate_texts_batch", _e)
                     pass
             return t, None
 
@@ -1260,7 +1319,8 @@ def _fetch_detail(link: str, headers: dict):
                 elif 'neutral' in text:  sentiment = "Neutral"
             if 'high impact' in detail_soup.text.lower():
                 impact = "High Impact"
-    except Exception:
+    except Exception as _e:
+        _log_err("_fetch_detail", _e)
         pass
     return sentiment, impact
 
@@ -1327,7 +1387,8 @@ def get_stock_titan_data(ticker: str) -> list:
             news_list.append({**item, "title": title_ko, "sentiment": sentiment, "impact": impact})
 
         return news_list
-    except Exception:
+    except Exception as _e:
+        _log_err("get_stock_titan_data", _e)
         return []
 
 # ════════════════════════════════════════════════════════════════
@@ -1355,7 +1416,8 @@ def fetch_reddit(ticker: str) -> list:
         if resp.status_code != 200:
             return []
         posts = resp.json().get("data", {}).get("children", [])
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_reddit", _e)
         return []
 
     # #참고 StockTwits처럼 감성 라벨을 API가 주지 않으므로, 제목+본문에 대한
@@ -1455,7 +1517,8 @@ def fetch_stocktwits(ticker: str) -> dict:
                 for m in messages:
                     m["body"] = _translations.get(m["body_en"], m["body_en"])
                 return {"bull": bull, "bear": bear, "messages": messages, "source": "stocktwits"}
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_stocktwits", _e)
         pass
 
     # ── 2차 fallback: yfinance 뉴스 + 키워드 감성 분류 ──────────
@@ -1466,7 +1529,8 @@ def fetch_stocktwits(ticker: str) -> dict:
 
     try:
         raw_news = yf.Ticker(ticker).news or []
-    except Exception:
+    except Exception as _e:
+        _log_err("fetch_stocktwits", _e)
         raw_news = []
 
     # #성능개선: 제목별로 순차 번역(+매번 디스크 저장)하던 것을 먼저 후보를 모두
@@ -1714,10 +1778,12 @@ CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_intraday_3min(ticker: str) -> pd.DataFrame:
-    """당일 1분봉을 받아 3분봉으로 리샘플링합니다. (장중에만 데이터가 채워짐)"""
+    """당일 1분봉(프리·애프터마켓 포함)을 3분봉으로 리샘플링합니다.
+    Session 열: 'REG'=정규장, 'EXT'=프리·애프터마켓 (미국 거래소 시간대일 때만 구분)."""
     try:
-        raw = yf.Ticker(ticker).history(period="1d", interval="1m")
-    except Exception:
+        raw = yf.Ticker(ticker).history(period="1d", interval="1m", prepost=True)
+    except Exception as _e:
+        _log_err("fetch_intraday_3min:" + ticker, _e)
         return pd.DataFrame()
     if raw is None or raw.empty:
         return pd.DataFrame()
@@ -1736,6 +1802,12 @@ def fetch_intraday_3min(ticker: str) -> pd.DataFrame:
         "Open": "first", "High": "max", "Low": "min",
         "Close": "last", "Volume": "sum",
     }).dropna(subset=["Open"])
+
+    # 세션 구분: 미국 시간대면 09:30~16:00(ET)만 정규장, 나머지는 프리·애프터마켓
+    ohlc["Session"] = "REG"
+    if "America/" in str(raw.index.tz):
+        mins = ohlc.index.hour * 60 + ohlc.index.minute
+        ohlc.loc[(mins < 570) | (mins >= 960), "Session"] = "EXT"
     return ohlc
 
 
@@ -1743,23 +1815,43 @@ def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data:
                                  extra_question: str = "") -> str:
     """3분봉 요약 통계 + 최근 캔들 목록 + 저항 구간 정보를 텍스트 프롬프트로 조립."""
     c = candles.copy()
-    c = calc_indicators(c)  # RSI/MA 등 재사용 (3분봉 기준으로 계산됨)
+    # 프리·애프터마켓 구분 열(Session)은 지표 계산에서 분리했다가 다시 붙인다
+    _sess = c["Session"] if "Session" in c.columns else pd.Series("REG", index=c.index)
+    c = calc_indicators(c.drop(columns=["Session"], errors="ignore"))  # RSI/MA 등 재사용 (3분봉 기준)
+    c["Session"] = _sess.reindex(c.index).fillna("REG")
 
-    day_open   = float(c["Open"].iloc[0])
-    day_high   = float(c["High"].max())
+    reg = c[c["Session"] == "REG"]
+    has_reg = not reg.empty
+    ext_now = c["Session"].iloc[-1] == "EXT"
+    base = reg if has_reg else c                 # 시가·VWAP 기준: 정규장 (아직 미개장이면 전체)
+
+    day_open   = float(base["Open"].iloc[0])
+    day_high   = float(c["High"].max())          # 고가/저가는 프리·애프터 포함
     day_low    = float(c["Low"].min())
     last_close = float(c["Close"].iloc[-1])
     total_vol  = float(c["Volume"].sum())
-    typical    = (c["High"] + c["Low"] + c["Close"]) / 3
-    vwap       = float((typical * c["Volume"]).sum() / total_vol) if total_vol > 0 else last_close
+    base_vol   = float(base["Volume"].sum())
+    typical    = (base["High"] + base["Low"] + base["Close"]) / 3
+    vwap       = float((typical * base["Volume"]).sum() / base_vol) if base_vol > 0 else last_close
     pct_open   = (last_close - day_open) / day_open * 100 if day_open else 0.0
     last_rsi   = c["RSI"].iloc[-1]
     last_rsi_s = f"{last_rsi:.1f}" if pd.notna(last_rsi) else "N/A"
 
+    session_label = "프리·애프터마켓" if ext_now else "정규장"
+    open_label    = "정규장 시가" if has_reg else "프리마켓 첫 가격(정규장 미개장)"
+    vwap_label    = "정규장" if has_reg else "프리마켓"
+    pre = c[(c["Session"] == "EXT") & (c.index < reg.index[0])] if has_reg else c[c["Session"] == "EXT"]
+    if not pre.empty:
+        pre_line = (f"프리마켓 구간: 고가 ${pre['High'].max():.2f} / 저가 ${pre['Low'].min():.2f} / "
+                    f"거래량 {int(pre['Volume'].sum()):,}주")
+    else:
+        pre_line = "프리마켓 구간: 거래 없음"
+
     recent = c.tail(5)
     up_count = int((recent["Close"] > recent["Open"]).sum())
 
-    lines = [f"[{ts.strftime('%H:%M')}] O:{row.Open:.2f} H:{row.High:.2f} L:{row.Low:.2f} C:{row.Close:.2f} V:{int(row.Volume):,}"
+    lines = [f"[{ts.strftime('%H:%M')}{' 프리/애프터' if row.Session == 'EXT' else ''}] "
+             f"O:{row.Open:.2f} H:{row.High:.2f} L:{row.Low:.2f} C:{row.Close:.2f} V:{int(row.Volume):,}"
               for ts, row in c.tail(20).iterrows()]
     candle_block = "\n".join(lines)
 
@@ -1775,10 +1867,12 @@ def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data:
         resistance_block = "감지된 저항 구간 없음 (또는 데이터 부족)"
 
     prompt = f"""티커: {ticker}
-당일 시가: ${day_open:.2f} / 당일 고가: ${day_high:.2f} / 당일 저가: ${day_low:.2f}
-현재가(최근 3분봉 종가): ${last_close:.2f} (시가 대비 {pct_open:+.2f}%)
-VWAP(거래량가중평균가): ${vwap:.2f}
-누적 거래량: {int(total_vol):,}주
+현재 세션: {session_label}
+{open_label}: ${day_open:.2f} / 당일 고가(프리·애프터 포함): ${day_high:.2f} / 당일 저가(프리·애프터 포함): ${day_low:.2f}
+{pre_line}
+현재가(최근 3분봉 종가): ${last_close:.2f} ({open_label} 대비 {pct_open:+.2f}%)
+VWAP(거래량가중평균가, {vwap_label} 기준): ${vwap:.2f}
+누적 거래량(프리·애프터 포함): {int(total_vol):,}주
 3분봉 RSI(14): {last_rsi_s}
 최근 5개 3분봉 중 양봉 개수: {up_count}/5
 
@@ -1864,8 +1958,8 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         st.markdown(
             '''<div class="glass-card"><div class="status-row"><div class="status-item">
                 <div class="status-dot dot-blue"></div>
-                <div class="status-text">당일 장중(3분봉) 데이터를 가져올 수 없습니다.
-                장 마감/휴장 중이거나 데이터 제공이 제한된 종목일 수 있습니다.</div>
+                <div class="status-text">프리·애프터마켓 포함 당일 3분봉 데이터를 가져올 수 없습니다.
+                휴장 중이거나 아직 거래가 시작되지 않았거나, 데이터 제공이 제한된 종목일 수 있습니다.</div>
             </div></div></div>''',
             unsafe_allow_html=True,
         )
@@ -1886,26 +1980,31 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
     )
 
     last_ts = candles.index[-1]
-    cache_key = (ticker, str(last_ts), extra_question)
-
     run_clicked = st.button("🔍 지금 진입 여부 분석하기", use_container_width=True, key="chart_analysis_run_btn")
 
-    if run_clicked or st.session_state.get("chart_analysis_cache_key") != cache_key:
-        if run_clicked:
-            with st.spinner("Gemini가 당일 흐름과 저항 구간을 분석하는 중..."):
-                try:
-                    prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question)
-                    result_text = analyze_price_action(prompt_text, api_key)
-                    st.session_state["chart_analysis_result"] = result_text
-                    st.session_state["chart_analysis_error"] = None
-                    st.session_state["chart_analysis_cache_key"] = cache_key
-                except Exception as e:
-                    st.session_state["chart_analysis_result"] = None
-                    st.session_state["chart_analysis_error"] = str(e)
-                    st.session_state["chart_analysis_cache_key"] = cache_key
+    # 결과는 티커 기준으로 보관한다 — 새 3분봉이 생기거나 질문 입력칸을 건드려도 지워지지 않는다.
+    if run_clicked:
+        with st.spinner("Gemini가 당일 흐름과 저항 구간을 분석하는 중..."):
+            try:
+                prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question)
+                result_text = analyze_price_action(prompt_text, api_key)
+                st.session_state["chart_analysis_result"] = result_text
+                st.session_state["chart_analysis_error"] = None
+            except Exception as e:
+                _log_err("chart_analysis", e)
+                st.session_state["chart_analysis_result"] = None
+                st.session_state["chart_analysis_error"] = _safe_error_text(e)
+        st.session_state["chart_analysis_meta"] = {
+            "ticker": ticker, "ts": datetime.now().timestamp(),
+            "candle": last_ts, "question": (extra_question or "").strip(),
+        }
 
+    meta = st.session_state.get("chart_analysis_meta") or {}
+    same_ticker = meta.get("ticker") == ticker
     error_msg = st.session_state.get("chart_analysis_error")
-    if error_msg and st.session_state.get("chart_analysis_cache_key") == cache_key:
+    result_txt = st.session_state.get("chart_analysis_result")
+
+    if same_ticker and error_msg:
         st.markdown(
             f'''<div class="glass-card"><div class="status-row"><div class="status-item">
                 <div class="status-dot dot-red"></div>
@@ -1913,7 +2012,7 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
             </div></div></div>''',
             unsafe_allow_html=True,
         )
-    elif st.session_state.get("chart_analysis_result") and st.session_state.get("chart_analysis_cache_key") == cache_key:
+    elif same_ticker and result_txt:
         # 결과 전체를 하나의 st.markdown 안에서 흰 박스 + 검정 글씨로 표시
         # (st.markdown을 나눠 호출하면 div가 분리되어 빈 박스가 생기므로 한 번에 출력)
         _ai_html = (
@@ -1923,12 +2022,27 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
             ".ai-result-black, .ai-result-black *{color:#000 !important;opacity:1 !important;}"
             "</style>"
             '<div class="ai-result-black">\n\n'
-            + str(st.session_state["chart_analysis_result"])
+            + str(result_txt)
             + "\n\n</div>"
         )
         st.markdown(_ai_html, unsafe_allow_html=True)
+
+        age_min = int((datetime.now().timestamp() - meta.get("ts", 0)) // 60)
+        age_txt = "방금 전" if age_min < 1 else f"{age_min}분 전"
+        try:
+            base_ts = meta["candle"]
+            new_n = int((candles.index > base_ts).sum())
+            base_txt = pd.Timestamp(base_ts).strftime("%H:%M")
+        except Exception:
+            new_n, base_txt = 0, "?"
+        note = f"🕒 {age_txt} 분석 (기준 3분봉 {base_txt})"
+        if new_n > 0:
+            note += f" · 이후 새 3분봉 {new_n}개 — 최신 기준으로 보려면 다시 분석하세요"
+        if meta.get("question", "") != (extra_question or "").strip():
+            note += " · 질문이 바뀌었습니다. 버튼을 누르면 새 질문으로 분석합니다"
+        st.caption(note)
     else:
-        st.caption("버튼을 누르면 최신 3분봉 데이터를 기준으로 분석합니다.")
+        st.caption("버튼을 누르면 최신 3분봉(프리·애프터마켓 포함) 데이터를 기준으로 분석합니다.")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -3162,12 +3276,36 @@ def parse_watchlist_excel(uploaded) -> tuple:
         items.append({"섹터": sector, "티커": ticker, "종목명": name})
     return items, skipped
 
+def _fetch_history_retry(ticker: str, tries: int = 3) -> pd.DataFrame:
+    """엑셀 일괄 스캔용 조회. 요청 제한·일시적 네트워크 오류는 대기 후 재시도하고,
+    빈 결과는 캐시를 거치지 않고 한 번 더 직접 조회한다(캐시된 빈 결과로 오판 방지)."""
+    last_exc = None
+    empty_retried = False
+    for n in range(tries):
+        try:
+            raw = fetch_history(ticker) if n == 0 else yf.Ticker(ticker).history(period="1y")
+            if raw is not None and not raw.empty:
+                return raw
+            last_exc = None
+            if empty_retried:
+                return pd.DataFrame()
+            empty_retried = True
+        except Exception as e:
+            last_exc = e
+            if not _classify_error(e).startswith(("요청 제한", "네트워크")):
+                raise
+        time.sleep(1.5 * (n + 1))
+    if last_exc is not None:
+        raise last_exc
+    return pd.DataFrame()
+
+
 def scan_ticker_for_excel(item: dict, usd_krw: float) -> dict:
     """한 종목을 분석해 표 한 줄(dict)로 반환. 실패해도 예외 대신 상태 문구를 담아 반환."""
     ticker = item["티커"]
     row = {"섹터": item["섹터"], "티커": ticker, "종목명": item.get("종목명", ""), "상태": "오류"}
     try:
-        raw = fetch_history(ticker)
+        raw = _fetch_history_retry(ticker)
         if raw is None or raw.empty or len(raw) < 2:
             row["상태"] = "데이터 없음(티커 확인)"
             return row
@@ -3210,8 +3348,9 @@ def scan_ticker_for_excel(item: dict, usd_krw: float) -> dict:
             "RSI": round(rsi, 1) if rsi is not None else None,
             "거래대금(억원)": tv_eok, "신호": " ".join(signals) if signals else "—",
         })
-    except Exception:
-        row["상태"] = "분석 오류"
+    except Exception as _e:
+        _log_err("excel_scan:" + ticker, _e)
+        row["상태"] = "오류: " + _classify_error(_e)
     return row
 
 def _excel_results_to_bytes(df_all: pd.DataFrame, df_sector: pd.DataFrame) -> bytes:
@@ -3238,6 +3377,10 @@ def render_excel_scan_results():
         <span style="font-size:0.82rem;font-weight:700;">🔔 신호 {len(sig)}건 · 오류 {len(bad)}건</span>
     </div>
     """, unsafe_allow_html=True)
+
+    if len(bad):
+        _reasons = bad["상태"].value_counts()
+        st.caption("⚠️ 분석 실패 사유: " + " · ".join(f"{k} {v}건" for k, v in _reasons.items()))
 
     if data.get("skipped"):
         st.warning("티커가 비어 있어 건너뛴 종목 " + str(len(data["skipped"])) + "개: " + ", ".join(data["skipped"]))
@@ -3466,9 +3609,11 @@ if st.session_state.favorites:
                         "RSI":       f"{rsi:.1f}",
                         "🔔신호":    alert,
                     }
-            except Exception:
-                pass
-            return {"티커": fav_ticker, "현재가": "오류", "등락(%)": "-",
+            except Exception as _e:
+                _log_err("favorites_scan:" + fav_ticker, _e)
+                return {"티커": fav_ticker, "현재가": f"오류({_classify_error(_e)})", "등락(%)": "-",
+                        "종합점수": "-", "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
+            return {"티커": fav_ticker, "현재가": "데이터 없음", "등락(%)": "-",
                     "종합점수": "-",
                     "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
 
