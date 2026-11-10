@@ -1752,12 +1752,12 @@ def render_social_section(ticker_input: str):
 
 
 # ════════════════════════════════════════════════════════════════
-# #신규 AI 차트 해석 — 당일 3분봉 자동 분석 (진입 여부 / 저항선 돌파 가능성)
+# #신규 AI 차트 해석 — 5분봉 + 1시간봉 단기추세 자동 분석 (진입 여부 / 저항선 돌파 가능성)
 # ════════════════════════════════════════════════════════════════
 CHART_ANALYSIS_MODEL = "gemini-2.5-flash"
 
 CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는 숙련된 기술적 분석가입니다.
-사용자가 제공하는 '당일 3분봉 데이터'와 '악성매물대(저항 구간) 분석 결과'를 근거로
+사용자가 제공하는 '당일 5분봉 데이터', '1시간봉 단기 추세', '악성매물대(저항 구간) 분석 결과'를 근거로
 한국어로 짧고 명료하게 답변하세요.
 
 #개선 기존 5개 항목(흐름 요약/모멘텀/진입 판단/저항 돌파 가능성/리스크)을
@@ -1765,11 +1765,11 @@ CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는
 항목별 분량 상한(글머리 기호 1~2줄)을 명시함.
 
 아래 3개 소제목만 이모지와 함께 사용하고, 각 항목은 글머리 기호 1~2줄로 핵심만 쓰세요.
-전체 답변은 200자를 넘기지 마세요.
+전체 답변은 250자를 넘기지 마세요.
 
-1. 📊 현재 상황 — 시가 대비 등락률, 추세 방향, 저항 구간 돌파 가능성을 한 줄로
+1. 📊 현재 상황 — 시가 대비 등락률, 5분봉·1시간봉 추세 방향(일치/불일치), 저항 구간 돌파 가능성을 한 줄로
 2. 🎯 진입 판단 — 매수 / 관망 중 하나를 고르고 핵심 근거 1가지만
-3. ⚠️ 리스크 — 가장 중요한 리스크 요인 1가지만
+3. ⚠️ 리스크 — 가장 중요한 리스크 요인 1가지만 (5분봉 신호가 1시간봉 추세와 반대 방향이면 이를 우선 언급)
 
 숫자는 주어진 데이터 범위 안에서만 근거로 사용하고, 데이터에 없는 값은 추측하지 마세요.
 마지막 줄에 반드시 "이 분석은 참고용이며 투자 조언이 아닙니다."
@@ -1777,19 +1777,19 @@ CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_intraday_3min(ticker: str) -> pd.DataFrame:
-    """당일 1분봉(프리·애프터마켓 포함)을 3분봉으로 리샘플링합니다.
+def fetch_intraday_5min(ticker: str) -> pd.DataFrame:
+    """당일 1분봉(프리·애프터마켓 포함)을 5분봉으로 리샘플링합니다.
     Session 열: 'REG'=정규장, 'EXT'=프리·애프터마켓 (미국 거래소 시간대일 때만 구분)."""
     try:
         raw = yf.Ticker(ticker).history(period="1d", interval="1m", prepost=True)
     except Exception as _e:
-        _log_err("fetch_intraday_3min:" + ticker, _e)
+        _log_err("fetch_intraday_5min:" + ticker, _e)
         return pd.DataFrame()
     if raw is None or raw.empty:
         return pd.DataFrame()
 
     # #버그수정 거래가 뜸한 종목은 period="1d" 요청에도 며칠치 데이터가 섞여
-    # 반환되는 경우가 있어(휴장 중 조회 등) 3분봉이 하루가 아니라 여러 날짜에
+    # 반환되는 경우가 있어(휴장 중 조회 등) 봉이 하루가 아니라 여러 날짜에
     # 걸쳐 듬성듬성 찍히면서 차트 x축이 비정상적으로 늘어지는 문제가 있었음.
     # → 가장 최근 거래일 데이터만 남기고 나머지는 버린다.
     raw.index = pd.to_datetime(raw.index)
@@ -1798,7 +1798,7 @@ def fetch_intraday_3min(ticker: str) -> pd.DataFrame:
     if raw.empty:
         return pd.DataFrame()
 
-    ohlc = raw.resample("3min").agg({
+    ohlc = raw.resample("5min").agg({
         "Open": "first", "High": "max", "Low": "min",
         "Close": "last", "Volume": "sum",
     }).dropna(subset=["Open"])
@@ -1811,13 +1811,113 @@ def fetch_intraday_3min(ticker: str) -> pd.DataFrame:
     return ohlc
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_hourly(ticker: str) -> pd.DataFrame:
+    """최근 약 1개월 1시간봉(정규장). 단기 추세 판단용. 마지막 봉은 진행 중일 수 있음."""
+    try:
+        raw = yf.Ticker(ticker).history(period="1mo", interval="1h")
+    except Exception as _e:
+        _log_err("fetch_hourly:" + ticker, _e)
+        return pd.DataFrame()
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    return raw[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+
+
+def calc_short_term_trend(df, fast: int = 9, slow: int = 21) -> dict:
+    """봉 데이터(OHLC)로 단기 추세를 규칙 기반으로 판정한다.
+    점수(-4~+4) = 종가 vs EMA(fast) ±1 + EMA(fast) vs EMA(slow) ±1
+                  + EMA(fast) 3봉 기울기 ±1/0 + 최근 6봉 vs 직전 6봉 고점·저점 구조 ±1/0
+    4=강한 상승, 3=상승, -3=하락, -4=강한 하락, 그 외=횡보·혼조. (slow+4봉 미만이면 '데이터 부족')"""
+    need = slow + 4
+    n = 0 if df is None else len(df)
+    if df is None or df.empty or n < need:
+        return {"label": "데이터 부족", "score": 0, "n": n, "need": need}
+
+    close = df["Close"].astype(float)
+    ema_f = close.ewm(span=fast, adjust=False).mean()
+    ema_s = close.ewm(span=slow, adjust=False).mean()
+
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+    g, l = float(gain.iloc[-1]), float(loss.iloc[-1])
+    rsi = 100.0 if l == 0 and g > 0 else (50.0 if l == 0 else 100 - 100 / (1 + g / l))
+
+    last, ef, es = float(close.iloc[-1]), float(ema_f.iloc[-1]), float(ema_s.iloc[-1])
+    ef_prev = float(ema_f.iloc[-4])
+    slope_pct = (ef / ef_prev - 1) * 100 if ef_prev else 0.0
+
+    recent, prev = df.tail(6), df.iloc[-12:-6]
+    hh = float(recent["High"].max()) > float(prev["High"].max())
+    hl = float(recent["Low"].min()) > float(prev["Low"].min())
+    lh = float(recent["High"].max()) < float(prev["High"].max())
+    ll = float(recent["Low"].min()) < float(prev["Low"].min())
+    struct = 1 if (hh and hl) else (-1 if (lh and ll) else 0)
+    struct_txt = {1: "고점·저점 상승", -1: "고점·저점 하락", 0: "고점·저점 혼조"}[struct]
+
+    score = (1 if last > ef else -1) + (1 if ef > es else -1) \
+            + (1 if slope_pct > 0 else (-1 if slope_pct < 0 else 0)) + struct
+    if score >= 4:
+        label = "강한 상승"
+    elif score == 3:
+        label = "상승"
+    elif score <= -4:
+        label = "강한 하락"
+    elif score == -3:
+        label = "하락"
+    else:
+        label = "횡보·혼조"
+
+    hi20, lo20 = float(df["High"].tail(20).max()), float(df["Low"].tail(20).min())
+    pos20 = (last - lo20) / (hi20 - lo20) * 100 if hi20 > lo20 else 50.0
+    return {"label": label, "score": score, "n": n, "fast": fast, "slow": slow,
+            "close": last, "ema_fast": ef, "ema_slow": es, "rsi": rsi,
+            "slope_pct": slope_pct, "structure": struct_txt,
+            "hi20": hi20, "lo20": lo20, "pos20": pos20}
+
+
+def _trend_line(name: str, t: dict) -> str:
+    """추세 판정 결과를 한 줄 문장으로."""
+    if t.get("label") == "데이터 부족":
+        return f"{name}: 데이터 부족 ({t.get('n', 0)}봉 / 최소 {t.get('need', 25)}봉 필요)"
+    rel = ">" if t["ema_fast"] > t["ema_slow"] else "<"
+    return (f"{name}: {t['label']} · EMA{t['fast']} {rel} EMA{t['slow']} · "
+            f"RSI {t['rsi']:.0f} · {t['structure']}")
+
+
+def _trend_alignment(t5: dict, t1h: dict) -> str:
+    """5분봉과 1시간봉의 방향이 맞는지 한 줄로."""
+    def d(t):
+        lab = t.get("label", "")
+        if lab == "데이터 부족":
+            return None
+        return 1 if "상승" in lab else (-1 if "하락" in lab else 0)
+    a, b = d(t5), d(t1h)
+    if a is None or b is None:
+        return ""
+    if a == b == 1:
+        return "5분봉·1시간봉 모두 상승 — 단기 방향 일치"
+    if a == b == -1:
+        return "5분봉·1시간봉 모두 하락 — 단기 방향 일치(약세)"
+    if a == 1 and b == -1:
+        return "⚠️ 1시간봉은 하락 추세인데 5분봉만 반등 — 추세 역행 반등일 수 있음"
+    if a == -1 and b == 1:
+        return "1시간봉 상승 추세 중 5분봉 눌림 — 조정 구간일 수 있음"
+    if b == 0:
+        return "1시간봉이 횡보·혼조 — 방향성이 약함"
+    if a == 0:
+        return "5분봉 횡보·혼조 — 1시간봉 방향 재확인 필요"
+    return ""
+
+
 def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data: dict,
-                                 extra_question: str = "") -> str:
-    """3분봉 요약 통계 + 최근 캔들 목록 + 저항 구간 정보를 텍스트 프롬프트로 조립."""
+                                 extra_question: str = "", hourly=None) -> str:
+    """5분봉 요약 통계 + 최근 캔들 목록 + 1시간봉 단기 추세 + 저항 구간 정보를 텍스트 프롬프트로 조립."""
     c = candles.copy()
     # 프리·애프터마켓 구분 열(Session)은 지표 계산에서 분리했다가 다시 붙인다
     _sess = c["Session"] if "Session" in c.columns else pd.Series("REG", index=c.index)
-    c = calc_indicators(c.drop(columns=["Session"], errors="ignore"))  # RSI/MA 등 재사용 (3분봉 기준)
+    c = calc_indicators(c.drop(columns=["Session"], errors="ignore"))  # RSI/MA 등 재사용 (5분봉 기준)
     c["Session"] = _sess.reindex(c.index).fillna("REG")
 
     reg = c[c["Session"] == "REG"]
@@ -1850,6 +1950,23 @@ def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data:
     recent = c.tail(5)
     up_count = int((recent["Close"] > recent["Open"]).sum())
 
+    # 단기 추세: 5분봉(당일) + 1시간봉(최근 1개월) 규칙 기반 판정
+    t5 = calc_short_term_trend(c)
+    trend5_line = _trend_line("5분봉", t5)
+    if hourly is not None and not hourly.empty:
+        t1h = calc_short_term_trend(hourly)
+        hourly_block = _trend_line("1시간봉", t1h)
+        if t1h.get("label") != "데이터 부족":
+            hourly_block += (f"\n최근 20개 1시간봉 고점 ${t1h['hi20']:.2f} / 저점 ${t1h['lo20']:.2f} "
+                             f"(현재가 위치 {t1h['pos20']:.0f}%)")
+        h_lines = [f"[{ts.strftime('%m-%d %H:%M')}] O:{r.Open:.2f} H:{r.High:.2f} L:{r.Low:.2f} C:{r.Close:.2f}"
+                   for ts, r in hourly.tail(6).iterrows()]
+        hourly_block += "\n최근 6개 1시간봉 (오래된 순, 마지막 봉은 진행 중일 수 있음):\n" + "\n".join(h_lines)
+        align_line = _trend_alignment(t5, t1h)
+    else:
+        hourly_block = "1시간봉 데이터를 가져오지 못했습니다."
+        align_line = ""
+
     lines = [f"[{ts.strftime('%H:%M')}{' 프리/애프터' if row.Session == 'EXT' else ''}] "
              f"O:{row.Open:.2f} H:{row.High:.2f} L:{row.Low:.2f} C:{row.Close:.2f} V:{int(row.Volume):,}"
               for ts, row in c.tail(20).iterrows()]
@@ -1870,16 +1987,23 @@ def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data:
 현재 세션: {session_label}
 {open_label}: ${day_open:.2f} / 당일 고가(프리·애프터 포함): ${day_high:.2f} / 당일 저가(프리·애프터 포함): ${day_low:.2f}
 {pre_line}
-현재가(최근 3분봉 종가): ${last_close:.2f} ({open_label} 대비 {pct_open:+.2f}%)
+현재가(최근 5분봉 종가): ${last_close:.2f} ({open_label} 대비 {pct_open:+.2f}%)
 VWAP(거래량가중평균가, {vwap_label} 기준): ${vwap:.2f}
 누적 거래량(프리·애프터 포함): {int(total_vol):,}주
-3분봉 RSI(14): {last_rsi_s}
-최근 5개 3분봉 중 양봉 개수: {up_count}/5
+5분봉 RSI(14): {last_rsi_s}
+최근 5개 5분봉 중 양봉 개수: {up_count}/5
+
+[5분봉 단기 추세 (규칙 기반 판정)]
+{trend5_line}
+
+[1시간봉 단기 추세 (규칙 기반 판정, 최근 약 1개월)]
+{hourly_block}
+{align_line}
 
 [악성매물대(저항 구간) 분석 결과]
 {resistance_block}
 
-[최근 3분봉 목록 (오래된 순)]
+[최근 5분봉 목록 (오래된 순)]
 {candle_block}
 """
     if extra_question and extra_question.strip():
@@ -1936,8 +2060,8 @@ def analyze_price_action(prompt_text: str, api_key: str) -> str:
 
 
 def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_price: float):
-    """AI 차트 해석 탭 — 당일 3분봉을 자동으로 받아 진입 여부·저항선 돌파 가능성을 분석."""
-    ui_section_header(mono_icon_badge("camera", color="var(--c-cyan)"), "AI 차트 해석 (당일 3분봉 기준)")
+    """AI 차트 해석 탭 — 5분봉 + 1시간봉 추세를 자동으로 받아 진입 여부·저항선 돌파 가능성을 분석."""
+    ui_section_header(mono_icon_badge("camera", color="var(--c-cyan)"), "AI 차트 해석 (5분봉 + 1시간봉 추세)")
 
     api_key = st.session_state.get("gemini_api_key", "")
     if not api_key:
@@ -1951,14 +2075,15 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         )
         return
 
-    with st.spinner("당일 3분봉 데이터를 불러오는 중..."):
-        candles = fetch_intraday_3min(ticker)
+    with st.spinner("5분봉·1시간봉 데이터를 불러오는 중..."):
+        candles = fetch_intraday_5min(ticker)
+        hourly = fetch_hourly(ticker)
 
     if candles.empty or len(candles) < 3:
         st.markdown(
             '''<div class="glass-card"><div class="status-row"><div class="status-item">
                 <div class="status-dot dot-blue"></div>
-                <div class="status-text">프리·애프터마켓 포함 당일 3분봉 데이터를 가져올 수 없습니다.
+                <div class="status-text">프리·애프터마켓 포함 당일 5분봉 데이터를 가져올 수 없습니다.
                 휴장 중이거나 아직 거래가 시작되지 않았거나, 데이터 제공이 제한된 종목일 수 있습니다.</div>
             </div></div></div>''',
             unsafe_allow_html=True,
@@ -1973,6 +2098,28 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         heavy_mult=supply_heavy_mult, max_zones=supply_max_zones,
     )
 
+    # 단기 추세 요약 카드 — AI 호출 없이 규칙 기반으로 즉시 표시
+    _t5 = calc_short_term_trend(candles)
+    _t1 = calc_short_term_trend(hourly)
+
+    def _trend_dot(t: dict) -> str:
+        lab = t.get("label", "")
+        return "dot-green" if "상승" in lab else ("dot-red" if "하락" in lab else "dot-yellow")
+
+    _rows = ""
+    for _nm, _tt in (("5분봉", _t5), ("1시간봉", _t1)):
+        _rows += ('<div class="status-row"><div class="status-item">'
+                  f'<div class="status-dot {_trend_dot(_tt)}"></div>'
+                  f'<div class="status-text">{_html_lib.escape(_trend_line(_nm, _tt))}</div>'
+                  '</div></div>')
+    _al = _trend_alignment(_t5, _t1)
+    if _al:
+        _rows += ('<div class="status-row"><div class="status-item">'
+                  '<div class="status-dot dot-blue"></div>'
+                  f'<div class="status-text">{_html_lib.escape(_al)}</div>'
+                  '</div></div>')
+    st.markdown(f'<div class="glass-card">{_rows}</div>', unsafe_allow_html=True)
+
     extra_question = st.text_input(
         "추가로 궁금한 점이 있다면 적어주세요 (선택)",
         key="chart_ai_question",
@@ -1982,11 +2129,11 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
     last_ts = candles.index[-1]
     run_clicked = st.button("🔍 지금 진입 여부 분석하기", use_container_width=True, key="chart_analysis_run_btn")
 
-    # 결과는 티커 기준으로 보관한다 — 새 3분봉이 생기거나 질문 입력칸을 건드려도 지워지지 않는다.
+    # 결과는 티커 기준으로 보관한다 — 새 5분봉이 생기거나 질문 입력칸을 건드려도 지워지지 않는다.
     if run_clicked:
         with st.spinner("Gemini가 당일 흐름과 저항 구간을 분석하는 중..."):
             try:
-                prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question)
+                prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question, hourly)
                 result_text = analyze_price_action(prompt_text, api_key)
                 st.session_state["chart_analysis_result"] = result_text
                 st.session_state["chart_analysis_error"] = None
@@ -2035,14 +2182,14 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
             base_txt = pd.Timestamp(base_ts).strftime("%H:%M")
         except Exception:
             new_n, base_txt = 0, "?"
-        note = f"🕒 {age_txt} 분석 (기준 3분봉 {base_txt})"
+        note = f"🕒 {age_txt} 분석 (기준 5분봉 {base_txt})"
         if new_n > 0:
-            note += f" · 이후 새 3분봉 {new_n}개 — 최신 기준으로 보려면 다시 분석하세요"
+            note += f" · 이후 새 5분봉 {new_n}개 — 최신 기준으로 보려면 다시 분석하세요"
         if meta.get("question", "") != (extra_question or "").strip():
             note += " · 질문이 바뀌었습니다. 버튼을 누르면 새 질문으로 분석합니다"
         st.caption(note)
     else:
-        st.caption("버튼을 누르면 최신 3분봉(프리·애프터마켓 포함) 데이터를 기준으로 분석합니다.")
+        st.caption("버튼을 누르면 최신 5분봉(프리·애프터마켓 포함)과 1시간봉 추세를 기준으로 분석합니다.")
 
 
 # ════════════════════════════════════════════════════════════════
