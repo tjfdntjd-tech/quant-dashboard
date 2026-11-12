@@ -1070,6 +1070,136 @@ def translate_text(text: str) -> str:
         return text
     return translate_texts_batch([text]).get(text, text)
 
+# ════════════════════════════════════════════════════════════════
+# 이벤트 빔(병합빔 / 인수빔 / 파산빔) 감지
+# strong = 확정적 표현, weak = 관련 가능성(주체 확인 필요)
+# ════════════════════════════════════════════════════════════════
+_BEAM_RULES = {
+    "병합빔": {
+        "desc": "주식병합(리버스 스플릿)",
+        "strong": [r"reverse\s+(?:stock\s+)?split", r"share\s+consolidation",
+                   r"주식\s*병합", r"역병합", r"리버스\s*스플릿"],
+        "weak": [],
+    },
+    "인수빔": {
+        "desc": "인수·합병·공개매수",
+        "strong": [r"to\s+be\s+acquired", r"acquired\s+by", r"merger\s+agreement",
+                   r"tender\s+offer", r"take[-\s]?private", r"\bbuyout\b",
+                   r"go(?:ing)?\s+private", r"공개매수"],
+        "weak": [r"\bacquisition\b", r"\bto\s+acquire\b", r"\bacquires?\b", r"takeover",
+                 r"definitive\s+agreement", r"business\s+combination", r"\bmerger\b",
+                 r"인수", r"합병"],
+    },
+    "파산빔": {
+        "desc": "파산·회생 절차",
+        "strong": [r"chapter\s+(?:7|11)\b", r"files?\s+for\s+bankruptcy",
+                   r"\bbankruptcy\b", r"파산", r"법정관리", r"회생\s*절차"],
+        "weak": [r"insolvency", r"receivership", r"\bbankrupt\b", r"liquidation"],
+    },
+}
+_BEAM_COMPILED = {
+    k: {"desc": v["desc"],
+        "strong": [re.compile(p, re.I) for p in v["strong"]],
+        "weak":   [re.compile(p, re.I) for p in v["weak"]]}
+    for k, v in _BEAM_RULES.items()
+}
+
+
+def get_beam_news(ticker: str) -> list:
+    """빔 감지용 뉴스 수집: 스톡타이탄(최대 3건) + 야후 헤드라인(최대 10건, 14일 이내)."""
+    items, seen = [], set()
+    for n in (get_stock_titan_data(ticker) or []):
+        key = (n.get("title_en") or "").lower()
+        if key and key not in seen:
+            seen.add(key)
+            items.append({"title": n.get("title", ""), "title_en": n.get("title_en", ""),
+                          "link": n.get("link", ""), "date": n.get("date", "")})
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    for raw in (fetch_yahoo_news(ticker) or [])[:10]:
+        p = parse_yahoo_news_item(raw)
+        title = p["title"]
+        if not title or title == "제목 없음" or title.lower() in seen:
+            continue
+        pub = (raw.get("content", raw) or {}).get("pubDate") or ""
+        try:
+            if pub and datetime.fromisoformat(pub.replace("Z", "+00:00")) < cutoff:
+                continue
+        except Exception:
+            pass
+        seen.add(title.lower())
+        items.append({"title": title, "title_en": title, "link": p["link"], "date": pub[:10]})
+    return items
+
+
+def detect_event_beams(news_items: list) -> list:
+    """뉴스 제목에서 병합/인수/파산 이슈를 찾는다. 종류별로 가장 확실한(strong 우선) 1건씩 반환."""
+    found = {}
+    for n in news_items:
+        text = " ".join(filter(None, [n.get("title", ""), n.get("title_en", "")]))
+        if not text:
+            continue
+        for kind, rule in _BEAM_COMPILED.items():
+            strong = any(p.search(text) for p in rule["strong"])
+            weak = (not strong) and any(p.search(text) for p in rule["weak"])
+            if not (strong or weak):
+                continue
+            cur = found.get(kind)
+            if cur is None or (strong and not cur["strong"]):
+                found[kind] = {"kind": kind, "desc": rule["desc"], "strong": strong,
+                               "title": n.get("title") or n.get("title_en", ""),
+                               "link": n.get("link", ""), "date": n.get("date", "")}
+    return list(found.values())
+
+
+def fetch_beam_titles(ticker: str) -> list:
+    """스캔용 경량 뉴스 수집: 야후 헤드라인만(14일 이내). 워커 스레드에서도 호출 가능."""
+    items = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    for raw in (fetch_yahoo_news(ticker) or [])[:10]:
+        p = parse_yahoo_news_item(raw)
+        title = p["title"]
+        if not title or title == "제목 없음":
+            continue
+        pub = (raw.get("content", raw) or {}).get("pubDate") or ""
+        try:
+            if pub and datetime.fromisoformat(pub.replace("Z", "+00:00")) < cutoff:
+                continue
+        except Exception:
+            pass
+        items.append({"title": title, "title_en": title, "link": p["link"], "date": pub[:10]})
+    return items
+
+
+def beam_signal_text(ticker: str) -> str:
+    """종목 하나의 빔 신호 문자열. 없으면 ''. 예: '🧨병합빔 🧨파산빔(?)'  (?)=관련 가능성"""
+    try:
+        evs = detect_event_beams(fetch_beam_titles(ticker))
+    except Exception as _e:
+        _log_err("beam_signal_text:" + ticker, _e)
+        return ""
+    return " ".join(f"🧨{e['kind']}" + ("" if e["strong"] else "(?)") for e in evs)
+
+
+def is_surge_candidate(pct: float, vol_ma20_r: float, gap_pct: float = 0.0) -> bool:
+    return pct >= 5 or vol_ma20_r >= 200 or gap_pct >= 5
+
+
+def attach_beams(rows: list, ticker_key: str, signal_key: str, cand_flags: list,
+                 max_workers: int = 6, limit: int = 40) -> None:
+    """cand_flags[i]가 True인 행만 병렬로 뉴스를 조회해 rows[i][signal_key]에 빔 문자열을 덧붙인다."""
+    idxs = [i for i, f in enumerate(cand_flags) if f][:limit]
+    if not idxs:
+        return
+
+    def _one(i):
+        t = str(rows[i][ticker_key]).replace("⚠️ ", "").strip()
+        return i, beam_signal_text(t)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for i, txt in ex.map(_one, idxs):
+            if txt:
+                cur = rows[i].get(signal_key, "—")
+                rows[i][signal_key] = txt if cur in ("—", "", None) else f"{cur} {txt}"
 def parse_yahoo_news_item(raw_item: dict) -> dict:
     """
     yfinance .news 응답 구조를 안전하게 파싱합니다.
