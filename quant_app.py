@@ -726,6 +726,203 @@ def detect_reverse_split_news(news_items: list) -> list:
     return results
 
 # ════════════════════════════════════════════════════════════════
+# 🤝 합병 · 🏢 인수 · 💀 파산 이벤트 신호
+#   뉴스 제목(최근 14일)과 SEC 공시 서식(최근 30일)에서 키워드·서식 종류로 자동 감지한다.
+#   키워드 기반이라 다른 회사 소식이 섞이거나 오탐이 있을 수 있어 원문 확인이 필요하다.
+# ════════════════════════════════════════════════════════════════
+EVENT_NEWS_DAYS = 14
+EVENT_SEC_DAYS = 30
+EVENT_ORDER = ["bankruptcy", "distress", "target", "merger", "acquisition"]   # 심각도 순
+EVENT_LABELS = {          # (신호 토큰, 한글명)
+    "bankruptcy":  ("💀파산", "파산"),
+    "distress":    ("⚠️파산위험", "파산위험"),
+    "target":      ("🎯피인수", "피인수"),
+    "merger":      ("🤝합병", "합병"),
+    "acquisition": ("🏢인수", "인수"),
+}
+
+# 'Foo Acquisition Corp'(SPAC 이름), 'Merger Sub' 같은 상호는 합병·인수 소식이 아니므로 먼저 지운다
+_EV_STRIP = re.compile(
+    r"\b[\w&.'\-]+\s+(?:acquisition|merger)\s+(?:corp(?:oration)?|co|company|holdings?|ltd|limited|inc|sub(?:sidiary)?)\b\.?",
+    re.I)
+_EV_BANKRUPT = [re.compile(p, re.I) for p in (
+    r"\bbankrupt(?:cy|cies)?\b", r"\bchapter\s*(?:7|11)\b", r"\binsolven(?:cy|t)\b",
+    r"\breceivership\b", r"\bvoluntary liquidation\b", r"\bplan of (?:complete )?liquidation\b",
+    r"\bliquidat(?:e|ing) (?:the )?company\b")]
+_EV_DISTRESS = [re.compile(p, re.I) for p in (
+    r"\bgoing[\s-]concern\b", r"\bsubstantial doubt\b", r"\bdelist(?:ing|ed|s)?\b",
+    r"\bwind(?:ing)?[\s-]*(?:down|up)\b", r"\bcease[sd]? operations\b")]
+_EV_TARGET = [re.compile(p, re.I) for p in (
+    r"\bto be (?:acquired|bought|purchased|taken private)\b", r"\bacquired by\b",
+    r"\btake[\s-]private\b", r"\bgo(?:ing)?[\s-]private\b", r"\bbuyout\b", r"\btender offer\b",
+    r"\bunsolicited (?:offer|proposal|bid)\b")]
+_EV_MERGER = [re.compile(p, re.I) for p in (
+    r"\bmerg(?:e|er|ers|es|ed|ing)\b", r"\bbusiness combination\b")]
+_EV_ACQ_ACTIVE = re.compile(
+    r"\b(?:to|will|agrees to|agreed to|completes?|completed|completing|announces?|announced)\s+(?:the\s+)?acquir(?:e|es|ing|ed)\b"
+    r"|\bacquires\b|\bacquisition of\b", re.I)
+_EV_ACQ_ANY = re.compile(r"\bacquir(?:e|es|ed|ing)\b|\bacquisitions?\b|\btakeover\b", re.I)
+
+
+def classify_event_text(text) -> list:
+    """뉴스 제목 한 줄에서 이벤트 종류(bankruptcy/distress/target/merger/acquisition)를 찾는다."""
+    t = _EV_STRIP.sub(" ", str(text or ""))
+    cats = []
+    if any(p.search(t) for p in _EV_BANKRUPT):
+        cats.append("bankruptcy")
+    elif any(p.search(t) for p in _EV_DISTRESS):          # 파산이 확정이면 위험 표시는 생략
+        cats.append("distress")
+    is_target = any(p.search(t) for p in _EV_TARGET)
+    if is_target:
+        cats.append("target")
+    if any(p.search(t) for p in _EV_MERGER):
+        cats.append("merger")
+    if _EV_ACQ_ACTIVE.search(t) or (not is_target and _EV_ACQ_ANY.search(t)):
+        cats.append("acquisition")
+    return cats
+
+
+def classify_sec_form(form_type):
+    """SEC 공시 서식 종류로 이벤트를 분류한다. 해당 없으면 None.
+    · 합병: S-4/F-4(합병 주식 등록), PREM14A/DEFM14A(합병 위임장), 425(합병 관련 커뮤니케이션)
+    · 피인수: 공개매수(SC TO-T/TO-C), 대상회사 의견(SC 14D9), 비상장 전환(SC 13E3)
+    · 파산위험: Form 25(상장폐지 통지), Form 15(등록 말소)"""
+    t = re.sub(r"[\s\-_/]", "", str(form_type or "").upper())
+    if not t:
+        return None
+    if t.startswith(("S4", "F4", "DEFM14", "PREM14", "425")):
+        return "merger"
+    if t.startswith(("SCTOT", "SCTOC", "SC14D9", "SC13E3", "SCHEDULETOT", "SCHEDULETOC",
+                     "SCHEDULE14D9", "SCHEDULE13E3")):
+        return "target"
+    if t in {"25", "25NSE", "25NSEA"} or t.startswith(("1512", "1515", "15F")):
+        return "distress"
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_sec_filings(ticker: str) -> list:
+    """야후가 제공하는 최근 SEC 공시 목록을 (date, type, title, url)로 정리해 캐싱."""
+    try:
+        filings = yf.Ticker(ticker).sec_filings or []
+    except Exception as _e:
+        _log_err("fetch_sec_filings:" + ticker, _e)
+        return []
+    out = []
+    for f in filings:
+        exhibits = f.get("exhibits") or []
+        url = f.get("edgarUrl") or (exhibits[0].get("url") if exhibits else "") or ""
+        out.append({"date": f.get("date"), "type": f.get("type") or "",
+                    "title": f.get("title") or "", "url": url})
+    return out
+
+
+def _news_dt(raw):
+    """yfinance 뉴스 항목의 게재 시각(UTC Timestamp). 알 수 없으면 None."""
+    try:
+        content = raw.get("content", raw) if isinstance(raw, dict) else {}
+        v = content.get("pubDate") or content.get("displayTime")
+        if v:
+            return pd.to_datetime(v, utc=True)
+        ts = raw.get("providerPublishTime") or content.get("providerPublishTime")
+        if ts:
+            return pd.to_datetime(int(ts), unit="s", utc=True)
+    except Exception:
+        pass
+    return None
+
+
+def detect_corporate_events(ticker: str, news_days: int = EVENT_NEWS_DAYS,
+                            sec_days: int = EVENT_SEC_DAYS) -> dict:
+    """최근 뉴스 제목 + SEC 공시 서식에서 합병·인수·피인수·파산·파산위험 이벤트를 감지한다.
+    반환: {"signals": ["💀파산", ...], "counts": {카테고리: 건수}, "items": [{category, date, title, source, link}]}"""
+    now = pd.Timestamp.now(tz="UTC")
+    epoch = pd.Timestamp("1970-01-01", tz="UTC")
+    items = []
+    try:
+        for raw in fetch_yahoo_news(ticker) or []:
+            p = parse_yahoo_news_item(raw)
+            dt = _news_dt(raw)
+            if dt is not None and (now - dt) > pd.Timedelta(days=news_days):
+                continue
+            for cat in classify_event_text(p.get("title", "")):
+                items.append({"category": cat, "date": dt.strftime("%Y-%m-%d") if dt is not None else "",
+                              "title": p.get("title", ""), "source": "뉴스",
+                              "link": p.get("link", ""), "_dt": dt})
+    except Exception as _e:
+        _log_err("detect_events_news:" + ticker, _e)
+    try:
+        for f in fetch_sec_filings(ticker) or []:
+            cat = classify_sec_form(f.get("type"))
+            if not cat:
+                continue
+            dt = pd.to_datetime(f.get("date"), utc=True, errors="coerce")
+            dt = None if pd.isna(dt) else dt
+            if dt is not None and (now - dt) > pd.Timedelta(days=sec_days):
+                continue
+            ftype = str(f.get("type") or "").strip()
+            title = f"SEC {ftype}" + (f" — {f.get('title')}" if f.get("title") else "")
+            items.append({"category": cat, "date": dt.strftime("%Y-%m-%d") if dt is not None else "",
+                          "title": title, "source": "SEC 공시", "link": f.get("url", ""), "_dt": dt})
+    except Exception as _e:
+        _log_err("detect_events_sec:" + ticker, _e)
+
+    seen, uniq = set(), []
+    for it in sorted(items, key=lambda x: x["_dt"] if x["_dt"] is not None else epoch, reverse=True):
+        key = (it["category"], it["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    for it in uniq:
+        it.pop("_dt", None)
+    counts = {c: sum(1 for i in uniq if i["category"] == c) for c in EVENT_ORDER}
+    counts = {c: n for c, n in counts.items() if n}
+    return {"signals": [EVENT_LABELS[c][0] for c in EVENT_ORDER if c in counts],
+            "counts": counts, "items": uniq}
+
+
+def build_event_banner_html(ev: dict) -> str:
+    """이벤트가 감지됐을 때 상단 배너(HTML). 없으면 빈 문자열."""
+    if not ev or not ev.get("signals"):
+        return ""
+    chips = "".join(
+        f'<span class="signal-chip">{_html_lib.escape(EVENT_LABELS[c][0])} {ev["counts"][c]}건</span>'
+        for c in EVENT_ORDER if c in ev["counts"])
+    return (f'<div class="alert-banner"><div class="alert-icon">📰</div><div>'
+            f'<div class="alert-title">이벤트 감지 — 합병·인수·파산</div>'
+            f'<div class="alert-signals">{chips}</div></div></div>')
+
+
+def render_event_signals(ev: dict):
+    """합병·인수·파산 이벤트 목록 카드 (감지된 뉴스/공시 제목과 링크)."""
+    ui_section_header(mono_icon_badge("fire", color="var(--c-rose)"),
+                      "합병·인수·파산 이벤트 신호", "icon-rose", "title-rose")
+    if not ev or not ev.get("items"):
+        st.caption(f"최근 뉴스 {EVENT_NEWS_DAYS}일 · SEC 공시 {EVENT_SEC_DAYS}일 안에 "
+                   "합병·인수·파산 관련 키워드는 감지되지 않았습니다.")
+        return
+    dots = {"bankruptcy": "dot-red", "distress": "dot-yellow", "target": "dot-blue",
+            "merger": "dot-blue", "acquisition": "dot-blue"}
+    rows = ""
+    for it in ev["items"][:8]:
+        title = _html_lib.escape(str(it.get("title", "")))
+        link = str(it.get("link") or "")
+        if link.startswith(("http://", "https://")):
+            title = (f'<a href="{_html_lib.escape(link, quote=True)}" target="_blank" rel="noopener" '
+                     f'style="color:inherit;text-decoration:underline;">{title}</a>')
+        label = _html_lib.escape(EVENT_LABELS[it["category"]][1])
+        rows += (f"<div class='status-item'><div class='status-dot {dots[it['category']]}'></div>"
+                 f"<div class='status-text'><strong>{label}</strong> · {it.get('date') or '날짜 미상'} · "
+                 f"{_html_lib.escape(it.get('source', ''))} — {title}</div></div>")
+    st.markdown(
+        '<div class="glass-card"><div class="status-row" '
+        f'style="flex-direction:column;align-items:stretch;gap:0.5rem;">{rows}</div></div>',
+        unsafe_allow_html=True)
+    st.caption("키워드·공시 서식 기반 자동 감지입니다. 다른 회사 소식이 섞이거나 오탐일 수 있으니 원문을 확인하세요.")
+
+
+# ════════════════════════════════════════════════════════════════
 # #개선 번역 결과 영구 캐시
 # 기존엔 st.cache_data(ttl=3600)라서 1시간마다 캐시가 사라져
 # 같은 뉴스 제목도 계속 재번역 요청을 보냈음 (구글 번역 비공식 API라
@@ -907,6 +1104,86 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['Drawdown'] = (c - running_peak) / running_peak * 100
 
     return df
+
+
+def calc_ma20_breakout(df, vol_mult: float = 1.5, recent_days: int = 3) -> dict:
+    """일봉(calc_indicators 적용 결과)에서 20일선 돌파 상태를 판정한다.
+
+    · breakout   : 오늘 종가가 MA20 위로 올라선 날 (전일 종가 <= 전일 MA20 → 오늘 종가 > 오늘 MA20)
+    · breakdown  : 반대로 오늘 MA20 아래로 내려온 날 (이탈)
+    · recent     : 돌파 후 아직 MA20 위에 머물고 있고, 돌파한 지 1~recent_days일 이내
+    · days_since : 가장 최근 돌파일로부터 지난 봉 수 (오늘=0, 돌파 이력 없으면 None)
+    · days_above : 종가가 MA20 위에 연속으로 머문 봉 수
+    · gap_pct    : 20일선 이격도 (종가/MA20 - 1) × 100
+    · vol_confirm: 돌파일 거래량이 20일 평균의 vol_mult배 이상인지
+    · ma20_rising: MA20이 5봉 전보다 높은지
+    MA20은 min_periods=1로 계산돼 초반 19개 값은 20일 평균이 아니므로, 21봉 미만이면 valid=False."""
+    n = 0 if df is None else len(df)
+    out = {"valid": False, "breakout": False, "breakdown": False, "recent": False,
+           "days_since": None, "days_above": 0, "gap_pct": None, "vol_confirm": False,
+           "ma20_rising": False, "ma20": None, "close": None, "n": n}
+    if df is None or n < 21 or "MA20" not in df.columns:
+        return out
+
+    close = df["Close"].astype(float).to_numpy()
+    ma20 = df["MA20"].astype(float).to_numpy()
+    pos = np.arange(n)
+    above = (close > ma20) & (pos >= 19)               # NaN 비교는 False
+    prev_above = np.concatenate(([False], above[:-1]))
+    cross_up = above & ~prev_above & (pos >= 20)
+    cross_dn = (~above) & prev_above & (close < ma20)
+
+    idx = np.flatnonzero(cross_up)
+    days_since = int(n - 1 - idx[-1]) if len(idx) else None
+    days_above = 0
+    for v in above[::-1]:
+        if v:
+            days_above += 1
+        else:
+            break
+
+    last_close, last_ma = float(close[-1]), float(ma20[-1])
+    ref = int(idx[-1]) if len(idx) else n - 1          # 거래량은 (가장 최근) 돌파일 기준
+    vol_confirm = False
+    if "VOL_MA20" in df.columns and "Volume" in df.columns:
+        vm = float(df["VOL_MA20"].iloc[ref])
+        vol_confirm = bool(vm > 0 and float(df["Volume"].iloc[ref]) >= vm * vol_mult)
+
+    out.update({
+        "valid": True,
+        "breakout": bool(cross_up[-1]),
+        "breakdown": bool(cross_dn[-1]),
+        "recent": bool(above[-1] and days_since is not None and 1 <= days_since <= recent_days),
+        "days_since": days_since, "days_above": days_above,
+        "gap_pct": (last_close / last_ma - 1) * 100 if last_ma else None,
+        "vol_confirm": vol_confirm,
+        "ma20_rising": bool(n >= 25 and last_ma > float(ma20[-6])),
+        "ma20": last_ma, "close": last_close,
+    })
+    return out
+
+
+def ma20_status(m: dict) -> tuple:
+    """20일선 판정 결과를 (상태등 클래스, HTML 문구)로 변환."""
+    if not m.get("valid"):
+        return "dot-blue", f"20일선: 데이터 부족 ({m.get('n', 0)}일 / 최소 21일 필요)"
+    gap, ma = m["gap_pct"], m["ma20"]
+    trend = "MA20 상승 중" if m["ma20_rising"] else "MA20 하락·횡보"
+    vol = "거래량 동반" if m["vol_confirm"] else "거래량 부족"
+    heat = " · ⚠️ 이격 과대(추격 주의)" if gap is not None and gap >= 20 else ""
+    if m["breakout"]:
+        return "dot-green", f"<strong>20일선 돌파!</strong> 이격 {gap:+.1f}% · {vol} · {trend}{heat}"
+    if m["breakdown"]:
+        return "dot-red", f"<strong>20일선 이탈</strong> — 종가가 MA20({ma:,.2f}) 아래로 내려옴 ({gap:+.1f}%)"
+    if m["recent"]:
+        return "dot-green", (f"20일선 돌파 {m['days_since']}일 경과 · 이격 {gap:+.1f}% · "
+                             f"돌파일 {vol} · {trend}{heat}")
+    if gap is not None and gap > 0:
+        if gap >= 20:
+            return "dot-yellow", f"20일선 위 {gap:+.1f}% — 이격 과대, 단기 과열·눌림 주의"
+        return "dot-blue", f"20일선 위 {m['days_above']}일째 유지 · 이격 {gap:+.1f}% · {trend}"
+    need = (ma / m["close"] - 1) * 100 if m["close"] else 0.0
+    return "dot-yellow", f"20일선 아래 ({gap:+.1f}%) — 돌파까지 +{need:.1f}% 필요 (MA20 {ma:,.2f})"
 
 # ════════════════════════════════════════════════════════════════
 # 🧱 악성매물대(거래량 프로파일 기반 저항 구간) 분석
@@ -1769,7 +2046,7 @@ CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는
 
 1. 📊 현재 상황 — 시가 대비 등락률, 5분봉·1시간봉 추세 방향(일치/불일치), 저항 구간 돌파 가능성을 한 줄로
 2. 🎯 진입 판단 — 매수 / 관망 중 하나를 고르고 핵심 근거 1가지만
-3. ⚠️ 리스크 — 가장 중요한 리스크 요인 1가지만 (5분봉 신호가 1시간봉 추세와 반대 방향이면 이를 우선 언급)
+3. ⚠️ 리스크 — 가장 중요한 리스크 요인 1가지만 (5분봉 신호가 1시간봉 추세와 반대 방향이면 이를 우선 언급, 합병·인수·파산 이벤트가 있으면 최우선 언급)
 
 숫자는 주어진 데이터 범위 안에서만 근거로 사용하고, 데이터에 없는 값은 추측하지 마세요.
 마지막 줄에 반드시 "이 분석은 참고용이며 투자 조언이 아닙니다."
@@ -1912,7 +2189,7 @@ def _trend_alignment(t5: dict, t1h: dict) -> str:
 
 
 def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data: dict,
-                                 extra_question: str = "", hourly=None) -> str:
+                                 extra_question: str = "", hourly=None, events=None) -> str:
     """5분봉 요약 통계 + 최근 캔들 목록 + 1시간봉 단기 추세 + 저항 구간 정보를 텍스트 프롬프트로 조립."""
     c = candles.copy()
     # 프리·애프터마켓 구분 열(Session)은 지표 계산에서 분리했다가 다시 붙인다
@@ -1983,6 +2260,13 @@ def build_chart_analysis_prompt(ticker: str, candles: pd.DataFrame, supply_data:
     else:
         resistance_block = "감지된 저항 구간 없음 (또는 데이터 부족)"
 
+    if events and events.get("items"):
+        ev_lines = [f"[{it.get('date') or '날짜 미상'}] {EVENT_LABELS[it['category']][1]}: {it['title']}"
+                    for it in events["items"][:5]]
+        events_block = "[최근 이벤트 (뉴스·SEC 공시 키워드 자동 감지, 오탐 가능)]\n" + "\n".join(ev_lines)
+    else:
+        events_block = "[최근 이벤트] 합병·인수·파산 관련 뉴스/공시는 감지되지 않음"
+
     prompt = f"""티커: {ticker}
 현재 세션: {session_label}
 {open_label}: ${day_open:.2f} / 당일 고가(프리·애프터 포함): ${day_high:.2f} / 당일 저가(프리·애프터 포함): ${day_low:.2f}
@@ -1999,6 +2283,8 @@ VWAP(거래량가중평균가, {vwap_label} 기준): ${vwap:.2f}
 [1시간봉 단기 추세 (규칙 기반 판정, 최근 약 1개월)]
 {hourly_block}
 {align_line}
+
+{events_block}
 
 [악성매물대(저항 구간) 분석 결과]
 {resistance_block}
@@ -2133,7 +2419,8 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
     if run_clicked:
         with st.spinner("Gemini가 당일 흐름과 저항 구간을 분석하는 중..."):
             try:
-                prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question, hourly)
+                prompt_text = build_chart_analysis_prompt(ticker, candles, supply_data, extra_question, hourly,
+                                                          detect_corporate_events(ticker))
                 result_text = analyze_price_action(prompt_text, api_key)
                 st.session_state["chart_analysis_result"] = result_text
                 st.session_state["chart_analysis_error"] = None
@@ -3447,7 +3734,7 @@ def _fetch_history_retry(ticker: str, tries: int = 3) -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def scan_ticker_for_excel(item: dict, usd_krw: float) -> dict:
+def scan_ticker_for_excel(item: dict, usd_krw: float, with_events: bool = False) -> dict:
     """한 종목을 분석해 표 한 줄(dict)로 반환. 실패해도 예외 대신 상태 문구를 담아 반환."""
     ticker = item["티커"]
     row = {"섹터": item["섹터"], "티커": ticker, "종목명": item.get("종목명", ""), "상태": "오류"}
@@ -3482,6 +3769,11 @@ def scan_ticker_for_excel(item: dict, usd_krw: float) -> dict:
         if rsi is not None and rsi <= 35: signals.append("📉과매도")
         if pd.notna(t["MA120"]) and pd.notna(y["MA120"]) and close > t["MA120"] and prev <= y["MA120"]:
             signals.append("🚀120일선")
+        m20 = calc_ma20_breakout(h)
+        if m20["breakout"]:
+            signals.append("🚀20일선" + ("+량" if m20["vol_confirm"] else ""))
+        if with_events:        # 뉴스·공시 조회가 종목당 2회 추가되어 기본은 꺼 둠
+            signals.extend(detect_corporate_events(ticker)["signals"])
         if gap >= 5: signals.append("⬆️갭업")
 
         score = calc_screener_score({
@@ -3493,6 +3785,7 @@ def scan_ticker_for_excel(item: dict, usd_krw: float) -> dict:
             "현재가": round(close, 2), "등락률(%)": round(pct, 2), "종합점수": score,
             "거래량(MA20대비%)": round(vol_r, 0), "3일/3개월 거래량배율": surge,
             "RSI": round(rsi, 1) if rsi is not None else None,
+            "20일선이격(%)": round(m20["gap_pct"], 1) if m20["gap_pct"] is not None else None,
             "거래대금(억원)": tv_eok, "신호": " ".join(signals) if signals else "—",
         })
     except Exception as _e:
@@ -3554,7 +3847,7 @@ def render_excel_scan_results():
             """, unsafe_allow_html=True)
 
         show_cols = ["티커", "종목명", "통화", "현재가", "등락률(%)", "종합점수", "거래량(MA20대비%)",
-                     "3일/3개월 거래량배율", "RSI", "거래대금(억원)", "신호"]
+                     "3일/3개월 거래량배율", "RSI", "20일선이격(%)", "거래대금(억원)", "신호"]
         order = sector_df["섹터"].tolist()
         for sec in order:
             part = ok[ok["섹터"] == sec].sort_values("종합점수", ascending=False)
@@ -3565,6 +3858,7 @@ def render_excel_scan_results():
                     column_config={
                         "현재가": st.column_config.NumberColumn(format="%.2f"),
                         "등락률(%)": st.column_config.NumberColumn(format="%+.2f%%"),
+                        "20일선이격(%)": st.column_config.NumberColumn(format="%+.1f%%"),
                         "종합점수": st.column_config.NumberColumn(format="%.1f"),
                         "거래량(MA20대비%)": st.column_config.NumberColumn(format="%d%%"),
                         "3일/3개월 거래량배율": st.column_config.NumberColumn(format="%.1f배"),
@@ -3620,6 +3914,8 @@ with st.sidebar.expander("엑셀 종목 일괄 분석", expanded=False):
     st.caption("섹터·티커가 들어 있는 엑셀(.xlsx)을 올리면 전 종목을 한 번에 분석해 섹터별로 정리합니다. "
                "('종목' 시트의 섹터/티커 열을 사용, 티커가 빈 줄은 건너뜀)")
     _xl_file = st.file_uploader("엑셀 파일", type=["xlsx"], key="excel_watchlist_upload")
+    _xl_events = st.checkbox("📰 합병·인수·파산 이벤트 포함 (느림)", value=False, key="excel_scan_events",
+                             help="종목마다 뉴스·SEC 공시를 추가로 조회합니다. 종목이 많으면 시간이 오래 걸리고 요청 제한에 걸릴 수 있습니다.")
     if _xl_file is not None and st.button("엑셀 종목 전체 분석", key="run_excel_scan", use_container_width=True):
         try:
             _items, _skipped = parse_watchlist_excel(_xl_file)
@@ -3632,7 +3928,7 @@ with st.sidebar.expander("엑셀 종목 일괄 분석", expanded=False):
             _usd = fetch_usd_to_krw()
             _rows, _done = [], 0
             with ThreadPoolExecutor(max_workers=8) as _ex:
-                _futs = [_ex.submit(scan_ticker_for_excel, it, _usd) for it in _items]
+                _futs = [_ex.submit(scan_ticker_for_excel, it, _usd, _xl_events) for it in _items]
                 for _f in as_completed(_futs):
                     _rows.append(_f.result())
                     _done += 1
@@ -3734,6 +4030,10 @@ if st.session_state.favorites:
                     if rsi    <= 35:   signals.append("📉과매도")
                     if t['Close'] > t['MA120'] and y['Close'] <= y['MA120']:
                                        signals.append("🚀120일선")
+                    _m20 = calc_ma20_breakout(fav_hist)
+                    if _m20["breakout"]:
+                        signals.append("🚀20일선" + ("+량" if _m20["vol_confirm"] else ""))
+                    signals.extend(detect_corporate_events(fav_ticker)["signals"])   # 합병·인수·파산
                     if gap_up_pct >= 5:
                                        signals.append("⬆️갭업")     # 시초가 전일종가 대비 5%+
                     alert = " ".join(signals) if signals else "—"
@@ -3953,6 +4253,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     macd_cross   = macd_val > macd_sig_val and yesterday['MACD'] <= yesterday['MACD_SIG']
     macd_dead    = macd_val < macd_sig_val and yesterday['MACD'] >= yesterday['MACD_SIG']
     gap_up_pct   = (today['Open'] - yesterday['Close']) / yesterday['Close'] * 100
+    _ma20        = calc_ma20_breakout(hist)     # 20일선 돌파 판정
+    _events      = detect_corporate_events(ticker_input)   # 합병·인수·파산 이벤트 감지
 
     # ── 🔔 급등 신호 배너 ────────────────────────────────────────
     alert_signals = []
@@ -3961,6 +4263,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     if rsi_val <= 35:            alert_signals.append("📉 RSI 과매도")
     if today['Close'] > today['MA120'] and yesterday['Close'] <= yesterday['MA120']:
                                   alert_signals.append("🚀 120일선 돌파")
+    if _ma20["breakout"]:
+        alert_signals.append("🚀 20일선 돌파" + (" (거래량 동반)" if _ma20["vol_confirm"] else ""))
     if pct_chg >= 5:             alert_signals.append(f"📈 당일 +{pct_chg:.1f}%")
     if gap_up_pct >= 5:          alert_signals.append(f"⬆️ 갭업 시초가 +{gap_up_pct:.1f}%")
 
@@ -3976,6 +4280,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             </div>
         </div>
         """
+
+    alert_banner_html += build_event_banner_html(_events)
 
     if not top_cards_front and alert_banner_html:
         st.markdown(alert_banner_html, unsafe_allow_html=True)
@@ -4150,6 +4456,9 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         else:
             ma_dot, ma_text = "dot-blue", f"이평선 밀집 — 에너지 응축 횡보 구간 &nbsp;|&nbsp; MA5 <strong>${today['MA5']:.1f}</strong> / MA20 <strong>${today['MA20']:.1f}</strong>"
 
+        # ── 20일선 돌파 ──────────────────────────────────────────
+        ma20_dot, ma20_txt = ma20_status(_ma20)
+
         # ── RSI ──────────────────────────────────────────────────
         if rsi_val >= 70:
             rsi_dot, rsi_txt = "dot-yellow", f"<strong>RSI {rsi_val:.1f} — 과매수</strong> 단기 조정 가능성 주의"
@@ -4184,6 +4493,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         <div class="glass-card">
             <div class="status-row">
                 <div class="status-item"><div class="status-dot {ma_dot}"></div><div class="status-text">{ma_text}</div></div>
+                <div class="status-item"><div class="status-dot {ma20_dot}"></div><div class="status-text">{ma20_txt}</div></div>
                 <div class="status-item"><div class="status-dot {rsi_dot}"></div><div class="status-text">{rsi_txt}</div></div>
                 <div class="status-item"><div class="status-dot {bb_dot}"></div><div class="status-text">{bb_txt}</div></div>
                 <div class="status-item"><div class="status-dot {mc_dot}"></div><div class="status-text">{mc_txt}</div></div>
@@ -4192,6 +4502,9 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         """, unsafe_allow_html=True)
     with col_breakout:
         render_breakout_probability(breakout_calc)
+
+    # ── 📰 합병·인수·파산 이벤트 신호 ─────────────────────────────
+    render_event_signals(_events)
 
     # ── 🚀 급등 이력 / 📜 오퍼링 이력 (좌우 배치) ─────────────────
     col_spike, col_offering = st.columns(2, gap="medium")
