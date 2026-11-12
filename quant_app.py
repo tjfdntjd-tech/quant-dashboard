@@ -1,3 +1,6 @@
+# ════════════════════════════════════════════════════════════════
+# Part 1 / 파일 시작 ~ 환율 조회
+# ════════════════════════════════════════════════════════════════
 import json
 import os
 import random
@@ -9,7 +12,8 @@ import pandas as pd
 import numpy as np
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+import threading
+from datetime import datetime, timedelta, timezone
 from deep_translator import GoogleTranslator, MyMemoryTranslator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from string import Template
@@ -55,6 +59,19 @@ def _classify_error(exc: Exception) -> str:
     return "분석 오류"
 
 
+def _safe_html(text) -> str:
+    """외부에서 온 텍스트를 HTML에 안전하게 넣기 위한 변환.
+    - <, >, &, 따옴표 이스케이프
+    - $ 를 엔티티로 바꿔 마크다운이 $...$ 를 수식으로 오인식하는 것 방지"""
+    return _html_lib.escape(str(text if text is not None else ""), quote=True).replace("$", "&#36;")
+
+
+def _safe_url(url) -> str:
+    """http(s) 링크만 허용하고 속성값으로 안전하게 이스케이프. 그 외(javascript: 등)는 빈 문자열."""
+    u = str(url or "").strip()
+    return _html_lib.escape(u, quote=True) if u.lower().startswith(("http://", "https://")) else ""
+
+
 # ════════════════════════════════════════════════════════════════
 # 상수
 # ════════════════════════════════════════════════════════════════
@@ -86,15 +103,9 @@ MEMO_FILE         = "memos.json"  # #9 메모 영구 저장 파일
 # #개선 번역 캐시 영구 저장 파일 (TTL 만료로 인한 재번역 방지)
 # ════════════════════════════════════════════════════════════════
 TRANSLATE_CACHE_FILE = "translate_cache.json"
-
 # ════════════════════════════════════════════════════════════════
-# #개선 CSS 템플릿 파일 경로 — inject_css()의 거대한 인라인 문자열을
-# styles/theme.css.tpl 로 분리해 스타일 수정 시 파이썬 코드를
-# 건드리지 않아도 되도록 함. 스크립트 파일 기준 상대경로로 찾으므로
-# 실행 위치(cwd)와 무관하게 항상 올바른 경로를 찾는다.
+# Part 2 / 라이트 모드 CSS ~ 메모·즐겨찾기 저장
 # ════════════════════════════════════════════════════════════════
-APP_DIR       = os.path.dirname(os.path.abspath(__file__))
-CSS_TPL_PATH  = os.path.join(APP_DIR, "styles", "theme.css.tpl")
 
 # ════════════════════════════════════════════════════════════════
 # #개선 라이트 모드 전용 색상 보정 CSS
@@ -348,6 +359,9 @@ def save_favorites(favorites: list) -> None:
     except Exception as _e:
         _log_err("save_favorites", _e)
         pass
+# ════════════════════════════════════════════════════════════════
+# Part 3 / 페이지 설정 ~ 나스닥 $1 규정 추정
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # 1. 페이지 설정 — set_page_config는 반드시 가장 먼저
@@ -369,7 +383,6 @@ _defaults = {
     "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
     "active_ticker":    "",             # #15 마지막으로 검색을 실행한 티커
-    "dark_mode":        False,          # (미사용) 뉴브루탈리즘 단일 테마
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -672,6 +685,9 @@ def calc_nasdaq_compliance(hist: pd.DataFrame, today_close: float) -> dict:
             "streak_days":    streak,
             "days_to_notice": NASDAQ_DEFICIENCY_DAYS - streak,
         }
+# ════════════════════════════════════════════════════════════════
+# Part 4 / 리버스 스플릿 감지 ~ 종합점수 계산
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # 주식병합(리버스 스플릿) 예정 뉴스 감지
@@ -968,9 +984,10 @@ def _translate_via_gemini(texts: list, api_key: str) -> dict:
                              "thinkingConfig": {"thinkingBudget": 0}},
     }
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{CHART_ANALYSIS_MODEL}:generateContent?key={api_key}")
+           f"{CHART_ANALYSIS_MODEL}:generateContent")
     try:
-        r = requests.post(url, json=payload, timeout=40)
+        r = requests.post(url, json=payload, timeout=40,
+                          headers={"x-goog-api-key": api_key})
         if r.status_code != 200:
             return {}
         parts = r.json()["candidates"][0]["content"]["parts"]
@@ -982,26 +999,35 @@ def _translate_via_gemini(texts: list, api_key: str) -> dict:
         pass
     return {}
 
-def translate_texts_batch(texts: list) -> dict:
-    """
-    여러 문장을 한 번에 병렬로 번역하고, 캐시 파일에는 배치당 단 1회만 저장합니다.
-    반환값: {원문: 번역문} 매핑 딕셔너리.
+@st.cache_resource
+def _get_translate_store() -> dict:
+    """번역 캐시 저장소 — 세션이 아닌 프로세스 전역(스레드에서도 접근 가능)."""
+    loaded = _load_translate_cache()
+    data = {k: v for k, v in loaded.items() if not (k == v and _needs_translation(k))}
+    return {"data": data, "lock": threading.Lock()}
 
-    #버그수정 예전에는 번역 API가 실패해도 "원문 그대로"를 성공한 번역처럼 캐시(디스크
-    포함)에 저장해서, 한 번 실패한 문장은 영원히 영어로만 보였습니다.
-    → 실패는 캐시하지 않고, 과거에 잘못 저장된 '원문=번역문' 항목은 자동으로 재번역.
-    → 구글 번역 → MyMemory → (Gemini 키가 있으면) Gemini 순으로 폴백.
+
+def translate_texts_batch(texts: list, api_key=None) -> dict:
     """
-    if "_translate_cache" not in st.session_state:
-        loaded = _load_translate_cache()
-        # 과거 실패가 캐시된 항목(원문==번역문인데 영어 문장)은 버려서 다시 번역
-        st.session_state["_translate_cache"] = {
-            k: v for k, v in loaded.items() if not (k == v and _needs_translation(k))
-        }
-    cache = st.session_state["_translate_cache"]
+    여러 문장을 병렬 번역하고 {원문: 번역문}을 반환합니다.
+    워커 스레드에서도 호출되므로 st.session_state를 쓰지 않습니다.
+    api_key는 호출부(메인 스레드)에서 넘겨주세요. None이면 세션에서 읽기를 시도합니다.
+
+    번역 API가 실패해도 원문을 성공한 번역처럼 캐시하지 않습니다.
+    구글 번역 → MyMemory → (Gemini 키가 있으면) Gemini 순으로 폴백.
+    """
+    if api_key is None:
+        try:
+            api_key = st.session_state.get("gemini_api_key", "")
+        except Exception:
+            api_key = ""
+
+    store = _get_translate_store()
+    cache, lock = store["data"], store["lock"]
 
     unique_texts = list(dict.fromkeys(t for t in texts if t))
-    to_translate = [t for t in unique_texts if t not in cache and _needs_translation(t)]
+    with lock:
+        to_translate = [t for t in unique_texts if t not in cache and _needs_translation(t)]
 
     if to_translate:
         def _do(t: str):
@@ -1011,7 +1037,6 @@ def translate_texts_batch(texts: list) -> dict:
                     return t, out
             except Exception as _e:
                 _log_err("translate_texts_batch", _e)
-                pass
             if len(t) <= 480:
                 try:
                     out = MyMemoryTranslator(source='en-US', target='ko-KR').translate(t)
@@ -1019,23 +1044,25 @@ def translate_texts_batch(texts: list) -> dict:
                         return t, out
                 except Exception as _e:
                     _log_err("translate_texts_batch", _e)
-                    pass
             return t, None
 
-        failed = []
+        results, failed = {}, []
         with ThreadPoolExecutor(max_workers=min(8, len(to_translate))) as ex:
             for original, translated in ex.map(_do, to_translate):
                 if translated:
-                    cache[original] = translated
+                    results[original] = translated
                 else:
                     failed.append(original)
         if failed:
-            for original, translated in _translate_via_gemini(
-                    failed, st.session_state.get("gemini_api_key", "")).items():
-                cache[original] = translated
-        _save_translate_cache(cache)   # 배치 전체 완료 후 단 1회만 디스크에 저장
+            results.update(_translate_via_gemini(failed, api_key or ""))
 
-    return {t: cache.get(t, t) for t in unique_texts}
+        with lock:
+            cache.update(results)
+            snapshot = dict(cache)
+        _save_translate_cache(snapshot)   # 배치당 1회 저장
+
+    with lock:
+        return {t: cache.get(t, t) for t in unique_texts}
 
 def translate_text(text: str) -> str:
     """단일 문장 번역 — 내부적으로 translate_texts_batch()를 재사용합니다."""
@@ -1077,10 +1104,10 @@ def calc_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # #8 거래량 20일 이동평균
     df['VOL_MA20'] = df['Volume'].rolling(20, min_periods=1).mean()
 
-    # RSI (14일)
+    # RSI (14일, Wilder 방식 — EWM alpha=1/14)
     delta = c.diff()
-    gain  = delta.clip(lower=0).rolling(14, min_periods=1).mean()
-    loss  = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+    gain  = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss  = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
     rs    = gain / loss.replace(0, float('nan'))
     df['RSI'] = 100 - (100 / (1 + rs))
 
@@ -1504,10 +1531,13 @@ def calc_screener_score(r: dict) -> float:
 
     total = pct_score + vol_ma20_score + trading_score + vol_ratio_score + rsi_score
     return round(min(total, 100.0), 1)
+    # ════════════════════════════════════════════════════════════════
+# Part 5 / 스톡타이탄 크롤링 ~ 소셜 미디어 렌더링
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
-# #3 스톡타이탄 크롤링 함수 — render_news_section 위로 이동
-# #13 User-Agent 랜덤 순환 추가
+# 스톡타이탄 크롤링 함수
+# #3 render_news_section 위로 이동 / #13 User-Agent 랜덤 순환
 # ════════════════════════════════════════════════════════════════
 _USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -1639,9 +1669,9 @@ def get_stock_titan_data(ticker: str) -> list:
                 break
 
         # 2단계: 상세 페이지 병렬 요청 + 제목 번역을 "동시에" 실행
-        # #성능개선: 기존엔 제목 3개를 순차 번역(+매번 디스크 캐시 저장)한 뒤에야
-        # 상세 페이지 병렬 요청을 시작해 완전 직렬 대기였음. 서로 의존관계가 없으므로
-        # 같은 스레드풀에 번역 작업도 함께 제출해 병렬로 겹쳐 실행되게 한다.
+        # 서로 의존관계가 없으므로 같은 스레드풀에 번역 작업도 함께 제출해 병렬로 겹쳐 실행.
+        # 번역 API 키는 메인 스레드(여기)에서 읽어 인자로 넘긴다(워커 스레드에서 session_state 접근 금지).
+        api_key = st.session_state.get("gemini_api_key", "")
         detail_results = {}
         with ThreadPoolExecutor(max_workers=6) as executor:
             future_to_link = {
@@ -1649,7 +1679,7 @@ def get_stock_titan_data(ticker: str) -> list:
                 for item in raw_list
             }
             translate_future = executor.submit(
-                translate_texts_batch, [item["title_en"] for item in raw_list]
+                translate_texts_batch, [item["title_en"] for item in raw_list], api_key
             )
             for future in as_completed(future_to_link):
                 link = future_to_link[future]
@@ -1697,7 +1727,7 @@ def fetch_reddit(ticker: str) -> list:
         _log_err("fetch_reddit", _e)
         return []
 
-    # #참고 StockTwits처럼 감성 라벨을 API가 주지 않으므로, 제목+본문에 대한
+    # StockTwits처럼 감성 라벨을 API가 주지 않으므로, 제목+본문에 대한
     # 간단한 키워드 휴리스틱으로 Bullish/Bearish를 근사 분류한다.
     POS_KW = {"bull", "bullish", "moon", "calls", "buy", "long", "squeeze",
               "breakout", "rip", "printing", "green", "upgrade", "beat", "yolo"}
@@ -1729,7 +1759,7 @@ def fetch_reddit(ticker: str) -> list:
             "sentiment": sentiment,
             "likes":     d.get("ups", 0) or 0,
             "comments":  d.get("num_comments", 0) or 0,
-            "date":      datetime.utcfromtimestamp(created).strftime("%Y-%m-%d") if created else "",
+            "date":      datetime.fromtimestamp(created, timezone.utc).strftime("%Y-%m-%d") if created else "",
             "link":      f"https://reddit.com{d.get('permalink')}" if d.get("permalink") else "",
         })
         if len(entries) >= 8:
@@ -1788,8 +1818,7 @@ def fetch_stocktwits(ticker: str) -> dict:
                     "likes": likes, "date": created, "link": link,
                 })
             if messages:
-                # #개선 원문 보기 클릭 없이 바로 한글로 보이도록 StockTwits 본문도
-                # 일괄(batch) 번역 — Yahoo fallback과 동일한 캐시/번역 로직 재사용.
+                # 원문 보기 클릭 없이 바로 한글로 보이도록 StockTwits 본문도 일괄 번역
                 _translations = translate_texts_batch([m["body_en"] for m in messages])
                 for m in messages:
                     m["body"] = _translations.get(m["body_en"], m["body_en"])
@@ -1810,9 +1839,7 @@ def fetch_stocktwits(ticker: str) -> dict:
         _log_err("fetch_stocktwits", _e)
         raw_news = []
 
-    # #성능개선: 제목별로 순차 번역(+매번 디스크 저장)하던 것을 먼저 후보를 모두
-    # 추린 뒤 한 번에 병렬 번역하도록 변경 (translate_texts_batch가 캐시 저장도
-    # 배치당 1회로 처리).
+    # 후보를 모두 추린 뒤 한 번에 병렬 번역 (배치 캐시 저장도 배치당 1회).
     entries    = []
     bull, bear = 0, 0
     for item in raw_news[:10]:
@@ -1931,11 +1958,11 @@ def render_social_section(ticker_input: str):
 
             likes_val  = msg.get("likes", 0)
             likes_html = f'<span>❤️ {likes_val}</span>' if likes_val else ""
-            user_name  = msg["user"]
-            msg_date   = msg.get("date", "")
-            msg_body   = msg["body"]
-            msg_body_en = msg.get("body_en", "")
-            msg_link   = msg["link"]
+            user_name  = _safe_html(msg["user"])
+            msg_date   = _safe_html(msg.get("date", ""))
+            msg_body   = _safe_html(msg["body"])
+            msg_body_en = _safe_html(msg.get("body_en", ""))
+            msg_link   = _safe_url(msg["link"])
 
             # 날짜 표시 (yahoo fallback은 date 없음)
             date_html = f'<span>·</span><span>{msg_date}</span>' if msg_date else ""
@@ -2002,12 +2029,12 @@ def render_social_section(ticker_input: str):
                 stats_bits.append(f'<span>💬 {comments_val}</span>')
             stats_html = "".join(stats_bits)
 
-            sub_name    = post.get("subreddit", "")
-            user_name   = post.get("user", "익명")
-            post_date   = post.get("date", "")
-            post_body   = post.get("body", "")
-            post_body_en = post.get("body_en", "")
-            post_link   = post.get("link", "")
+            sub_name     = _safe_html(post.get("subreddit", ""))
+            user_name    = _safe_html(post.get("user", "익명"))
+            post_date    = _safe_html(post.get("date", ""))
+            post_body    = _safe_html(post.get("body", ""))
+            post_body_en = _safe_html(post.get("body_en", ""))
+            post_link    = _safe_url(post.get("link", ""))
 
             date_html = f'<span>·</span><span>{post_date}</span>' if post_date else ""
             body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{post_body_en}</div>'
@@ -2026,7 +2053,9 @@ def render_social_section(ticker_input: str):
                 f'</div></div>'
             )
             st.markdown(card_html, unsafe_allow_html=True)
-
+            # ════════════════════════════════════════════════════════════════
+# Part 6 / AI 차트 해석 (5분봉·1시간봉 추세, Gemini 호출, 탭 렌더링)
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # #신규 AI 차트 해석 — 5분봉 + 1시간봉 단기추세 자동 분석 (진입 여부 / 저항선 돌파 가능성)
@@ -2065,10 +2094,8 @@ def fetch_intraday_5min(ticker: str) -> pd.DataFrame:
     if raw is None or raw.empty:
         return pd.DataFrame()
 
-    # #버그수정 거래가 뜸한 종목은 period="1d" 요청에도 며칠치 데이터가 섞여
-    # 반환되는 경우가 있어(휴장 중 조회 등) 봉이 하루가 아니라 여러 날짜에
-    # 걸쳐 듬성듬성 찍히면서 차트 x축이 비정상적으로 늘어지는 문제가 있었음.
-    # → 가장 최근 거래일 데이터만 남기고 나머지는 버린다.
+    # 거래가 뜸한 종목은 period="1d" 요청에도 며칠치 데이터가 섞여 올 수 있어
+    # 가장 최근 거래일 데이터만 남긴다(차트 x축이 늘어지는 문제 방지).
     raw.index = pd.to_datetime(raw.index)
     latest_date = raw.index.date.max()
     raw = raw[raw.index.date == latest_date]
@@ -2303,19 +2330,18 @@ def analyze_price_action(prompt_text: str, api_key: str) -> str:
         "system_instruction": {"parts": [{"text": CHART_ANALYSIS_SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt_text}]}],
         "generationConfig": {
-            # #버그수정 gemini-2.5-flash는 답변 생성 전 내부 "thinking" 토큰을
-            # maxOutputTokens 예산에서 함께 소모함. 예산이 작으면 thinking에
-            # 다 쓰고 실제 답변 텍스트는 인사말만 남긴 채 잘려버리는 문제가
-            # 있었음 → thinkingBudget=0으로 비활성화하고 예산도 넉넉히 늘림.
+            # gemini-2.5-flash는 내부 thinking 토큰을 maxOutputTokens에서 함께 소모하므로
+            # thinkingBudget=0으로 끄고 출력 예산을 넉넉히 둔다.
             "maxOutputTokens": 3000,
             "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{CHART_ANALYSIS_MODEL}:generateContent?key={api_key}"
+        f"{CHART_ANALYSIS_MODEL}:generateContent"
     )
-    resp = requests.post(url, json=payload, timeout=60)
+    resp = requests.post(url, json=payload, timeout=60,
+                         headers={"x-goog-api-key": api_key})
     if resp.status_code != 200:
         try:
             err_msg = resp.json().get("error", {}).get("message", resp.text)
@@ -2376,7 +2402,6 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         )
         return
 
-    # #개선 요청: 차트 해석 탭에서는 그래프를 표시하지 않음 (텍스트 분석만 제공)
     # 좌측 컬럼에서 이미 계산된 악성매물대와 동일 기준·파라미터로 저항 구간을 다시 산출
     supply_data = calc_supply_zones(
         hist_daily, current_price,
@@ -2456,7 +2481,7 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
             ".ai-result-black, .ai-result-black *{color:#000 !important;opacity:1 !important;}"
             "</style>"
             '<div class="ai-result-black">\n\n'
-            + str(result_txt)
+            + _safe_html(result_txt)
             + "\n\n</div>"
         )
         st.markdown(_ai_html, unsafe_allow_html=True)
@@ -2477,7 +2502,9 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         st.caption(note)
     else:
         st.caption("버튼을 누르면 최신 5분봉(프리·애프터마켓 포함)과 1시간봉 추세를 기준으로 분석합니다.")
-
+        # ════════════════════════════════════════════════════════════════
+# Part 7-1 / CSS 템플릿 (CSS_TEMPLATE)
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # CSS — 다크/라이트 모드 동적 주입
@@ -3304,6 +3331,9 @@ CSS_TEMPLATE = r"""<style>
     $light_mode_overrides
 </style>
 """
+# ════════════════════════════════════════════════════════════════
+# Part 7-2 / NEO_BRUTAL_CSS · inject_css() · 헤더 배너 · 즐겨찾기 스캔 결과
+# ════════════════════════════════════════════════════════════════
 
 NEO_BRUTAL_CSS = r"""
 @import url('https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&display=swap');
@@ -3461,10 +3491,7 @@ def inject_css(dark: bool = True):
         hr_color     = "rgba(255,255,255,0.07)"
         text_primary = "#f1f5f9"
         text_sec     = "#e2e8f0"
-        # #개선 요청: 배경색과 비슷하거나 투명도(알파)만으로 흐릿하게 표현하던
-        # 보조 텍스트를 전부 불투명(alpha=1) + 뚜렷이 구분되는 색상으로 교체.
-        # - text_muted:  스틸 블루 계열(솔리드) — 메타 정보/라벨
-        # - text_dimmed: 웜 골드 계열(솔리드) — 원문/부가 설명 (muted와 아예 다른 색상군)
+        # 보조 텍스트는 불투명 솔리드 컬러로 통일 (배경과 명암만 다른 회색 사용 금지)
         text_muted   = "#8fc4e8"
         text_dimmed  = "#e0b374"
         text_status  = "#cbd5e1"
@@ -3479,11 +3506,7 @@ def inject_css(dark: bool = True):
         social_selftext_bdr = "rgba(255,255,255,0.1)"
         social_selftext_clr = "#e0b374"
 
-        # ── #디자인개선(위젯 스타일 전면 교체): iOS 잠금화면 위젯 참고
-        # 이미지처럼 배경은 무광 플랫 그레이 한 장으로 통일하고, 카드
-        # 자체(순검정 + 네온 컬러 블록)가 시각적 주인공이 되도록 한다.
-        # 기존의 애니메이션 메시 그라디언트 + 반짝이는 파티클 오버레이는
-        # 이 스타일과 상충되므로(글로시 → 플랫) 다크 모드에서도 비활성화.
+        # 위젯 스타일: 무광 플랫 배경 + 순검정 카드. 글로시 메시/파티클은 다크 모드에서도 비활성화.
         mesh_bg_layers = ""
         mesh_bg_size  = "100% 100%"
         mesh_bg_anim  = "none"
@@ -3510,8 +3533,6 @@ def inject_css(dark: bool = True):
         hr_color     = "rgba(90,91,214,0.12)"
         text_primary = "#1e1b4b"
         text_sec     = "#312e81"
-        # #개선 요청: 명암(밝기)만 다른 회색 대신, 다크모드와 짝을 이루는
-        # 뚜렷이 구분되는 색상군(짙은 스틸 블루 / 짙은 웜 브라운)의 솔리드 컬러로 교체.
         text_muted   = "#1d5c85"
         text_dimmed  = "#8a5a1e"
         text_status  = "#374151"
@@ -3526,7 +3547,6 @@ def inject_css(dark: bool = True):
         social_selftext_bdr = "rgba(90,91,214,0.2)"
         social_selftext_clr = "#8a5a1e"
 
-        # 라이트 모드는 정적 배경 유지 (다이나믹 메시/파티클은 다크모드 전용)
         mesh_bg_layers      = ""
         mesh_bg_size        = "100% 100%"
         mesh_bg_anim        = "none"
@@ -3538,12 +3558,7 @@ def inject_css(dark: bool = True):
     mesh_bg_comma = "," if mesh_bg_layers else ""
     light_mode_overrides = "" if dark else LIGHT_MODE_OVERRIDE_CSS
 
-    # #개선 거대 인라인 CSS f-string(옛 720여 줄)을 styles/theme.css.tpl로 분리.
-    # 색상/애니메이션 값만 파이썬에서 계산해 Template로 치환하고,
-    # 실제 CSS 구조/레이아웃 규칙은 별도 파일에서 관리한다.
-    _css_template = CSS_TEMPLATE   # 파일 대신 내장 상수 사용 (배포 환경에서 파일 누락 방지)
-
-    css = Template(_css_template).substitute(
+    css = Template(CSS_TEMPLATE).substitute(
         bg_main=bg_main, bg_sidebar=bg_sidebar, glass_bg=glass_bg, glass_border=glass_border,
         metric_bg=metric_bg, metric_bdr=metric_bdr, tab_bg=tab_bg, tab_bdr=tab_bdr,
         status_bg=status_bg, status_bdr=status_bdr, news_bg=news_bg, news_bdr=news_bdr,
@@ -3557,23 +3572,13 @@ def inject_css(dark: bool = True):
         mesh_bg_anim=mesh_bg_anim, mesh_keyframes_css=mesh_keyframes_css, particle_overlay_css=particle_overlay_css,
         light_mode_overrides=light_mode_overrides,
     )
-    # #개선 세로가 좁은 직사각형 카드 + 10개 카드를 한 섹션처럼 보이게 함.
-    # metric-grid / metric-card의 기본 레이아웃은 styles/theme.css.tpl에 정의돼
-    # 있어 여기서 직접 수정할 수 없으므로, 로드된 CSS 뒤에 더 높은 우선순위의
-    # 오버라이드를 추가하는 방식으로 처리함(!important).
-    # - 정사각형(aspect-ratio:1/1) 대신 세로가 짧은 2열 직사각형 카드로 복귀.
-    # - 카드 내부는 기존처럼 좌측 정렬(라벨/값/델타 세로 배치).
-    # - 상단 요약 5장 + 기술분석 5장이 이제 render_technical_analysis()에서
-    #   하나의 metric-grid로 합쳐져 렌더링되므로, 별도 그리드 간 여백(margin-top:
-    #   -0.25rem 등)에 의존하지 않고 gap만으로 균일한 간격을 유지한다.
+
+    # 상단 요약 카드 2열→12열 그리드 및 카드 높이 오버라이드
     narrow_metric_cards_css = """
     .metric-grid {
         grid-template-columns: repeat(2, 1fr) !important;
         gap: 0.5rem !important;
     }
-    /* 상단 요약+기술분석 카드 전용 12열 그리드 — 카드마다 grid-column: span N을
-       지정해 3개/2개/4개씩 원하는 개수로 한 줄에 배치할 수 있도록 함.
-       (다른 섹션의 .metric-grid, 예: 악성매물대 카드는 기존 2열 그대로 유지) */
     .metric-grid.metric-grid-12 {
         grid-template-columns: repeat(12, 1fr) !important;
     }
@@ -3600,14 +3605,7 @@ def inject_css(dark: bool = True):
     }
     """
 
-    # #개선 요청: "글씨색이 배경색과 비슷하거나 명암(투명도) 조절로만 구분되지
-    # 않도록, 항상 뚜렷이 다른 불투명한 색을 쓸 것" — 코드 곳곳에 인라인
-    # style="color:rgba(148,163,184, 0.4~0.75)" 식으로 하드코딩된 반투명 회색
-    # 텍스트(뉴스/소셜/매물대/스코어 카드 등)가 남아있어, 기존엔 라이트 모드에서만
-    # 속성 선택자로 보정하고 다크 모드는 그대로 방치돼 있었음.
-    # → 다크/라이트 모드 모두에 대해 위 패턴들을 전부 "완전 불투명 + 뚜렷이
-    #   구분되는 색"으로 강제 치환한다 (이 <style> 블록은 테마 CSS보다 뒤에
-    #   렌더링되므로 !important 없이도 우선 적용되지만, 안전하게 !important 유지).
+    # 인라인 style 하드코딩 rgba 텍스트를 다크/라이트 모두 불투명 색으로 통일
     unified_contrast_css = f"""
     [style*="color:rgba(148,163,184"], [style*="color: rgba(148,163,184"] {{
         color: {text_muted} !important;
@@ -3655,7 +3653,7 @@ if st.session_state.scan_results:
     st.dataframe(scan_df.style.apply(highlight_signal, axis=1), use_container_width=True, hide_index=True)
 
     if alert_tickers:
-        chips = "".join([f'<span class="signal-chip">{r["티커"]} {r["🔔신호"]}</span>' for r in alert_tickers])
+        chips = "".join([f'<span class="signal-chip">{_safe_html(r["티커"])} {_safe_html(r["🔔신호"])}</span>' for r in alert_tickers])
         st.markdown(f"""
         <div class="alert-banner">
             <div class="alert-icon">🔔</div>
@@ -3670,6 +3668,9 @@ if st.session_state.scan_results:
         st.session_state.scan_results = []
         st.rerun()
     st.markdown("---")
+    # ════════════════════════════════════════════════════════════════
+# Part 8 / 엑셀 종목 일괄 분석 (파싱 · 종목별 스캔 · 결과 표시)
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # 엑셀 종목 일괄 분석 — 섹터별 정리 엑셀을 올리면 전 종목을 한 번에 분석
@@ -3840,7 +3841,7 @@ def render_excel_scan_results():
         st.dataframe(sector_df, use_container_width=True, hide_index=True)
 
         if not sig.empty:
-            chips = "".join(f'<span class="signal-chip">{r["티커"]} {r["신호"]}</span>' for _, r in sig.iterrows())
+            chips = "".join(f'<span class="signal-chip">{_safe_html(r["티커"])} {_safe_html(r["신호"])}</span>' for _, r in sig.iterrows())
             st.markdown(f"""
             <div class="alert-banner"><div class="alert-icon">🔔</div>
             <div><div class="alert-title">신호 감지 종목</div><div class="alert-signals">{chips}</div></div></div>
@@ -3883,13 +3884,14 @@ def render_excel_scan_results():
     st.markdown("---")
 
 render_excel_scan_results()
+# ════════════════════════════════════════════════════════════════
+# Part 9 / 사이드바 (설정 · 토글 · 엑셀 업로드 · 티커 입력 · 즐겨찾기 · 키 설정 · 매물대 파라미터)
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # 사이드바 — 티커 입력 및 파라미터
 # ════════════════════════════════════════════════════════════════
 st.sidebar.header("🔍 주식 분석 설정")
-
-# (뉴브루탈리즘 스타일은 단일 밝은 테마라 다크/라이트 토글은 제거됨)
 
 # ── 섹터 히트맵 / 급등주 검색기 / 거래량 급증 스크리너 토글 (스크롤 없이 바로 보이도록 상단 배치) ──
 tcol1, tcol2, tcol3 = st.sidebar.columns(3)
@@ -3997,7 +3999,7 @@ if st.session_state.favorites:
                     save_favorites(st.session_state.favorites)
                     st.rerun()
 
-    # #5 즐겨찾기 일괄 스캔 — ThreadPoolExecutor로 병렬화
+    # ── 즐겨찾기 일괄 스캔 ───────────────────────────────────────
     st.sidebar.markdown("")
     if st.sidebar.button("🔍 즐겨찾기 전체 스캔", use_container_width=True,
                          help="즐겨찾기 종목을 한 번에 분석합니다"):
@@ -4015,7 +4017,6 @@ if st.session_state.favorites:
                     t          = fav_hist.iloc[-1]
                     y          = fav_hist.iloc[-2]
                     pct        = (t['Close'] - y['Close']) / y['Close'] * 100
-                    # #8 거래량 20일 MA 대비 비율
                     vol_ma20   = t['VOL_MA20'] if t['VOL_MA20'] > 0 else 1
                     vol_r      = (t['Volume'] / vol_ma20) * 100
                     vol_ratio  = (t['Volume'] / y['Volume'] * 100) if y['Volume'] else 0
@@ -4025,7 +4026,7 @@ if st.session_state.favorites:
                     trading_value_eok = round((t['Close'] * t['Volume'] * usd_krw) / 100_000_000, 1)
 
                     signals = []
-                    if vol_r  >= 200:  signals.append("🔥거래량")   # MA20 대비 200%+
+                    if vol_r  >= 200:  signals.append("🔥거래량")
                     if macd_cross:     signals.append("⚡MACD")
                     if rsi    <= 35:   signals.append("📉과매도")
                     if t['Close'] > t['MA120'] and y['Close'] <= y['MA120']:
@@ -4033,12 +4034,11 @@ if st.session_state.favorites:
                     _m20 = calc_ma20_breakout(fav_hist)
                     if _m20["breakout"]:
                         signals.append("🚀20일선" + ("+량" if _m20["vol_confirm"] else ""))
-                    signals.extend(detect_corporate_events(fav_ticker)["signals"])   # 합병·인수·파산
+                    signals.extend(detect_corporate_events(fav_ticker)["signals"])
                     if gap_up_pct >= 5:
-                                       signals.append("⬆️갭업")     # 시초가 전일종가 대비 5%+
+                                       signals.append("⬆️갭업")
                     alert = " ".join(signals) if signals else "—"
 
-                    # 급등주 검색기와 동일한 종합점수 산출 기준 적용
                     score = calc_screener_score({
                         "pct_change":        pct,
                         "vol_ma20_ratio":    vol_r,
@@ -4055,6 +4055,7 @@ if st.session_state.favorites:
                         "거래량(MA비%)": f"{vol_r:.0f}%",
                         "RSI":       f"{rsi:.1f}",
                         "🔔신호":    alert,
+                        "_pct": pct, "_volr": vol_r, "_gap": gap_up_pct,
                     }
             except Exception as _e:
                 _log_err("favorites_scan:" + fav_ticker, _e)
@@ -4075,13 +4076,25 @@ if st.session_state.favorites:
         # 티커 순서 유지
         order = {t: i for i, t in enumerate(st.session_state.favorites)}
         scan_data.sort(key=lambda r: order.get(r["티커"], 999))
+
+        flags = []
+        for r in scan_data:
+            try:
+                flags.append(is_surge_candidate(r.get("_pct", 0), r.get("_volr", 0), r.get("_gap", 0)))
+            except Exception:
+                flags.append(False)
+        attach_beams(scan_data, "티커", "🔔신호", flags)
+        for r in scan_data:
+            for k in ("_pct", "_volr", "_gap"):
+                r.pop(k, None)   # 표에 나오지 않게 제거
+
         st.session_state.scan_results = scan_data
         st.rerun()
 else:
     st.sidebar.markdown("---")
     st.sidebar.caption("☆ 버튼으로 즐겨찾기를 추가하세요")
 
-# ── 즐겨찾기 메모 사이드바 표시 ─────────────────────────────────
+# ── 저장된 메모 사이드바 표시 ───────────────────────────────────
 if st.session_state.memos:
     st.sidebar.markdown("---")
     st.sidebar.markdown("**📝 저장된 메모**")
@@ -4091,10 +4104,8 @@ if st.session_state.memos:
 
 
 # ════════════════════════════════════════════════════════════════
-# #신규 AI 차트 해석 — Claude Vision API 키 설정
-# 캡처한 차트 이미지를 업로드하면 Claude가 추세/지지·저항/패턴을
-# 해석해주는 기능. Anthropic API 키가 필요하므로 사이드바에서
-# 안전하게(비밀번호 입력창) 받아 세션에만 보관한다.
+# AI 차트 해석 — Gemini API 키 설정
+# 키는 st.secrets 또는 세션 입력으로만 사용하며 서버 파일에 저장하지 않는다.
 # ════════════════════════════════════════════════════════════════
 st.sidebar.markdown("---")
 with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
@@ -4119,11 +4130,7 @@ with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
                    "무료 티어(분당 요청 제한)로 충분히 사용 가능합니다.")
 
 # ════════════════════════════════════════════════════════════════
-# #개선 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
-# 기존엔 calc_supply_zones()의 n_bins/lookback_days/heavy_mult가
-# 코드에 고정값으로 박혀 있어 종목별 민감도 조절이 불가능했음.
-# 슬라이더로 노출해 급등주(변동성 큼)와 대형주(변동성 작음)에
-# 서로 다른 민감도를 적용해볼 수 있도록 함.
+# 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
 # ════════════════════════════════════════════════════════════════
 st.sidebar.markdown("---")
 with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
@@ -4145,6 +4152,9 @@ with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
     supply_max_zones = st.slider(
         "표시할 매물대 개수", min_value=2, max_value=8, value=4, step=1,
     )
+    # ════════════════════════════════════════════════════════════════
+# Part 10 / 메인 화면 렌더링 함수 (요약 카드 · 기술적 분석 · 히트맵 · 검색기 · 뉴스)
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 상단 주요 지표 요약
@@ -4170,7 +4180,6 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     score_card_html = ""
     if score is not None:
         score_color = "delta-up" if score_label == "강세" else ("delta-neu" if score_label == "보통" else "delta-down")
-        # 한 줄짜리 HTML로 만들어 줄바꿈/들여쓰기로 인한 마크다운 오인식을 방지
         score_card_html = (
             f'<div class="metric-card mc-amber" style="grid-column: span 3;">'
             f'<div class="metric-label">종합점수</div>'
@@ -4207,8 +4216,6 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     return front_html, end_html
 
 
-
-
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 기술적 분석
 # ════════════════════════════════════════════════════════════════
@@ -4235,13 +4242,12 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             <div class="china-banner-icon">🇨🇳⚠️</div>
             <div>
                 <div class="china-banner-text">중국 기업 (China-based Company)</div>
-                <div class="china-banner-sub">본사 소재지: {country} — VIE 구조, 회계 투명성, 규제 리스크 등을 반드시 확인하세요</div>
+                <div class="china-banner-sub">본사 소재지: {_safe_html(country)} — VIE 구조, 회계 투명성, 규제 리스크 등을 반드시 확인하세요</div>
             </div>
         </div>
         """
 
     if not top_cards_front:
-        # 비병합(데스크탑) 경로 — 기존과 동일하게 카드 섹션 이전에 바로 렌더링
         if china_banner_html:
             st.markdown(china_banner_html, unsafe_allow_html=True)
 
@@ -4253,8 +4259,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     macd_cross   = macd_val > macd_sig_val and yesterday['MACD'] <= yesterday['MACD_SIG']
     macd_dead    = macd_val < macd_sig_val and yesterday['MACD'] >= yesterday['MACD_SIG']
     gap_up_pct   = (today['Open'] - yesterday['Close']) / yesterday['Close'] * 100
-    _ma20        = calc_ma20_breakout(hist)     # 20일선 돌파 판정
-    _events      = detect_corporate_events(ticker_input)   # 합병·인수·파산 이벤트 감지
+    _ma20        = calc_ma20_breakout(hist)
+    _events      = detect_corporate_events(ticker_input)
 
     # ── 🔔 급등 신호 배너 ────────────────────────────────────────
     alert_signals = []
@@ -4268,9 +4274,21 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     if pct_chg >= 5:             alert_signals.append(f"📈 당일 +{pct_chg:.1f}%")
     if gap_up_pct >= 5:          alert_signals.append(f"⬆️ 갭업 시초가 +{gap_up_pct:.1f}%")
 
+    # ── 🧨 이벤트 빔 (병합/인수/파산) ──────────────────────────────
+    try:
+        beam_events = detect_event_beams(get_beam_news(ticker_input))
+    except Exception as _e:
+        _log_err("beam_events", _e)
+        beam_events = []
+    is_surging = (pct_chg >= 5) or (vol_ma20_ratio >= 200) or (gap_up_pct >= 5)
+    for ev in beam_events:
+        if is_surging:
+            tag = "" if ev["strong"] else " (관련 가능성)"
+            alert_signals.append(f"🧨 {ev['kind']} 가능성{tag} — 뉴스+급등 동반")
+
     alert_banner_html = ""
     if alert_signals:
-        chips = "".join([f'<span class="signal-chip">{s}</span>' for s in alert_signals])
+        chips = "".join([f'<span class="signal-chip">{_safe_html(s)}</span>' for s in alert_signals])
         alert_banner_html = f"""
         <div class="alert-banner">
             <div class="alert-icon">🔔</div>
@@ -4286,15 +4304,14 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     if not top_cards_front and alert_banner_html:
         st.markdown(alert_banner_html, unsafe_allow_html=True)
 
-    # ── 메트릭 카드 (#개선 상단 요약 스코어보드와 겹치던 현재가/RSI(14) 카드 제거) ──
-    # #7 52주 최저가 추가
+    # ── 메트릭 카드 ───────────────────────────────────────────────
     gap_52w_high = ((high_52w - today['Close']) / high_52w) * 100
     gap_52w_low  = ((today['Close'] - low_52w) / low_52w) * 100
 
     # ── 시가총액 & 유통주식수 조회 ───────────────────────────────
-    MC_LOW  = 4_000_000     # $4M
-    MC_HIGH = 500_000_000   # $500M
-    FLOAT_MAX = 20_000_000  # 20M주
+    MC_LOW  = 4_000_000
+    MC_HIGH = 500_000_000
+    FLOAT_MAX = 20_000_000
 
     try:
         market_cap_raw   = info.get("marketCap") or 0
@@ -4313,7 +4330,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
             shares_str = f"{shares_float_raw / 1_000_000:.1f}M주"
         else:
             shares_str = "N/A"
-        # 별표 조건 판정
         mc_star     = (market_cap_raw > 0) and (MC_LOW <= market_cap_raw <= MC_HIGH)
         shares_star = (shares_float_raw > 0) and (shares_float_raw <= FLOAT_MAX)
     except Exception:
@@ -4352,8 +4368,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     </div>
     """, unsafe_allow_html=True)
 
-    # top_cards_front이 있는 경로(모바일)에서는 중국계/급등신호 배너를
-    # 카드 섹션 뒤로 미뤄 카드 섹션이 끊기지 않게 한다.
     if top_cards_front:
         if china_banner_html:
             st.markdown(china_banner_html, unsafe_allow_html=True)
@@ -4425,7 +4439,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         # ── 수급 체크 ────────────────────────────────────────────
         ui_section_header(mono_icon_badge("bulb", color="var(--c-amber)"), "실시간 자금 유입 체크", "icon-amber", "title-amber")
 
-        # #8 거래량: 전일 대비 + MA20 대비 둘 다 표시
         vol_dot  = "dot-green"  if vol_ma20_ratio >= 200 else "dot-yellow"
         vol_text = (f"<strong>거래량 폭증!</strong> MA20 대비 <strong>{vol_ma20_ratio:.0f}%</strong> "
                     f"(전일 대비 {vol_ratio:.0f}%)"
@@ -4456,10 +4469,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         else:
             ma_dot, ma_text = "dot-blue", f"이평선 밀집 — 에너지 응축 횡보 구간 &nbsp;|&nbsp; MA5 <strong>${today['MA5']:.1f}</strong> / MA20 <strong>${today['MA20']:.1f}</strong>"
 
-        # ── 20일선 돌파 ──────────────────────────────────────────
         ma20_dot, ma20_txt = ma20_status(_ma20)
 
-        # ── RSI ──────────────────────────────────────────────────
         if rsi_val >= 70:
             rsi_dot, rsi_txt = "dot-yellow", f"<strong>RSI {rsi_val:.1f} — 과매수</strong> 단기 조정 가능성 주의"
         elif rsi_val <= 30:
@@ -4467,7 +4478,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         else:
             rsi_dot, rsi_txt = "dot-blue",   f"RSI <strong>{rsi_val:.1f}</strong> — 중립 구간 (30~70)"
 
-        # ── 볼린저밴드 ─────────────────────────────────────────────
         bb_range = today['BB_UPPER'] - today['BB_LOWER']
         bb_pct   = (today['Close'] - today['BB_LOWER']) / bb_range * 100 if bb_range else 50
         if today['Close'] >= today['BB_UPPER']:
@@ -4477,7 +4487,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         else:
             bb_dot, bb_txt = "dot-blue",   f"밴드 내부 <strong>{bb_pct:.0f}%</strong> 위치 &nbsp;|&nbsp; 밴드폭 {today['BB_WIDTH']:.1f}%"
 
-        # ── MACD ───────────────────────────────────────────────────
         hist_val  = today['MACD_HIST']
         prev_hist = yesterday['MACD_HIST']
         if macd_cross:
@@ -4545,10 +4554,11 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         if offering_list:
             rows_html = ""
             for o in offering_list[:3]:
-                link_html = f"<a class='news-link' href='{o['url']}' target='_blank'>공시 원문 →</a>" if o.get("url") else ""
+                _ou = _safe_url(o.get("url"))
+                link_html = f"<a class='news-link' href='{_ou}' target='_blank'>공시 원문 →</a>" if _ou else ""
                 rows_html += (
                     f"<div class='status-item'><div class='status-dot dot-yellow'></div>"
-                    f"<div class='status-text'>📅 {o['date']} &nbsp;<strong>{o['type']}</strong> — {o['title']} {link_html}</div></div>"
+                    f"<div class='status-text'>📅 {_safe_html(o['date'])} &nbsp;<strong>{_safe_html(o['type'])}</strong> — {_safe_html(o['title'])} {link_html}</div></div>"
                 )
             more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
                           f"총 {len(offering_list)}건 중 최근 3건 표시</div>" if len(offering_list) > 3 else "")
@@ -4585,12 +4595,12 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     with memo_col1:
         if st.button("💾 메모 저장", key=f"save_memo_{ticker_input}", use_container_width=True):
             st.session_state.memos[ticker_input] = new_memo
-            save_memos(st.session_state.memos)   # #9 파일 저장
+            save_memos(st.session_state.memos)
             st.success("✅ 저장 완료! (앱 재시작 후에도 유지됩니다)")
     with memo_col2:
         if st.button("🗑️ 삭제", key=f"del_memo_{ticker_input}", use_container_width=True):
             st.session_state.memos.pop(ticker_input, None)
-            save_memos(st.session_state.memos)   # #9 파일 동기화
+            save_memos(st.session_state.memos)
             st.rerun()
 
 
@@ -4636,8 +4646,8 @@ def render_sector_heatmap():
             arrow = "▲" if pct >= 0 else "▼"
             cells_html += f"""
             <div class="sector-cell" style="background:{bg}; border-color:{color}33;">
-                <div class="sector-name">{s['sector']}</div>
-                <div class="sector-ticker">{s['ticker']}</div>
+                <div class="sector-name">{_safe_html(s['sector'])}</div>
+                <div class="sector-ticker">{_safe_html(s['ticker'])}</div>
                 <div class="sector-pct" style="color:{color};">{arrow} {abs(pct):.2f}%</div>
                 <div class="sector-sub" style="color:{color};">${s['price']}</div>
             </div>"""
@@ -4652,7 +4662,6 @@ def render_sector_heatmap():
             <div class="legend-item"><div class="legend-dot" style="background:rgba(248,113,113,0.30);border:1px solid #ef4444;"></div>약세 (-3%↓)</div>
         </div>"""
 
-        # 강세/약세 상위 섹터 요약
         top = sorted_data[0]
         bot = sorted_data[-1]
         top_bg, top_c = _sector_color(top[key])
@@ -4661,12 +4670,12 @@ def render_sector_heatmap():
         <div style="display:flex;gap:0.6rem;margin-bottom:0.9rem;flex-wrap:wrap;">
             <div style="flex:1;min-width:120px;background:{top_bg};border:1px solid {top_c}44;border-radius:10px;padding:0.6rem 0.8rem;">
                 <div style="font-size:0.65rem;color:rgba(255,255,255,0.5);font-weight:700;text-transform:uppercase;margin-bottom:0.2rem;">🏆 최강 섹터</div>
-                <div style="font-size:0.9rem;font-weight:800;color:{top_c};">{top['sector']} ({top['ticker']})</div>
+                <div style="font-size:0.9rem;font-weight:800;color:{top_c};">{_safe_html(top['sector'])} ({_safe_html(top['ticker'])})</div>
                 <div style="font-size:0.8rem;color:{top_c};">▲ {top[key]:.2f}%</div>
             </div>
             <div style="flex:1;min-width:120px;background:{bot_bg};border:1px solid {bot_c}44;border-radius:10px;padding:0.6rem 0.8rem;">
                 <div style="font-size:0.65rem;color:rgba(255,255,255,0.5);font-weight:700;text-transform:uppercase;margin-bottom:0.2rem;">📉 최약 섹터</div>
-                <div style="font-size:0.9rem;font-weight:800;color:{bot_c};">{bot['sector']} ({bot['ticker']})</div>
+                <div style="font-size:0.9rem;font-weight:800;color:{bot_c};">{_safe_html(bot['sector'])} ({_safe_html(bot['ticker'])})</div>
                 <div style="font-size:0.8rem;color:{bot_c};">▼ {abs(bot[key]):.2f}%</div>
             </div>
         </div>"""
@@ -4741,6 +4750,7 @@ def render_surge_screener():
         exclude_china = st.checkbox(
             "⚠️ 중국계 기업 제외", value=False, key="screener_exclude_china"
         )
+    only_beam = st.checkbox("🧨 빔 신호 종목만", value=False, key="screener_only_beam")
 
     if st.button("🔍 검색 실행", key="run_screener", use_container_width=True):
         with st.spinner("Yahoo Finance에서 급등주 검색 및 상세 지표 병렬 수집 중..."):
@@ -4752,10 +4762,12 @@ def render_surge_screener():
             for r in base:
                 extra = enriched_map.get(r["ticker"], {})
                 if extra.get("error"):
-                    continue   # 상세 지표 수집 실패 종목은 리스트에서 제외
+                    continue
                 combined = {**r, **extra}
                 combined["score"] = calc_screener_score(combined)
                 merged.append(combined)
+            merged.sort(key=lambda r: r.get("score", 0), reverse=True)
+            attach_beams(merged, "ticker", "beam", [True] * len(merged), limit=30)
             st.session_state["screener_results"] = merged
 
     results = st.session_state.get("screener_results", [])
@@ -4771,6 +4783,8 @@ def render_surge_screener():
         filtered = [r for r in filtered if r.get("price", 0) >= NASDAQ_MIN_BID]
     if exclude_china:
         filtered = [r for r in filtered if not r.get("is_china")]
+    if only_beam:
+        filtered = [r for r in filtered if r.get("beam")]
     if signal_filter == "RSI 30 이하 (과매도)":
         filtered = [r for r in filtered if r.get("rsi") is not None and r["rsi"] <= 30]
     elif signal_filter == "RSI 70 이상 (과매수)":
@@ -4818,6 +4832,7 @@ def render_surge_screener():
             "거래량비율(%)":  r.get("vol_ratio", 0),
             "20일MA비율(%)": r.get("vol_ma20_ratio", 0),
             "상장리스크":     _risk_text(r),
+            "빔신호":         r.get("beam", "") or "—",
         })
 
     df_display = pd.DataFrame(rows)
@@ -4871,7 +4886,7 @@ def render_surge_screener():
     )
 
     # ── 검색 결과 CSV 다운로드 ───────────────────────────────────
-    csv_bytes = df_display.to_csv(index=False).encode("utf-8-sig")   # 엑셀 한글 깨짐 방지
+    csv_bytes = df_display.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         "📥 검색 결과 CSV 다운로드",
         data=csv_bytes,
@@ -4942,6 +4957,8 @@ def render_volume_surge_screener():
                 if extra.get("error"):
                     continue
                 merged.append({**r, **extra})
+            _hits = [r for r in merged if r.get("vol_surge_ratio", 0) >= surge_multiple]
+            attach_beams(_hits, "ticker", "beam", [True] * len(_hits), limit=30)
             st.session_state["vol_surge_results"] = merged
 
     results = st.session_state.get("vol_surge_results", [])
@@ -4971,6 +4988,7 @@ def render_volume_surge_screener():
             "3일 평균 거래량":  r.get("vol_3d", 0),
             "3개월 평균 거래량": r.get("vol_3m", 0),
             "당일 거래량":      r.get("volume", 0),
+            "빔신호":          r.get("beam", "") or "—",
         })
 
     df_display = pd.DataFrame(rows)
@@ -5010,7 +5028,6 @@ def render_volume_surge_screener():
         st.rerun()
 
 
-
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 뉴스
 # ════════════════════════════════════════════════════════════════
@@ -5019,17 +5036,18 @@ def _render_reverse_split_banner(splits: list):
     if not splits:
         return
     for s in splits:
-        ratio_html = f" &nbsp;·&nbsp; 비율(추정): <strong>{s['ratio']}</strong>" if s["ratio"] else ""
+        ratio_html = f" &nbsp;·&nbsp; 비율(추정): <strong>{_safe_html(s['ratio'])}</strong>" if s["ratio"] else ""
         if s["effective_date"]:
-            date_html = f"시행(effective) 예정일: <strong>{s['effective_date']}</strong>"
+            date_html = f"시행(effective) 예정일: <strong>{_safe_html(s['effective_date'])}</strong>"
         else:
             date_html = "시행일이 뉴스 원문에 명시되지 않음 — 원문 링크에서 정확한 일정을 확인하세요"
-        pub_html = f" (게재일: {s['date']})" if s["date"] else ""
-        link_html = f"<br><a class='news-link' href='{s['link']}' target='_blank'>관련 뉴스 원문 보기 →</a>" if s["link"] else ""
+        pub_html = f" (게재일: {_safe_html(s['date'])})" if s["date"] else ""
+        _su = _safe_url(s["link"])
+        link_html = f"<br><a class='news-link' href='{_su}' target='_blank'>관련 뉴스 원문 보기 →</a>" if _su else ""
         st.markdown(f"""
         <div class="split-banner">
             <div class="split-banner-title">⚠️ 주식병합(리버스 스플릿) 관련 뉴스 감지{pub_html}</div>
-            <div class="split-banner-body">{date_html}{ratio_html}<br>{s['title']}{link_html}</div>
+            <div class="split-banner-body">{date_html}{ratio_html}<br>{_safe_html(s['title'])}{link_html}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -5049,15 +5067,13 @@ def render_news_section(ticker_input):
         </div>
         """, unsafe_allow_html=True)
 
-        # #6 fallback 뉴스 병렬 번역
         raw_news_list = fetch_yahoo_news(ticker_input)[:3]
         parsed_list   = [parse_yahoo_news_item(r) for r in raw_news_list]
         titles_en     = [n["title"] for n in parsed_list]
 
-        _translations = translate_texts_batch(titles_en)
+        _translations = translate_texts_batch(titles_en, st.session_state.get("gemini_api_key", ""))
         translated    = [_translations.get(t, t) for t in titles_en]
 
-        # ── ⚠️ 주식병합(리버스 스플릿) 예정 뉴스 감지 ────────────────
         split_source = [
             {"date": "", "title": t_ko, "title_en": n["title"], "link": n["link"]}
             for n, t_ko in zip(parsed_list, translated)
@@ -5067,13 +5083,12 @@ def render_news_section(ticker_input):
         for news_item, title_ko in zip(parsed_list, translated):
             st.markdown(f"""
             <div class="news-card">
-                <div class="news-meta">📰 {news_item['publisher']}</div>
-                <div class="news-title">{title_ko}</div>
-                <a class="news-link" href="{news_item['link']}" target="_blank">기사 원문 보기 →</a>
+                <div class="news-meta">📰 {_safe_html(news_item['publisher'])}</div>
+                <div class="news-title">{_safe_html(title_ko)}</div>
+                <a class="news-link" href="{_safe_url(news_item['link'])}" target="_blank">기사 원문 보기 →</a>
             </div>
             """, unsafe_allow_html=True)
     else:
-        # ── ⚠️ 주식병합(리버스 스플릿) 예정 뉴스 감지 ────────────────
         _render_reverse_split_banner(detect_reverse_split_news(news_data))
 
         for n in news_data:
@@ -5094,16 +5109,18 @@ def render_news_section(ticker_input):
 
             st.markdown(f"""
             <div class="{card_cls}">
-                <div class="news-meta">📅 {n['date']} &nbsp;{sent_html}{impact_html}</div>
-                <div class="news-title">{n['title']}</div>
-                <div class="news-orig">{n['title_en']}</div>
-                <a class="news-link" href="{n['link']}" target="_blank">스톡타이탄 원문 보기 →</a>
+                <div class="news-meta">📅 {_safe_html(n['date'])} &nbsp;{sent_html}{impact_html}</div>
+                <div class="news-title">{_safe_html(n['title'])}</div>
+                <div class="news-orig">{_safe_html(n['title_en'])}</div>
+                <a class="news-link" href="{_safe_url(n['link'])}" target="_blank">스톡타이탄 원문 보기 →</a>
             </div>
             """, unsafe_allow_html=True)
-
+            # ════════════════════════════════════════════════════════════════
+# Part 11 / 메인 실행부 (토글 화면 · 티커 검색 · 탭 전환)
+# ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
-# 섹터 히트맵 (토글)
+# 섹터 히트맵 · 검색기 (토글)
 # ════════════════════════════════════════════════════════════════
 if st.session_state.get("show_heatmap", False):
     render_sector_heatmap()
@@ -5121,10 +5138,8 @@ if st.session_state.get("show_vol_surge", False):
 # 메인 대시보드 로직
 # ════════════════════════════════════════════════════════════════
 if search_button:
-    # #15 버튼은 클릭된 그 순간에만 True — 차트 기간 라디오 등 다른 위젯과
-    # 상호작용하면 다음 리렌더링에서 search_button이 다시 False가 되어
-    # 아래 분석 결과 블록이 통째로 사라지는 문제가 있었음.
-    # → session_state에 "검색됨" 상태와 티커를 저장해 리렌더링 후에도 유지.
+    # 버튼 클릭 순간에만 True이므로 session_state에 검색 상태를 저장해
+    # 차트 기간 라디오 등 다른 위젯 상호작용 후에도 결과가 유지되게 한다.
     st.session_state["active_ticker"] = ticker_input
     st.session_state["has_searched"]  = True
 
@@ -5132,10 +5147,7 @@ if st.session_state.get("has_searched"):
     active_ticker = st.session_state.get("active_ticker", ticker_input)
 
     with st.spinner("야후 파이낸스 및 스톡타이탄에서 실시간 데이터를 분석 중입니다..."):
-        # ── 성능 개선: 서로 의존관계 없는 네트워크 호출을 동시에 실행 ──
-        # 기존엔 history → spike_history → offering_history → 환율 이 순차 대기라
-        # 체감 속도가 느렸음. fetch_ticker_info는 이후 render_technical_analysis에서
-        # 다시 호출되지만 1시간 캐시라 여기서 미리 예열해두면 그때는 즉시 반환됨.
+        # 서로 의존관계 없는 네트워크 호출을 동시에 실행
         with ThreadPoolExecutor(max_workers=5) as _prefetch_ex:
             _fut_hist     = _prefetch_ex.submit(fetch_history, active_ticker)
             _fut_spike    = _prefetch_ex.submit(fetch_spike_history, active_ticker)
@@ -5146,7 +5158,7 @@ if st.session_state.get("has_searched"):
             hist          = _fut_hist.result()
             spike_df      = _fut_spike.result()
             offering_list = _fut_offering.result()
-            _fut_info.result()   # 캐시 예열 목적 — 결과는 render_technical_analysis에서 재조회
+            _fut_info.result()   # 캐시 예열 목적
             usd_krw       = _fut_fx.result()
 
         if hist.empty:
@@ -5165,17 +5177,17 @@ if st.session_state.get("has_searched"):
             # 거래량 — 전일 대비 + MA20 대비
             vol_ratio      = (today['Volume'] / yesterday['Volume']) * 100 if yesterday['Volume'] else 0
             vol_ma20       = today['VOL_MA20'] if today['VOL_MA20'] > 0 else 1
-            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100   # #8
+            vol_ma20_ratio = (today['Volume'] / vol_ma20) * 100
 
-            # 거래대금 (실시간 환율 적용 — 위에서 병렬로 이미 받아온 값 재사용)
+            # 거래대금 (실시간 환율 적용)
             trading_value_usd     = today['Close'] * today['Volume']
-            trading_value_krw_eok = (trading_value_usd * usd_krw) / 100_000_000   # #2 실시간 환율
+            trading_value_krw_eok = (trading_value_usd * usd_krw) / 100_000_000
 
-            # #7 52주 최고/최저
+            # 52주 최고/최저
             high_52w = hist['High'].max()
             low_52w  = hist['Low'].min()
 
-            # 나스닥 $1 컴플라이언스 추정 (spike_df/offering_list는 위에서 병렬로 이미 수집됨)
+            # 나스닥 $1 컴플라이언스 추정
             nasdaq_compliance = calc_nasdaq_compliance(hist, today['Close'])
 
             # 급등주 검색기·즐겨찾기 스캔과 동일 기준의 종합점수 산출
@@ -5190,10 +5202,9 @@ if st.session_state.get("has_searched"):
                 "rsi":               current_rsi,
             })
 
-            # #개선 PC 와이드 모드 제거에 따라 단일 컬럼 레이아웃만 사용 —
-            # 상단 요약 카드는 build_top_summary_cards_html()로 뽑아 기술분석
-            # 카드와 합쳐서 하나의 metric-grid로 렌더링한다.
-            top_cards_front, top_cards_end = build_top_summary_cards_html(today, yesterday, hist, vol_ma20_ratio, score=ticker_score)
+            top_cards_front, top_cards_end = build_top_summary_cards_html(
+                today, yesterday, hist, vol_ma20_ratio, score=ticker_score
+            )
             render_technical_analysis(
                 active_ticker, hist, today, yesterday,
                 vol_ratio, vol_ma20_ratio,
