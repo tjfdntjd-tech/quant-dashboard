@@ -3538,7 +3538,7 @@ hr{border:0!important;border-top:1px solid var(--m-line)!important;opacity:1!imp
 /* 헤더 */
 .app-header{background:var(--m-card)!important;border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;
   box-shadow:0 1px 2px rgba(17,24,39,.04)!important;overflow:hidden!important;animation:none!important;}
-.app-header::before{display:block!important;content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--m-accent)!important;}
+.app-header::before{display:none!important;}
 .app-header::after{display:none!important;}
 .app-header h1{color:var(--m-ink)!important;-webkit-text-fill-color:var(--m-ink)!important;font-size:1.2rem!important;font-weight:700!important;}
 .app-header p{color:var(--m-mute)!important;font-weight:400!important;}
@@ -3551,20 +3551,23 @@ hr{border:0!important;border-top:1px solid var(--m-line)!important;opacity:1!imp
 .liquid-icon-outline{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
 .liquid-icon svg{stroke:var(--m-ink)!important;}
 
-/* 버튼 — 기본은 검정 면, 호버 시 살짝 밝게 */
-.stButton button,.stFormSubmitButton button,[data-testid="stFormSubmitButton"] button,[data-testid="stDownloadButton"] button{
-  background:var(--m-accent)!important;color:#fff!important;border:1px solid var(--m-accent)!important;border-radius:10px!important;
-  box-shadow:none!important;font-family:var(--font-body)!important;font-weight:600!important;font-size:.88rem!important;filter:none!important;
+/* 버튼 — 옅은 회색 면 + 검정 글씨 */
+.stButton button,.stFormSubmitButton button,[data-testid="stFormSubmitButton"] button,[data-testid="stDownloadButton"] button,
+[data-testid^="stBaseButton-secondary"],[data-testid^="stBaseButton-primary"],[data-testid="stNumberInput"] button{
+  background:#f3f4f6!important;background-color:#f3f4f6!important;background-image:none!important;
+  color:#111827!important;-webkit-text-fill-color:#111827!important;
+  border:1px solid #d1d5db!important;border-radius:10px!important;box-shadow:none!important;
+  font-family:var(--font-body)!important;font-weight:600!important;font-size:.88rem!important;filter:none!important;
   transition:background .15s,border-color .15s!important;}
-.stButton button *,.stFormSubmitButton button *,[data-testid="stFormSubmitButton"] button *,[data-testid="stDownloadButton"] button *{color:#fff!important;}
-.stButton button:hover,.stFormSubmitButton button:hover,[data-testid="stFormSubmitButton"] button:hover,[data-testid="stDownloadButton"] button:hover{
-  background:#374151!important;border-color:#374151!important;transform:none!important;box-shadow:none!important;filter:none!important;}
-.stButton button:active,.stFormSubmitButton button:active{transform:none!important;box-shadow:none!important;}
-[class*="st-key-fav_ticker_"] button,[class*="st-key-fav_action_"] button{
-  background:#fff!important;border:1px solid var(--m-line)!important;box-shadow:none!important;color:var(--m-ink)!important;}
-[class*="st-key-fav_ticker_"] button *,[class*="st-key-fav_action_"] button *{color:var(--m-ink)!important;}
-[class*="st-key-fav_ticker_"] button:hover,[class*="st-key-fav_action_"] button:hover:not(:disabled){
-  background:#f3f4f6!important;border-color:#d1d5db!important;color:var(--m-ink)!important;transform:none!important;box-shadow:none!important;}
+.stButton button *,.stFormSubmitButton button *,[data-testid="stFormSubmitButton"] button *,[data-testid="stDownloadButton"] button *,
+[data-testid^="stBaseButton-secondary"] *,[data-testid^="stBaseButton-primary"] *,[data-testid="stNumberInput"] button *{
+  color:#111827!important;-webkit-text-fill-color:#111827!important;fill:#111827!important;opacity:1!important;}
+.stButton button:hover,.stFormSubmitButton button:hover,[data-testid="stFormSubmitButton"] button:hover,[data-testid="stDownloadButton"] button:hover,
+[data-testid^="stBaseButton-secondary"]:hover,[data-testid^="stBaseButton-primary"]:hover,[data-testid="stNumberInput"] button:hover{
+  background:#e5e7eb!important;background-color:#e5e7eb!important;border-color:#9ca3af!important;transform:none!important;box-shadow:none!important;}
+.stButton button:disabled{opacity:.45!important;}
+[class*="st-key-fav_ticker_"] button,[class*="st-key-fav_action_"] button{background:#fff!important;background-color:#fff!important;}
+[class*="st-key-fav_ticker_"] button:hover,[class*="st-key-fav_action_"] button:hover:not(:disabled){background:#f3f4f6!important;background-color:#f3f4f6!important;}
 
 /* 탭 — 밑줄형 */
 .stTabs [data-baseweb="tab-list"]{background:transparent!important;border:none!important;border-bottom:1px solid var(--m-line)!important;
@@ -3575,51 +3578,72 @@ hr{border:0!important;border-top:1px solid var(--m-line)!important;opacity:1!imp
 .stTabs [data-baseweb="tab-highlight"]{display:block!important;background:var(--m-accent)!important;height:2px!important;}
 .stTabs [data-baseweb="tab-border"]{display:none!important;}
 
-/* 세그먼트 컨트롤 — 흰 필, 선택 시 검정 */
+/* 세그먼트 컨트롤 — 흰 필, 선택 시 옅은 회색 + 진한 테두리 (글씨는 항상 검정) */
 [data-testid="stSegmentedControl"],[data-testid="stButtonGroup"]{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;gap:.4rem!important;flex-wrap:wrap!important;}
 [data-testid="stSegmentedControl"] button,[data-testid="stButtonGroup"] button,
 [data-testid^="stBaseButton-segmented"],[data-testid^="stBaseButton-pills"],button[kind^="segmented_control"],button[kind^="pills"]{
   background:#fff!important;background-color:#fff!important;background-image:none!important;
-  color:var(--m-sub)!important;-webkit-text-fill-color:var(--m-sub)!important;
-  border:1px solid var(--m-line)!important;border-radius:var(--radius-pill)!important;box-shadow:none!important;opacity:1!important;
+  color:#111827!important;-webkit-text-fill-color:#111827!important;
+  border:1px solid #d1d5db!important;border-radius:var(--radius-pill)!important;box-shadow:none!important;opacity:1!important;
   font-family:var(--font-body)!important;font-weight:500!important;font-size:.88rem!important;}
 [data-testid="stSegmentedControl"] button *,[data-testid="stButtonGroup"] button *,[data-testid^="stBaseButton-segmented"] *,
 [data-testid^="stBaseButton-pills"] *,button[kind^="segmented_control"] *,button[kind^="pills"] *{
-  color:var(--m-sub)!important;-webkit-text-fill-color:var(--m-sub)!important;fill:var(--m-sub)!important;opacity:1!important;}
+  color:#111827!important;-webkit-text-fill-color:#111827!important;fill:#111827!important;opacity:1!important;}
 [data-testid="stSegmentedControl"] button:hover,[data-testid^="stBaseButton-segmented"]:hover,[data-testid^="stBaseButton-pills"]:hover{
-  background:#f3f4f6!important;background-color:#f3f4f6!important;border-color:#d1d5db!important;}
+  background:#f3f4f6!important;background-color:#f3f4f6!important;border-color:#9ca3af!important;}
 [data-testid="stSegmentedControl"] button[aria-checked="true"],[data-testid="stSegmentedControl"] button[aria-pressed="true"],
 [data-testid="stSegmentedControl"] button[aria-selected="true"],[data-testid$="Active"],button[kind$="Active"]{
-  background:var(--m-accent)!important;background-color:var(--m-accent)!important;border-color:var(--m-accent)!important;font-weight:600!important;}
-[data-testid="stSegmentedControl"] button[aria-checked="true"] *,[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,
-[data-testid="stSegmentedControl"] button[aria-selected="true"] *,[data-testid$="Active"] *,button[kind$="Active"] *{
-  color:#fff!important;-webkit-text-fill-color:#fff!important;fill:#fff!important;}
+  background:#e5e7eb!important;background-color:#e5e7eb!important;border-color:#111827!important;font-weight:700!important;}
 
-/* 입력 · 표 · 알림 · 폼 */
-[data-baseweb="input"],[data-baseweb="textarea"],[data-baseweb="select"]>div{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
-[data-baseweb="input"]:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--m-accent)!important;}
-[data-baseweb="base-input"]{background:transparent!important;border:none!important;}
-[data-baseweb="input"] input,textarea,[data-baseweb="select"] *{color:var(--m-ink)!important;-webkit-text-fill-color:var(--m-ink)!important;}
-[data-testid="stSidebar"] .stTextInput input{background:transparent!important;border:none!important;}
-[data-testid="stTextInput"] input::placeholder,[data-testid="stTextArea"] textarea::placeholder{color:#9ca3af!important;-webkit-text-fill-color:#9ca3af!important;}
-.stTextArea textarea{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
+/* 입력 · 표 · 알림 · 폼 — 모두 흰 바탕 + 검정 글씨 (폰 다크모드여도 동일) */
+[data-baseweb="input"],[data-baseweb="base-input"],[data-baseweb="textarea"],[data-baseweb="select"]>div,
+[data-testid="stTextInputRootElement"],[data-testid="stNumberInputContainer"]{
+  background:#fff!important;background-color:#fff!important;border-color:#d1d5db!important;}
+[data-baseweb="input"],[data-baseweb="textarea"],[data-baseweb="select"]>div,[data-testid="stTextInputRootElement"]{
+  border:1px solid #d1d5db!important;border-radius:10px!important;box-shadow:none!important;}
+[data-baseweb="base-input"]{border:none!important;}
+[data-baseweb="input"]:focus-within,[data-baseweb="textarea"]:focus-within,[data-testid="stTextInputRootElement"]:focus-within{border-color:#111827!important;}
+input,textarea,[data-baseweb="input"] input,[data-baseweb="select"] *,[data-testid="stSidebar"] .stTextInput input,[data-testid="stSidebar"] input{
+  background:#fff!important;background-color:#fff!important;color:#111827!important;-webkit-text-fill-color:#111827!important;caret-color:#111827!important;}
+input::placeholder,textarea::placeholder{color:#9ca3af!important;-webkit-text-fill-color:#9ca3af!important;}
+[data-testid="stWidgetLabel"],[data-testid="stWidgetLabel"] *,label{color:#111827!important;}
+.stTextArea textarea{border:1px solid #d1d5db!important;border-radius:10px!important;box-shadow:none!important;}
 [data-testid="stForm"]{border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;box-shadow:none!important;background:transparent!important;}
-[role="slider"]{background:var(--m-accent)!important;border:2px solid #fff!important;border-radius:50%!important;box-shadow:0 0 0 1px var(--m-accent)!important;}
+[role="slider"]{background:#111827!important;border:2px solid #fff!important;border-radius:50%!important;box-shadow:0 0 0 1px #111827!important;}
+[data-testid="stSliderThumbValue"],[data-testid="stSliderTickBarMin"],[data-testid="stSliderTickBarMax"]{color:#111827!important;}
 [data-testid="stExpander"] details{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;box-shadow:none!important;}
-[data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{color:var(--m-ink)!important;}
+[data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{color:#111827!important;}
 [data-testid="stAlert"]{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
-[data-testid="stAlert"] *{color:var(--m-ink)!important;}
+[data-testid="stAlert"] *{color:#111827!important;}
 [data-testid="stDataFrame"]{border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;overflow:hidden;}
-[data-testid="stCheckbox"] label>span:first-child{background:#fff!important;border:1px solid #cbd5e1!important;border-radius:4px!important;}
-[data-testid="stCheckbox"] label:has(input:checked)>span:first-child{background:var(--m-accent)!important;border-color:var(--m-accent)!important;}
-[data-testid="stCheckbox"] label:has(input:checked)>span:first-child svg{color:#fff!important;fill:#fff!important;}
-[data-testid="stTooltipIcon"] svg{color:var(--m-mute)!important;fill:var(--m-mute)!important;}
+/* 체크박스 — 미선택=흰 네모, 선택=옅은 회색 + 검정 체크 */
+[data-testid="stCheckbox"] label>span:first-child,label[data-baseweb="checkbox"]>span:first-of-type{
+  background:#fff!important;background-color:#fff!important;border:1.5px solid #6b7280!important;border-radius:4px!important;}
+[data-testid="stCheckbox"] label:has(input:checked)>span:first-child,label[data-baseweb="checkbox"]:has(input:checked)>span:first-of-type{
+  background:#e5e7eb!important;background-color:#e5e7eb!important;border-color:#111827!important;}
+[data-testid="stCheckbox"] svg,label[data-baseweb="checkbox"] svg{color:#111827!important;fill:#111827!important;stroke:#111827!important;}
+[data-testid="stCheckbox"] [data-testid="stTooltipIcon"] svg{color:#6b7280!important;fill:#6b7280!important;stroke:none!important;}
+[data-testid="stTooltipIcon"] svg{color:#6b7280!important;fill:#6b7280!important;}
+/* 드롭다운 · 멀티셀렉트 태그 · 파일 업로더 */
+[data-baseweb="popover"],[data-baseweb="popover"] *,[data-baseweb="menu"],[data-baseweb="menu"] *,ul[role="listbox"],ul[role="listbox"] *{
+  background-color:#fff!important;color:#111827!important;-webkit-text-fill-color:#111827!important;}
+[data-baseweb="menu"] li:hover,ul[role="listbox"] li:hover{background-color:#f3f4f6!important;}
+[data-baseweb="tag"]{background-color:#e5e7eb!important;border:1px solid #d1d5db!important;}
+[data-baseweb="tag"] *{color:#111827!important;-webkit-text-fill-color:#111827!important;background-color:transparent!important;}
+[data-testid="stFileUploaderDropzone"]{background:#fff!important;border:1px dashed #9ca3af!important;border-radius:10px!important;}
+[data-testid="stFileUploaderDropzone"] *{color:#111827!important;}
+[data-testid="stFileUploaderDropzone"] button{background:#f3f4f6!important;border:1px solid #d1d5db!important;}
 .sentiment-bar-track{background:var(--m-line-2)!important;border:none!important;border-radius:var(--radius-pill)!important;height:8px!important;}
 .sentiment-bar-fill{background:var(--m-up)!important;border-radius:var(--radius-pill)!important;border-right:none!important;}
 
+/* 상단 툴바(Share·별·메뉴) — 흰 배경에서도 보이게 */
+[data-testid="stHeader"]{background:#fafafa!important;}
+[data-testid="stToolbar"],[data-testid="stToolbar"] *,[data-testid="stHeader"] button,[data-testid="stHeader"] button *,[data-testid="stSidebarCollapseButton"] *,[data-testid="stExpandSidebarButton"] *{
+  color:#111827!important;fill:#111827!important;opacity:1!important;}
+
 /* 사이드바 */
 [data-testid="stSidebar"]{background:#ffffff!important;border-right:1px solid var(--m-line)!important;}
-[data-testid="stSidebar"] :is(label,p,span,div,h1,h2,h3,li,small,a){color:var(--m-ink)!important;}
+[data-testid="stSidebar"] :is(label,p,span,h1,h2,h3,li,small,a){color:#111827!important;}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] *{color:var(--m-mute)!important;}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
