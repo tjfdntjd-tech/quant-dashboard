@@ -2606,11 +2606,10 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
         # (st.markdown을 나눠 호출하면 div가 분리되어 빈 박스가 생기므로 한 번에 출력)
         _ai_html = (
             "<style>"
-            ".ai-result-black{background:#fff;border:4px solid #000;box-shadow:8px 8px 0 #000;"
-            "padding:18px 20px;margin:8px 8px 18px 0;}"
-            ".ai-result-black, .ai-result-black *{color:#000 !important;opacity:1 !important;}"
+            ".ai-result{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px 18px;margin:8px 0 16px 0;box-shadow:0 1px 2px rgba(17,24,39,.04);}"
+            ".ai-result, .ai-result *{color:#111827 !important;}"
             "</style>"
-            '<div class="ai-result-black">\n\n'
+            '<div class="ai-result">\n\n'
             + _safe_html(result_txt)
             + "\n\n</div>"
         )
@@ -3462,141 +3461,168 @@ CSS_TEMPLATE = r"""<style>
 </style>
 """
 # ════════════════════════════════════════════════════════════════
-# Part 7-2 / NEO_BRUTAL_CSS · inject_css() · 헤더 배너 · 즐겨찾기 스캔 결과
+# Part 7-2 / MINIMAL_CSS · inject_css() · 헤더 배너 · 즐겨찾기 스캔 결과
 # ════════════════════════════════════════════════════════════════
 
-NEO_BRUTAL_CSS = r"""
-@import url('https://fonts.googleapis.com/css2?family=Gothic+A1:wght@500;700;900&display=swap');
-:root{--nb-pink:#ff5fa2;--nb-yellow:#ffe14d;--nb-lime:#b6f23a;--nb-lilac:#b8a6ff;--nb-sky:#7be4ff;--nb-bg:#d9d5ff;
- --font-body:"Gothic A1","Apple SD Gothic Neo","Malgun Gothic",sans-serif;--font-display:"Black Han Sans","Apple SD Gothic Neo","Malgun Gothic",sans-serif;}
-html,body,.stApp,[data-testid="stAppViewContainer"]{background-color:var(--nb-bg)!important;background-image:radial-gradient(rgba(0,0,0,.22) 2px,transparent 2.5px)!important;background-size:28px 28px!important;background-attachment:scroll!important;animation:none!important;}
+MINIMAL_CSS = r"""
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap');
+:root{
+  --m-bg:#fafafa; --m-card:#ffffff; --m-line:#e5e7eb; --m-line-2:#f1f2f4;
+  --m-ink:#111827; --m-sub:#4b5563; --m-mute:#6b7280;
+  --m-accent:#111827;
+  --m-up:#047857;  --m-up-bg:#ecfdf5;  --m-up-line:#a7f3d0;
+  --m-down:#b91c1c;--m-down-bg:#fef2f2;--m-down-line:#fecaca;
+  --m-warn:#92600a;--m-warn-bg:#fffbeb;--m-warn-line:#fde68a;
+  --m-info:#1d4ed8;--m-info-bg:#eff6ff;--m-info-line:#bfdbfe;
+  --font-body:"Inter","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --font-display:"Inter","Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --radius-card:12px; --radius-card-sm:10px; --radius-pill:999px;
+}
+
+/* 배경 · 타이포 */
+html,body,.stApp,[data-testid="stAppViewContainer"]{background:var(--m-bg)!important;background-image:none!important;animation:none!important;font-family:var(--font-body);}
 [data-testid="stHeader"]{background:transparent!important;}
-[data-testid="stMainBlockContainer"],.main .block-container{padding-bottom:5.5rem!important;}
-h1,h2,h3,h4{color:#000!important;font-family:var(--font-display)!important;font-weight:400!important;}
-[data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] *{color:#000!important;opacity:1!important;font-weight:600;}
-hr{border:0!important;border-top:4px solid #000!important;opacity:1!important;}
+[data-testid="stMainBlockContainer"],.main .block-container{padding-bottom:3rem!important;}
+h1,h2,h3,h4{color:var(--m-ink)!important;font-family:var(--font-display)!important;font-weight:600!important;letter-spacing:-0.01em;}
+[data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] *{color:var(--m-mute)!important;font-weight:400;}
+hr{border:0!important;border-top:1px solid var(--m-line)!important;opacity:1!important;}
 
-/* 카드 */
-.glass-card,.metric-card,.news-card,.social-card,.status-item,.sentiment-bar-wrap,.scan-header{background:#fff!important;color:#000;border:3px solid #000!important;border-radius:0!important;box-shadow:6px 6px 0 #000!important;backdrop-filter:none!important;}
-.glass-card{border-width:4px!important;box-shadow:8px 8px 0 #000!important;}
-.glass-card:hover,.news-card:hover,.social-card:hover{transform:translate(-2px,-2px)!important;box-shadow:10px 10px 0 #000!important;border-color:#000!important;}
-.metric-card:hover{transform:translate(-2px,-2px)!important;box-shadow:8px 8px 0 #000!important;border-color:#000!important;}
-.status-item{box-shadow:4px 4px 0 #000!important;}
-.metric-card{border-left-width:3px!important;border-left-color:#000!important;}
-.mc-amber{background:linear-gradient(90deg,var(--nb-yellow) 0 10px,#fff 10px)!important;}
-.mc-violet{background:linear-gradient(90deg,var(--nb-lilac) 0 10px,#fff 10px)!important;}
-.mc-rose{background:linear-gradient(90deg,var(--nb-pink) 0 10px,#fff 10px)!important;}
-.mc-cyan{background:linear-gradient(90deg,var(--nb-sky) 0 10px,#fff 10px)!important;}
-.mc-indigo{background:linear-gradient(90deg,#9aa8ff 0 10px,#fff 10px)!important;}
-.mc-teal{background:linear-gradient(90deg,var(--nb-lime) 0 10px,#fff 10px)!important;}
-.pos-card,.social-bull{background:linear-gradient(90deg,var(--nb-lime) 0 10px,#fff 10px)!important;border-left-color:#000!important;}
-.neg-card,.social-bear{background:linear-gradient(90deg,var(--nb-pink) 0 10px,#fff 10px)!important;border-left-color:#000!important;}
-.neu-card{background:linear-gradient(90deg,var(--nb-yellow) 0 10px,#fff 10px)!important;border-left-color:#000!important;}
-.metric-card .metric-label,.glass-card-title,.news-meta,.social-meta,.social-stats,.news-orig{color:#3a3a4a!important;}
-.metric-value,.news-title,.social-body,.status-text,.status-text strong,.scan-title,.sector-name,.sector-ticker{color:#000!important;}
-.metric-value{font-family:var(--font-display)!important;font-weight:400!important;}
-.news-link,.news-link:hover{color:#000!important;text-decoration:underline;font-weight:800;}
-.sector-cell{border:3px solid #000!important;border-radius:0!important;box-shadow:4px 4px 0 #000!important;backdrop-filter:none!important;}
+/* 카드 — 흰 면 + 1px 테두리, 그림자는 거의 없음 */
+.glass-card,.metric-card,.news-card,.social-card,.status-item,.sentiment-bar-wrap,.scan-header{
+  background:var(--m-card)!important;color:var(--m-ink);
+  border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;
+  box-shadow:0 1px 2px rgba(17,24,39,.04)!important;backdrop-filter:none!important;}
+.glass-card:hover,.news-card:hover,.social-card:hover,.metric-card:hover{
+  transform:none!important;border-color:#d1d5db!important;box-shadow:0 2px 6px rgba(17,24,39,.06)!important;}
+.status-item{background:#fcfcfd!important;border-radius:var(--radius-card-sm)!important;box-shadow:none!important;}
+.metric-card{border-left:1px solid var(--m-line)!important;background-image:none!important;}
+.mc-amber,.mc-violet,.mc-rose,.mc-cyan,.mc-indigo,.mc-teal{background-image:none!important;border-left-color:var(--m-line)!important;}
+.pos-card,.social-bull{border-left:3px solid var(--m-up)!important;background-image:none!important;}
+.neg-card,.social-bear{border-left:3px solid var(--m-down)!important;background-image:none!important;}
+.neu-card{border-left:3px solid #d1a43a!important;background-image:none!important;}
+.metric-card .metric-label,.glass-card-title,.news-meta,.social-meta,.social-stats,.news-orig{color:var(--m-mute)!important;}
+.metric-label{font-weight:500!important;letter-spacing:.04em!important;}
+.metric-value,.news-title,.social-body,.status-text,.status-text strong,.scan-title,.sector-name,.sector-ticker{color:var(--m-ink)!important;}
+.metric-value{font-family:var(--font-mono)!important;font-weight:600!important;}
+.news-link,.news-link:hover{color:var(--m-info)!important;text-decoration:none;font-weight:600;}
+.news-link:hover{text-decoration:underline;}
+.scan-header{border-left:1px solid var(--m-line)!important;}
+.delta-up{color:var(--m-up)!important;} .delta-down{color:var(--m-down)!important;} .delta-neu{color:var(--m-mute)!important;}
+.sector-cell{border:1px solid var(--m-line)!important;border-radius:var(--radius-card-sm)!important;box-shadow:none!important;}
 
-/* 배지 */
-.sentiment-badge,.impact-badge,.bull-badge,.bear-badge,.platform-badge,.reddit-badge,.signal-chip{border:2px solid #000!important;border-radius:0!important;color:#000!important;font-weight:800!important;}
-.sent-pos,.bull-badge{background:var(--nb-lime)!important;}
-.sent-neg,.bear-badge{background:var(--nb-pink)!important;}
-.sent-neu{background:var(--nb-yellow)!important;}
-.impact-badge,.platform-badge{background:var(--nb-lilac)!important;}
-.reddit-badge{background:#ff9a3d!important;}
-.signal-chip{background:#fff!important;}
-.status-dot{border:2px solid #000;border-radius:0!important;box-shadow:none!important;}
+/* 배지 · 칩 — 옅은 틴트 + 얇은 테두리 */
+.sentiment-badge,.impact-badge,.bull-badge,.bear-badge,.platform-badge,.reddit-badge,.signal-chip{
+  border:1px solid var(--m-line)!important;border-radius:var(--radius-pill)!important;font-weight:600!important;box-shadow:none!important;}
+.sent-pos,.bull-badge{background:var(--m-up-bg)!important;color:var(--m-up)!important;border-color:var(--m-up-line)!important;}
+.sent-neg,.bear-badge{background:var(--m-down-bg)!important;color:var(--m-down)!important;border-color:var(--m-down-line)!important;}
+.sent-neu{background:var(--m-warn-bg)!important;color:var(--m-warn)!important;border-color:var(--m-warn-line)!important;}
+.impact-badge,.platform-badge{background:var(--m-info-bg)!important;color:var(--m-info)!important;border-color:var(--m-info-line)!important;}
+.reddit-badge{background:var(--m-warn-bg)!important;color:var(--m-warn)!important;border-color:var(--m-warn-line)!important;}
+.signal-chip{background:#fff!important;color:var(--m-ink)!important;}
+.dot-green{background:var(--m-up)!important;box-shadow:none!important;}
+.dot-yellow{background:#d1a43a!important;box-shadow:none!important;}
+.dot-red{background:var(--m-down)!important;box-shadow:none!important;}
+.dot-blue{background:#9ca3af!important;box-shadow:none!important;}
+.status-dot{border:none!important;border-radius:50%!important;width:8px!important;height:8px!important;}
 
-/* 배너 */
-.alert-banner,.china-banner,.split-banner{border:4px solid #000!important;border-radius:0!important;box-shadow:8px 8px 0 #000!important;}
-.alert-banner{background:var(--nb-pink)!important;}
-.china-banner{background:var(--nb-yellow)!important;}
-.split-banner{background:var(--nb-lime)!important;}
-.alert-icon,.china-banner-icon{background:#fff!important;border:3px solid #000!important;border-radius:0!important;}
-.alert-title,.china-banner-text,.china-banner-sub,.split-banner-title,.split-banner-body,.split-banner-body strong,.split-banner .news-link{color:#000!important;opacity:1!important;text-shadow:none!important;}
+/* 배너 — 채도 낮은 틴트 */
+.alert-banner,.china-banner,.split-banner{border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;box-shadow:none!important;}
+.alert-banner{background:var(--m-down-bg)!important;border-color:var(--m-down-line)!important;}
+.china-banner{background:var(--m-warn-bg)!important;border-color:var(--m-warn-line)!important;}
+.split-banner{background:var(--m-warn-bg)!important;border-color:var(--m-warn-line)!important;}
+.alert-icon,.china-banner-icon{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;}
+.alert-title{color:var(--m-down)!important;}
+.china-banner-text,.china-banner-sub,.split-banner-title,.split-banner-body,.split-banner-body strong{color:var(--m-warn)!important;opacity:1!important;}
+.split-banner .news-link{color:var(--m-warn)!important;text-decoration:underline;}
 
-/* 헤더 + 별 스티커 */
-.app-header{background:var(--nb-yellow)!important;border:5px solid #000!important;border-radius:0!important;box-shadow:10px 10px 0 #000!important;overflow:visible!important;animation:nbPop .7s cubic-bezier(.2,1.6,.4,1) both;}
-.app-header::before{display:none!important;}
-.app-header::after{content:"";position:absolute;top:-30px;right:-20px;width:76px;height:76px;z-index:3;filter:drop-shadow(4px 4px 0 #000);background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpolygon points='50,6 61,38 95,38 67,58 78,92 50,71 22,92 33,58 5,38 39,38' fill='%23ff5fa2' stroke='%23000' stroke-width='6'/%3E%3C/svg%3E") center/contain no-repeat;animation:nbStar .9s .35s cubic-bezier(.2,1.6,.4,1) both;transform:rotate(12deg);}
-.app-header h1{color:#000!important;-webkit-text-fill-color:#000!important;background:none!important;font-family:var(--font-display)!important;font-size:1.7rem!important;}
-.app-header p{color:#000!important;font-weight:700!important;}
-.section-title,.title-amber,.title-teal,.title-indigo,.title-violet,.title-cyan,.title-rose{color:#000!important;font-family:var(--font-display)!important;font-weight:400!important;font-size:1.15rem!important;}
-.section-icon,.liquid-icon:not(.liquid-icon-outline){background:var(--nb-yellow)!important;border:3px solid #000!important;border-radius:0!important;box-shadow:3px 3px 0 #000!important;}
-.liquid-icon-outline{border:3px solid #000!important;border-radius:0!important;background:#fff!important;box-shadow:3px 3px 0 #000!important;}
-.liquid-icon svg{stroke:#000!important;}
+/* 헤더 */
+.app-header{background:var(--m-card)!important;border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;
+  box-shadow:0 1px 2px rgba(17,24,39,.04)!important;overflow:hidden!important;animation:none!important;}
+.app-header::before{display:block!important;content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--m-accent)!important;}
+.app-header::after{display:none!important;}
+.app-header h1{color:var(--m-ink)!important;-webkit-text-fill-color:var(--m-ink)!important;font-size:1.2rem!important;font-weight:700!important;}
+.app-header p{color:var(--m-mute)!important;font-weight:400!important;}
+.nb-ticker{display:none!important;}
 
-/* 버튼 */
-.stButton button,.stFormSubmitButton button,[data-testid="stFormSubmitButton"] button,[data-testid="stDownloadButton"] button{background:var(--nb-lime)!important;color:#000!important;border:4px solid #000!important;border-radius:0!important;box-shadow:5px 5px 0 #000!important;font-family:var(--font-display)!important;font-weight:400!important;font-size:1rem!important;filter:none!important;transition:transform .08s,box-shadow .08s!important;}
-.stButton button *,.stFormSubmitButton button *,[data-testid="stFormSubmitButton"] button *,[data-testid="stDownloadButton"] button *{color:#000!important;}
-.stButton button:hover,.stFormSubmitButton button:hover,[data-testid="stFormSubmitButton"] button:hover,[data-testid="stDownloadButton"] button:hover{transform:translate(-2px,-2px)!important;box-shadow:7px 7px 0 #000!important;filter:none!important;}
-.stButton button:active,.stFormSubmitButton button:active,[data-testid="stFormSubmitButton"] button:active,[data-testid="stDownloadButton"] button:active{transform:translate(5px,5px)!important;box-shadow:0 0 0 #000!important;}
-[class*="st-key-fav_ticker_"] button,[class*="st-key-fav_action_"] button{background:#fff!important;border-width:3px!important;box-shadow:3px 3px 0 #000!important;font-size:.9rem!important;}
-[class*="st-key-fav_ticker_"] button:hover,[class*="st-key-fav_action_"] button:hover:not(:disabled){background:var(--nb-yellow)!important;color:#000!important;border-color:#000!important;transform:translate(-1px,-1px)!important;box-shadow:4px 4px 0 #000!important;}
+/* 섹션 헤더 · 아이콘 배지 */
+.section-title,.title-amber,.title-teal,.title-indigo,.title-violet,.title-cyan,.title-rose{
+  color:var(--m-ink)!important;font-family:var(--font-display)!important;font-weight:600!important;font-size:1rem!important;}
+.section-icon,.liquid-icon:not(.liquid-icon-outline){background:#f3f4f6!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
+.liquid-icon-outline{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
+.liquid-icon svg{stroke:var(--m-ink)!important;}
 
-/* 탭 · 세그먼트 */
-.stTabs [data-baseweb="tab-list"]{background:#fff!important;border:4px solid #000!important;border-radius:0!important;box-shadow:5px 5px 0 #000;padding:.4rem!important;gap:.4rem!important;}
-.stTabs [data-baseweb="tab"]{border-radius:0!important;color:#000!important;font-family:var(--font-display)!important;font-weight:400!important;border:3px solid transparent!important;}
-.stTabs [aria-selected="true"]{background:var(--nb-pink)!important;color:#000!important;border:3px solid #000!important;}
-.stTabs [data-baseweb="tab-highlight"],.stTabs [data-baseweb="tab-border"]{display:none!important;}
-[data-testid="stSegmentedControl"]{background:transparent!important;border:none!important;border-radius:0!important;padding:0!important;gap:.6rem!important;}
-[data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"],[data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"]{background:#fff!important;background-color:#fff!important;border:3px solid #000!important;border-radius:0!important;box-shadow:4px 4px 0 #000!important;font-family:var(--font-display)!important;font-weight:400!important;font-size:1rem!important;color:#000!important;opacity:1!important;}
-[data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"]{background:var(--nb-pink)!important;background-color:var(--nb-pink)!important;}
-[data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"]:hover{background:var(--nb-yellow)!important;background-color:var(--nb-yellow)!important;border:3px solid #000!important;}
-[data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_control"] *,[data-testid="stSegmentedControl"] [data-testid="stBaseButton-segmented_controlActive"] *{color:#000!important;fill:#000!important;opacity:1!important;}
+/* 버튼 — 기본은 검정 면, 호버 시 살짝 밝게 */
+.stButton button,.stFormSubmitButton button,[data-testid="stFormSubmitButton"] button,[data-testid="stDownloadButton"] button{
+  background:var(--m-accent)!important;color:#fff!important;border:1px solid var(--m-accent)!important;border-radius:10px!important;
+  box-shadow:none!important;font-family:var(--font-body)!important;font-weight:600!important;font-size:.88rem!important;filter:none!important;
+  transition:background .15s,border-color .15s!important;}
+.stButton button *,.stFormSubmitButton button *,[data-testid="stFormSubmitButton"] button *,[data-testid="stDownloadButton"] button *{color:#fff!important;}
+.stButton button:hover,.stFormSubmitButton button:hover,[data-testid="stFormSubmitButton"] button:hover,[data-testid="stDownloadButton"] button:hover{
+  background:#374151!important;border-color:#374151!important;transform:none!important;box-shadow:none!important;filter:none!important;}
+.stButton button:active,.stFormSubmitButton button:active{transform:none!important;box-shadow:none!important;}
+[class*="st-key-fav_ticker_"] button,[class*="st-key-fav_action_"] button{
+  background:#fff!important;border:1px solid var(--m-line)!important;box-shadow:none!important;color:var(--m-ink)!important;}
+[class*="st-key-fav_ticker_"] button *,[class*="st-key-fav_action_"] button *{color:var(--m-ink)!important;}
+[class*="st-key-fav_ticker_"] button:hover,[class*="st-key-fav_action_"] button:hover:not(:disabled){
+  background:#f3f4f6!important;border-color:#d1d5db!important;color:var(--m-ink)!important;transform:none!important;box-shadow:none!important;}
 
-/* 입력 · 표 · 알림 */
-[data-baseweb="input"],[data-baseweb="textarea"],[data-baseweb="select"]>div{background:#fff!important;border:3px solid #000!important;border-radius:0!important;box-shadow:3px 3px 0 #000;}
+/* 탭 — 밑줄형 */
+.stTabs [data-baseweb="tab-list"]{background:transparent!important;border:none!important;border-bottom:1px solid var(--m-line)!important;
+  border-radius:0!important;box-shadow:none!important;padding:0!important;gap:.25rem!important;}
+.stTabs [data-baseweb="tab"]{border-radius:0!important;color:var(--m-mute)!important;font-family:var(--font-body)!important;
+  font-weight:500!important;border:none!important;background:transparent!important;}
+.stTabs [aria-selected="true"]{background:transparent!important;color:var(--m-ink)!important;font-weight:700!important;border:none!important;}
+.stTabs [data-baseweb="tab-highlight"]{display:block!important;background:var(--m-accent)!important;height:2px!important;}
+.stTabs [data-baseweb="tab-border"]{display:none!important;}
+
+/* 세그먼트 컨트롤 — 흰 필, 선택 시 검정 */
+[data-testid="stSegmentedControl"],[data-testid="stButtonGroup"]{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;gap:.4rem!important;flex-wrap:wrap!important;}
+[data-testid="stSegmentedControl"] button,[data-testid="stButtonGroup"] button,
+[data-testid^="stBaseButton-segmented"],[data-testid^="stBaseButton-pills"],button[kind^="segmented_control"],button[kind^="pills"]{
+  background:#fff!important;background-color:#fff!important;background-image:none!important;
+  color:var(--m-sub)!important;-webkit-text-fill-color:var(--m-sub)!important;
+  border:1px solid var(--m-line)!important;border-radius:var(--radius-pill)!important;box-shadow:none!important;opacity:1!important;
+  font-family:var(--font-body)!important;font-weight:500!important;font-size:.88rem!important;}
+[data-testid="stSegmentedControl"] button *,[data-testid="stButtonGroup"] button *,[data-testid^="stBaseButton-segmented"] *,
+[data-testid^="stBaseButton-pills"] *,button[kind^="segmented_control"] *,button[kind^="pills"] *{
+  color:var(--m-sub)!important;-webkit-text-fill-color:var(--m-sub)!important;fill:var(--m-sub)!important;opacity:1!important;}
+[data-testid="stSegmentedControl"] button:hover,[data-testid^="stBaseButton-segmented"]:hover,[data-testid^="stBaseButton-pills"]:hover{
+  background:#f3f4f6!important;background-color:#f3f4f6!important;border-color:#d1d5db!important;}
+[data-testid="stSegmentedControl"] button[aria-checked="true"],[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+[data-testid="stSegmentedControl"] button[aria-selected="true"],[data-testid$="Active"],button[kind$="Active"]{
+  background:var(--m-accent)!important;background-color:var(--m-accent)!important;border-color:var(--m-accent)!important;font-weight:600!important;}
+[data-testid="stSegmentedControl"] button[aria-checked="true"] *,[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,
+[data-testid="stSegmentedControl"] button[aria-selected="true"] *,[data-testid$="Active"] *,button[kind$="Active"] *{
+  color:#fff!important;-webkit-text-fill-color:#fff!important;fill:#fff!important;}
+
+/* 입력 · 표 · 알림 · 폼 */
+[data-baseweb="input"],[data-baseweb="textarea"],[data-baseweb="select"]>div{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
+[data-baseweb="input"]:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--m-accent)!important;}
 [data-baseweb="base-input"]{background:transparent!important;border:none!important;}
-[data-baseweb="input"] input,textarea,[data-baseweb="select"] *{color:#000!important;-webkit-text-fill-color:#000!important;}
+[data-baseweb="input"] input,textarea,[data-baseweb="select"] *{color:var(--m-ink)!important;-webkit-text-fill-color:var(--m-ink)!important;}
 [data-testid="stSidebar"] .stTextInput input{background:transparent!important;border:none!important;}
-[role="slider"]{background:var(--nb-pink)!important;border:3px solid #000!important;border-radius:0!important;box-shadow:none!important;}
-[data-testid="stExpander"] details{background:#fff!important;border:3px solid #000!important;border-radius:0!important;box-shadow:5px 5px 0 #000;}
-[data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{color:#000!important;}
-[data-testid="stAlert"]{background:#fff!important;border:3px solid #000!important;border-radius:0!important;box-shadow:4px 4px 0 #000;}
-[data-testid="stAlert"] *{color:#000!important;}
-[data-testid="stDataFrame"]{border:4px solid #000!important;border-radius:0!important;box-shadow:6px 6px 0 #000;}
-.sentiment-bar-track{background:#fff!important;border:3px solid #000!important;border-radius:0!important;height:18px!important;}
-.sentiment-bar-fill{background:var(--nb-lime)!important;border-radius:0!important;border-right:3px solid #000;}
+[data-testid="stTextInput"] input::placeholder,[data-testid="stTextArea"] textarea::placeholder{color:#9ca3af!important;-webkit-text-fill-color:#9ca3af!important;}
+.stTextArea textarea{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
+[data-testid="stForm"]{border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;box-shadow:none!important;background:transparent!important;}
+[role="slider"]{background:var(--m-accent)!important;border:2px solid #fff!important;border-radius:50%!important;box-shadow:0 0 0 1px var(--m-accent)!important;}
+[data-testid="stExpander"] details{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:var(--radius-card)!important;box-shadow:none!important;}
+[data-testid="stExpander"] summary,[data-testid="stExpander"] summary *{color:var(--m-ink)!important;}
+[data-testid="stAlert"]{background:#fff!important;border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;}
+[data-testid="stAlert"] *{color:var(--m-ink)!important;}
+[data-testid="stDataFrame"]{border:1px solid var(--m-line)!important;border-radius:10px!important;box-shadow:none!important;overflow:hidden;}
+[data-testid="stCheckbox"] label>span:first-child{background:#fff!important;border:1px solid #cbd5e1!important;border-radius:4px!important;}
+[data-testid="stCheckbox"] label:has(input:checked)>span:first-child{background:var(--m-accent)!important;border-color:var(--m-accent)!important;}
+[data-testid="stCheckbox"] label:has(input:checked)>span:first-child svg{color:#fff!important;fill:#fff!important;}
+[data-testid="stTooltipIcon"] svg{color:var(--m-mute)!important;fill:var(--m-mute)!important;}
+.sentiment-bar-track{background:var(--m-line-2)!important;border:none!important;border-radius:var(--radius-pill)!important;height:8px!important;}
+.sentiment-bar-fill{background:var(--m-up)!important;border-radius:var(--radius-pill)!important;border-right:none!important;}
 
 /* 사이드바 */
-[data-testid="stSidebar"]{background:var(--nb-yellow)!important;border-right:5px solid #000!important;}
-[data-testid="stSidebar"] :is(label,p,span,div,h1,h2,h3,li,small,a){color:#000!important;}
+[data-testid="stSidebar"]{background:#ffffff!important;border-right:1px solid var(--m-line)!important;}
+[data-testid="stSidebar"] :is(label,p,span,div,h1,h2,h3,li,small,a){color:var(--m-ink)!important;}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] *{color:var(--m-mute)!important;}
 
-
-/* 세그먼트·필 버튼: 선택 전에도 흰 바탕 + 검정 글씨로 또렷하게 (DOM 버전이 달라도 걸리도록 넓게 지정) */
-[data-testid="stSegmentedControl"],[data-testid="stButtonGroup"]{background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;gap:.6rem!important;flex-wrap:wrap!important;}
-[data-testid="stSegmentedControl"] button,[data-testid="stButtonGroup"] button,[data-testid^="stBaseButton-segmented"],[data-testid^="stBaseButton-pills"],button[kind^="segmented_control"],button[kind^="pills"]{background:#fff!important;background-color:#fff!important;background-image:none!important;color:#000!important;-webkit-text-fill-color:#000!important;border:3px solid #000!important;border-radius:0!important;box-shadow:4px 4px 0 #000!important;opacity:1!important;font-family:var(--font-display)!important;font-weight:400!important;font-size:1rem!important;}
-[data-testid="stSegmentedControl"] button *,[data-testid="stButtonGroup"] button *,[data-testid^="stBaseButton-segmented"] *,[data-testid^="stBaseButton-pills"] *,button[kind^="segmented_control"] *,button[kind^="pills"] *,[data-testid="stSegmentedControl"] button p,[data-testid="stButtonGroup"] button p,[data-testid^="stBaseButton-segmented"] p,[data-testid^="stBaseButton-pills"] p,button[kind^="segmented_control"] p,button[kind^="pills"] p{color:#000!important;-webkit-text-fill-color:#000!important;fill:#000!important;opacity:1!important;}
-[data-testid="stSegmentedControl"] button:hover,[data-testid="stButtonGroup"] button:hover,[data-testid^="stBaseButton-segmented"]:hover,[data-testid^="stBaseButton-pills"]:hover,button[kind^="segmented_control"]:hover,button[kind^="pills"]:hover{background:var(--nb-yellow)!important;background-color:var(--nb-yellow)!important;color:#000!important;}
-[data-testid="stSegmentedControl"] button[aria-checked="true"],[data-testid="stSegmentedControl"] button[aria-pressed="true"],[data-testid="stSegmentedControl"] button[aria-selected="true"],[data-testid$="Active"],button[kind$="Active"]{background:var(--nb-pink)!important;background-color:var(--nb-pink)!important;color:#000!important;}
-[data-testid="stSegmentedControl"] button[aria-checked="true"] *,[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,[data-testid="stSegmentedControl"] button[aria-selected="true"] *,[data-testid$="Active"] *,button[kind$="Active"] *{color:#000!important;-webkit-text-fill-color:#000!important;}
-
-
-/* 입력창: 선택/입력 전에도 흰 바탕 + 검정 글씨 */
-[data-testid="stTextInput"] :is(div[data-baseweb],input),[data-testid="stNumberInput"] :is(div[data-baseweb],input),[data-testid="stTextArea"] :is(div[data-baseweb],textarea){background:#fff!important;background-color:#fff!important;color:#000!important;-webkit-text-fill-color:#000!important;opacity:1!important;}
-[data-testid="stTextInput"] div[data-baseweb="input"],[data-testid="stNumberInput"] div[data-baseweb="input"],[data-testid="stTextArea"] div[data-baseweb="textarea"]{border:3px solid #000!important;border-radius:0!important;box-shadow:3px 3px 0 #000!important;}
-[data-testid="stTextInput"] input::placeholder,[data-testid="stTextArea"] textarea::placeholder{color:#555!important;-webkit-text-fill-color:#555!important;}
-[data-testid="stForm"]{border:4px solid #000!important;border-radius:0!important;box-shadow:5px 5px 0 #000!important;background:transparent!important;}
-/* 체크박스: 흰 네모, 체크 시 핑크 */
-[data-testid="stCheckbox"] label>span:first-child{background:#fff!important;border:3px solid #000!important;border-radius:0!important;}
-[data-testid="stCheckbox"] label:has(input:checked)>span:first-child{background:var(--nb-pink)!important;}
-[data-testid="stCheckbox"] label:has(input:checked)>span:first-child svg{color:#000!important;fill:#000!important;}
-[data-testid="stTooltipIcon"] svg{color:#000!important;fill:#000!important;opacity:1!important;}
-
-/* 하단 띠 글자 */
-.nb-ticker{position:fixed;left:0;right:0;bottom:0;z-index:999;border-top:5px solid #000;background:#000;overflow:hidden;}
-.nb-track{display:flex;width:max-content;animation:nbSlide 22s linear infinite;}
-.nb-grp{display:flex;flex:none;}
-.nb-grp span{display:block;padding:0 1.4rem;height:44px;line-height:44px;white-space:nowrap;font-family:var(--font-display);font-size:1.15rem;color:#000;border-right:5px solid #000;}
-.nb-grp span:nth-child(3n+1){background:var(--nb-pink);}
-.nb-grp span:nth-child(3n+2){background:var(--nb-yellow);}
-.nb-grp span:nth-child(3n+3){background:var(--nb-lime);}
-@keyframes nbSlide{to{transform:translateX(-50%);}}
-@keyframes nbPop{0%{opacity:0;transform:scale(.55) rotate(-6deg);}60%{opacity:1;transform:scale(1.05) rotate(1deg);}100%{opacity:1;transform:scale(1) rotate(0);}}
-@keyframes nbStar{0%{opacity:0;transform:scale(0) rotate(-90deg);}70%{opacity:1;transform:scale(1.25) rotate(20deg);}100%{opacity:1;transform:scale(1) rotate(12deg);}}
-@media (prefers-reduced-motion:reduce){.nb-track,.app-header,.app-header::after{animation:none!important;}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 """
 
 def inject_css(dark: bool = True):
@@ -3748,9 +3774,9 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{NEO_BRUTAL_CSS}</style>\n", unsafe_allow_html=True)
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n", unsafe_allow_html=True)
 
-inject_css(False)   # 뉴브루탈리즘은 밝은 종이 카드 기반 — 라이트 팔레트 고정
+inject_css(False)   # 미니멀 라이트 팔레트 고정
 
 # ════════════════════════════════════════════════════════════════
 # 헤더 배너
@@ -3760,7 +3786,6 @@ st.markdown(f"""
     <h1>🚀 급등주 실시간 검증기 V3</h1>
     <p>야후 파이낸스 · 스톡타이탄 Rhea-AI · 기술적 지표 통합 분석 &nbsp;|&nbsp; 환율 ₩{fetch_usd_to_krw():,.0f} (실시간)</p>
 </div>
-<div class="nb-ticker"><div class="nb-track"><div class="nb-grp"><span>급등주 실시간 검증기 ★</span><span>거래량 급증 포착</span><span>리버스 스플릿 조심</span><span>호재는 별표 ★</span><span>SHELF · OFFERING 체크</span><span>NEW BRUTALISM</span></div><div class="nb-grp" aria-hidden="true"><span>급등주 실시간 검증기 ★</span><span>거래량 급증 포착</span><span>리버스 스플릿 조심</span><span>호재는 별표 ★</span><span>SHELF · OFFERING 체크</span><span>NEW BRUTALISM</span></div></div></div>
 """, unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════
