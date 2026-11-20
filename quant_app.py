@@ -4146,37 +4146,39 @@ if fav_button_clicked:
 # ── 즐겨찾기 목록 ────────────────────────────────────────────────
 if st.session_state.favorites:
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**⭐ 즐겨찾기**")
     fav_count = len(st.session_state.favorites)
-    for idx, fav in enumerate(st.session_state.favorites):
-        fav_col, up_col, down_col, del_col = st.sidebar.columns([3, 1, 1, 1])
-        with fav_col:
-            with st.container(key=f"fav_ticker_{idx}"):
-                if st.button(fav, key=f"fav_{fav}", use_container_width=True):
-                    st.session_state.selected_ticker = fav
-                    st.rerun()
-        with up_col:
-            with st.container(key=f"fav_action_up_{idx}"):
-                if st.button("▲", key=f"up_{fav}", use_container_width=True,
-                             help="위로 이동", disabled=(idx == 0)):
-                    favs = st.session_state.favorites
-                    favs[idx - 1], favs[idx] = favs[idx], favs[idx - 1]
-                    save_favorites(favs)
-                    st.rerun()
-        with down_col:
-            with st.container(key=f"fav_action_down_{idx}"):
-                if st.button("▼", key=f"down_{fav}", use_container_width=True,
-                             help="아래로 이동", disabled=(idx == fav_count - 1)):
-                    favs = st.session_state.favorites
-                    favs[idx + 1], favs[idx] = favs[idx], favs[idx + 1]
-                    save_favorites(favs)
-                    st.rerun()
-        with del_col:
-            with st.container(key=f"fav_action_del_{idx}"):
-                if st.button("✕", key=f"del_{fav}", use_container_width=True, help=f"{fav} 삭제"):
-                    st.session_state.favorites.remove(fav)
-                    save_favorites(st.session_state.favorites)
-                    st.rerun()
+    # 목록이 길어져도 사이드바 공간을 차지하지 않도록 접이식(기본 접힘)으로 표시
+    with st.sidebar.expander("⭐ 즐겨찾기", expanded=False):
+        st.caption(f"총 {fav_count}개 · 티커를 누르면 입력창에 채워집니다")
+        for idx, fav in enumerate(st.session_state.favorites):
+            fav_col, up_col, down_col, del_col = st.columns([3, 1, 1, 1])
+            with fav_col:
+                with st.container(key=f"fav_ticker_{idx}"):
+                    if st.button(fav, key=f"fav_{fav}", use_container_width=True):
+                        st.session_state.selected_ticker = fav
+                        st.rerun()
+            with up_col:
+                with st.container(key=f"fav_action_up_{idx}"):
+                    if st.button("▲", key=f"up_{fav}", use_container_width=True,
+                                 help="위로 이동", disabled=(idx == 0)):
+                        favs = st.session_state.favorites
+                        favs[idx - 1], favs[idx] = favs[idx], favs[idx - 1]
+                        save_favorites(favs)
+                        st.rerun()
+            with down_col:
+                with st.container(key=f"fav_action_down_{idx}"):
+                    if st.button("▼", key=f"down_{fav}", use_container_width=True,
+                                 help="아래로 이동", disabled=(idx == fav_count - 1)):
+                        favs = st.session_state.favorites
+                        favs[idx + 1], favs[idx] = favs[idx], favs[idx + 1]
+                        save_favorites(favs)
+                        st.rerun()
+            with del_col:
+                with st.container(key=f"fav_action_del_{idx}"):
+                    if st.button("✕", key=f"del_{fav}", use_container_width=True, help=f"{fav} 삭제"):
+                        st.session_state.favorites.remove(fav)
+                        save_favorites(st.session_state.favorites)
+                        st.rerun()
 
     # ── 즐겨찾기 일괄 스캔 ───────────────────────────────────────
     st.sidebar.markdown("")
