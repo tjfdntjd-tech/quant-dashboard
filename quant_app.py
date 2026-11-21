@@ -361,6 +361,7 @@ _defaults = {
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
     "show_screener":    False,          # 급등주 검색기 토글
     "show_vol_surge":   False,          # 거래량 급증 스크리너 토글
+    "show_prebreak":    False,          # 급등 전 매집 스캐너 토글
     "excel_scan":       None,           # 엑셀 종목 일괄 분석 결과
     "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
@@ -4066,14 +4067,13 @@ def scan_ticker_for_excel(item: dict, usd_krw: float, with_events: bool = False)
             catalyst_txt = catalyst_summary_text(ticker)
         if gap >= 5: signals.append("⬆️갭업")
 
-        score = calc_screener_score({
-            "pct_change": pct, "vol_ma20_ratio": vol_r, "trading_value_eok": tv_eok,
-            "vol_ratio": vol_dd, "rsi": round(rsi, 1) if rsi is not None else None,
-            "float_turnover": float_turn,
-        })
+        # 급등 전 매집·돌파 임박 예측 점수 (이미 급등한 종목은 상한 30점)
+        _pb = calc_prebreakout_score(h)
+        score = _pb.get("score")
+        pb_stage = _pb.get("stage", "—")
         row.update({
             "상태": "정상", "통화": "₩" if _is_krw_ticker(ticker) else "$",
-            "현재가": round(close, 2), "등락률(%)": round(pct, 2), "종합점수": score,
+            "현재가": round(close, 2), "등락률(%)": round(pct, 2), "돌파임박점수": score, "단계": pb_stage,
             "거래량(MA20대비%)": round(vol_r, 0), "3일/3개월 거래량배율": surge,
             "RSI": round(rsi, 1) if rsi is not None else None,
             "20일선이격(%)": round(m20["gap_pct"], 1) if m20["gap_pct"] is not None else None,
@@ -4124,11 +4124,11 @@ def render_excel_scan_results():
         sector_df = pd.DataFrame({
             "종목수": g.size(),
             "평균 등락률(%)": g["등락률(%)"].mean().round(2),
-            "평균 종합점수": g["종합점수"].mean().round(1),
+            "평균 돌파임박점수": g["돌파임박점수"].mean().round(1),
             "신호 종목수": g.apply(lambda x: int((x["신호"] != "—").sum())),
-            "최고점수 종목": g.apply(lambda x: x.loc[x["종합점수"].idxmax(), "티커"]),
-        }).reset_index().sort_values("평균 종합점수", ascending=False)
-        st.markdown("**섹터 요약** (평균 종합점수 높은 순)")
+            "최고점수 종목": g.apply(lambda x: x.loc[x["돌파임박점수"].idxmax(), "티커"]),
+        }).reset_index().sort_values("평균 돌파임박점수", ascending=False)
+        st.markdown("**섹터 요약** (평균 돌파임박점수 높은 순)")
         st.dataframe(sector_df, use_container_width=True, hide_index=True)
 
         if not sig.empty:
@@ -4138,13 +4138,13 @@ def render_excel_scan_results():
             <div><div class="alert-title">신호 감지 종목</div><div class="alert-signals">{chips}</div></div></div>
             """, unsafe_allow_html=True)
 
-        show_cols = ["티커", "종목명", "통화", "현재가", "등락률(%)", "종합점수", "거래량(MA20대비%)",
+        show_cols = ["티커", "종목명", "통화", "현재가", "등락률(%)", "돌파임박점수", "단계", "거래량(MA20대비%)",
                      "3일/3개월 거래량배율", "RSI", "20일선이격(%)", "거래대금(억원)", "플로트회전(%)", "재료", "신호"]
         # 뉴스·이벤트 조회를 끈 스캔에서는 플로트회전/재료 열이 비어 있으므로 값이 하나도 없는 열은 숨긴다
         show_cols = [c for c in show_cols if c in ok.columns and not ok[c].isna().all()]
         order = sector_df["섹터"].tolist()
         for sec in order:
-            part = ok[ok["섹터"] == sec].sort_values("종합점수", ascending=False)
+            part = ok[ok["섹터"] == sec].sort_values("돌파임박점수", ascending=False)
             label = f"{sec} · {len(part)}종목 · 평균 {part['등락률(%)'].mean():+.2f}%"
             with st.expander(label, expanded=False):
                 st.dataframe(
@@ -4153,7 +4153,7 @@ def render_excel_scan_results():
                         "현재가": st.column_config.NumberColumn(format="%.2f"),
                         "등락률(%)": st.column_config.NumberColumn(format="%+.2f%%"),
                         "20일선이격(%)": st.column_config.NumberColumn(format="%+.1f%%"),
-                        "종합점수": st.column_config.NumberColumn(format="%.1f"),
+                        "돌파임박점수": st.column_config.NumberColumn(format="%.1f", help="급등 전 매집·돌파 임박 예측 점수"),
                         "거래량(MA20대비%)": st.column_config.NumberColumn(format="%d%%"),
                         "3일/3개월 거래량배율": st.column_config.NumberColumn(format="%.1f배"),
                         "거래대금(억원)": st.column_config.NumberColumn(format="%.1f"),
@@ -4188,6 +4188,7 @@ st.sidebar.header("🔍 주식 분석 설정")
 
 # ── 섹터 히트맵 / 급등주 검색기 / 거래량 급증 스크리너 토글 (스크롤 없이 바로 보이도록 상단 배치) ──
 tcol1, tcol2, tcol3 = st.sidebar.columns(3)
+tcol4, _tcol5, _tcol6 = st.sidebar.columns(3)
 with tcol1:
     st.checkbox(
         "섹터 히트맵", key="show_heatmap",
@@ -4202,6 +4203,11 @@ with tcol3:
     st.checkbox(
         "거래량 급증", key="show_vol_surge",
         help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다"
+    )
+with tcol4:
+    st.checkbox(
+        "급등 전 매집", key="show_prebreak",
+        help="아직 안 오른 종목 중 변동성 축소·거래량 선행·20일선 직전인 '돌파 임박' 후보를 점수로 찾습니다"
     )
 st.sidebar.markdown("---")
 
@@ -4337,20 +4343,15 @@ if st.session_state.favorites:
                                        signals.append("⬆️갭업")
                     alert = " ".join(signals) if signals else "—"
 
-                    score = calc_screener_score({
-                        "pct_change":        pct,
-                        "vol_ma20_ratio":    vol_r,
-                        "trading_value_eok": trading_value_eok,
-                        "vol_ratio":         vol_ratio,
-                        "rsi":               round(float(rsi), 1) if pd.notna(rsi) else None,
-                        "float_turnover":    float_turn,
-                    })
+                    _pb = calc_prebreakout_score(fav_hist)      # 급등 전 매집·돌파 임박 예측 점수
+                    score = _pb.get("score")
+                    pb_stage = _pb.get("stage", "—")
 
                     return {
                         "티커":      fav_ticker,
                         "현재가":    f"${t['Close']:.2f}",
                         "등락(%)":   f"{pct:+.2f}%",
-                        "종합점수":  f"{score:.1f}",
+                        "돌파임박":  f"{score:.0f} ({pb_stage})" if score is not None else "—",
                         "거래량(MA비%)": f"{vol_r:.0f}%",
                         "RSI":       f"{rsi:.1f}",
                         "플로트회전": f"{float_turn:.0f}%" if float_turn is not None else "—",
@@ -4361,9 +4362,9 @@ if st.session_state.favorites:
             except Exception as _e:
                 _log_err("favorites_scan:" + fav_ticker, _e)
                 return {"티커": fav_ticker, "현재가": f"오류({_classify_error(_e)})", "등락(%)": "-",
-                        "종합점수": "-", "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
+                        "돌파임박": "-", "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
             return {"티커": fav_ticker, "현재가": "데이터 없음", "등락(%)": "-",
-                    "종합점수": "-",
+                    "돌파임박": "-",
                     "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
 
         with ThreadPoolExecutor(max_workers=6) as executor:
@@ -4463,7 +4464,7 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
     score_label = None
     if score is not None:
-        score_label = "A등급" if score >= 75 else ("B등급" if score >= 60 else ("C등급" if score >= 45 else "D등급"))
+        score_label = "임박" if score >= 75 else ("준비" if score >= 60 else ("관찰" if score >= 45 else "해당없음"))
 
     pct_color = "delta-up" if price_chg >= 0 else "delta-down"
     pct_arrow = "▲" if price_chg >= 0 else "▼"
@@ -4471,10 +4472,10 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
 
     score_card_html = ""
     if score is not None:
-        score_color = "delta-up" if score_label in ("A등급", "B등급") else ("delta-neu" if score_label == "C등급" else "delta-down")
+        score_color = "delta-up" if score_label in ("임박", "준비") else ("delta-neu" if score_label == "관찰" else "delta-down")
         score_card_html = (
             f'<div class="metric-card mc-amber" style="grid-column: span 3;">'
-            f'<div class="metric-label">단타 셋업 점수</div>'
+            f'<div class="metric-label">돌파 임박 점수</div>'
             f'<div class="metric-value">{score:.1f}점</div>'
             f'<div class="metric-delta {score_color}">{score_label}</div>'
             f'</div>'
@@ -5023,6 +5024,9 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         """, unsafe_allow_html=True)
     with col_breakout:
         render_breakout_probability(breakout_calc)
+
+    # ── 🔮 급등 전 매집 · 돌파 임박 (변동성 축소 · 거래량 선행 · 20일선 직전) ──
+    render_prebreakout_panel(hist)
 
     # ── 🎯 단타 보조 분석 (시간보정 RVOL · 플로트 회전율 · 저항 · ATR 손절) ──
     render_daytrade_panel(ticker_input, hist, today, yesterday, info)
@@ -6021,6 +6025,480 @@ def _render_surge_screener_main():
         st.rerun()
 
 
+# ════════════════════════════════════════════════════════════════
+# 급등 전 매집 · 돌파 임박 예측 점수 (calc_prebreakout_score)
+#
+# 기존 종합점수는 등락률·거래량처럼 '이미 터진 뒤'의 값을 더해서, 급등한 종목일수록 점수가 높았습니다.
+# 이 점수는 반대로 "아직 안 올랐는데 터질 준비가 된 자리"를 찾습니다 (일봉 기준).
+#
+#   ① 변동성 축소 (30%) : 볼린저밴드 폭이 최근 6개월 중 얼마나 좁은지 + 최근 5일 일중 변동폭이 이전 20일보다 줄었는지
+#   ② 거래량 선행·매집 (30%) : 가격은 조용한데 거래량이 먼저 늘었는가 (5일/이전 평균 배율, 상승일/하락일 거래량 비,
+#                              OBV 20일 변화)
+#   ③ 20일선 직전 (25%) : 20일선 바로 아래~위 2% 이내인지, 20일선이 꺾이지 않았는지, 20일 고점까지 거리가 가까운지
+#   ④ 미과열 (15%)      : 최근 5일·당일 상승률이 작고 RSI가 과열(75↑)이 아닌지
+#   → 가중 기하평균(곱셈형): 한 요소라도 약하면 전체가 낮아집니다.
+#   게이트: 이미 급등(당일 +10% 또는 5일 +25% 이상)이면 상한 30점, 20일 평균 거래대금 $30만 미만이면 상한 40점
+#   단계: 75↑ 임박 / 60↑ 준비 / 45↑ 관찰 / 미만 해당없음
+# ⚠️ 구간·가중치는 경험칙입니다. '급등 전 스캐너' 하단의 기록으로 단계별 5일 내 +10% 적중률을 확인하며 보정하세요.
+# ════════════════════════════════════════════════════════════════
+PREBREAK_WEIGHTS = {"contraction": 0.30, "accumulation": 0.30, "ma20": 0.25, "notext": 0.15}
+PREBREAK_CUTS = (("임박", 75), ("준비", 60), ("관찰", 45))
+
+
+def calc_prebreakout_score(hist: pd.DataFrame) -> dict:
+    """일봉(calc_indicators 적용 완료)으로 '급등 전 매집·돌파 임박' 점수를 계산.
+    반환: {score, stage, why, warn, factors{...}, metrics{...}}  — 데이터가 부족하면 {}"""
+    try:
+        d = hist.dropna(subset=["Close", "High", "Low", "Volume"])
+        if len(d) < 45:
+            return {}
+        c, h, l, v = d["Close"].astype(float), d["High"].astype(float), d["Low"].astype(float), d["Volume"].astype(float)
+        price = float(c.iloc[-1])
+        if price <= 0:
+            return {}
+        why, warn, caps = [], [], []
+
+        # ── ① 변동성 축소 ─────────────────────────────────
+        bbw = d["BB_WIDTH"].dropna().tail(126)                   # 최근 약 6개월 볼린저밴드 폭
+        bb_rank = float((bbw <= bbw.iloc[-1]).mean()) if len(bbw) >= 30 else 0.5   # 0에 가까울수록 가장 좁음
+        day_rng = (h - l) / c * 100                              # 일중 변동폭(%)
+        rng5 = float(day_rng.tail(5).mean())
+        rng_base = float(day_rng.iloc[-25:-5].mean())
+        contraction = (rng5 / rng_base) if rng_base > 0 else 1.0   # 1 미만이면 최근 변동폭이 줄어든 것
+        f_con = 0.6 * _clamp01(1 - bb_rank / 0.5) + 0.4 * _clamp01((1.0 - contraction) / 0.5)
+        f_con = max(f_con, 0.05)
+        why.append(f"BB폭 하위 {bb_rank * 100:.0f}%")
+        if contraction < 0.85:
+            why.append(f"변동폭 {contraction:.2f}배로 축소")
+
+        # ── ② 거래량 선행 · 매집 ──────────────────────────
+        v_base = float(v.iloc[-65:-5].mean())
+        vr5 = (float(v.tail(5).mean()) / v_base) if v_base > 0 else 0.0
+        a1 = _clamp01((vr5 - 0.8) / 1.0)                          # 0.8배→0, 1.8배→1
+        last15 = d.tail(15)
+        up_mask = last15["Close"].astype(float).diff() > 0
+        dn_mask = last15["Close"].astype(float).diff() < 0
+        up_vol = float(last15.loc[up_mask, "Volume"].sum())
+        dn_vol = float(last15.loc[dn_mask, "Volume"].sum())
+        ud = (up_vol / dn_vol) if dn_vol > 0 else (3.0 if up_vol > 0 else 1.0)
+        a2 = _clamp01((ud - 0.9) / 1.1)                            # 0.9→0, 2.0→1
+        obv = (np.sign(c.diff().fillna(0)) * v).cumsum()
+        vol20 = float(v.tail(20).sum())
+        obv_chg = float(obv.iloc[-1] - obv.iloc[-21]) / vol20 if vol20 > 0 and len(obv) > 21 else 0.0
+        a3 = _clamp01(obv_chg / 0.3)
+        f_acc = max(0.4 * a1 + 0.35 * a2 + 0.25 * a3, 0.05)
+        why.append(f"5일 거래량 {vr5:.1f}배")
+        if ud >= 1.3:
+            why.append(f"상승일/하락일 거래량 {ud:.1f}배")
+        if obv_chg > 0.1:
+            why.append("OBV 상승")
+
+        # ── ③ 20일선 직전 ─────────────────────────────────
+        ma20 = float(d["MA20"].iloc[-1])
+        dist = (price / ma20 - 1) * 100 if ma20 > 0 else 0.0       # +면 20일선 위
+        if -4 <= dist <= 2:
+            p1 = 1.0
+        elif 2 < dist <= 6:
+            p1 = 1 - (dist - 2) / 4 * 0.7
+        elif dist > 6:
+            p1 = 0.15
+        else:
+            p1 = max(0.1, 1 - (-4 - dist) / 8)
+        ma20_prev = float(d["MA20"].iloc[-6])
+        slope = (ma20 / ma20_prev - 1) * 100 if ma20_prev > 0 else 0.0
+        p2 = 1.0 if slope >= -0.5 else 0.6
+        hi20 = float(h.tail(20).max())
+        to_hi = (hi20 / price - 1) * 100
+        p3 = 1.0 if to_hi <= 5 else (1.0 - (to_hi - 5) / 7 * 0.5 if to_hi <= 12 else 0.3)
+        f_ma = max(0.55 * p1 + 0.20 * p2 + 0.25 * p3, 0.05)
+        why.append(f"20일선 대비 {dist:+.1f}%")
+        why.append(f"20일 고점까지 {to_hi:.1f}%")
+        if slope < -0.5:
+            warn.append("20일선 하락 중")
+
+        # ── ④ 미과열(아직 안 오른 상태) ────────────────────
+        today_pct = (price / float(c.iloc[-2]) - 1) * 100
+        r5 = (price / float(c.iloc[-6]) - 1) * 100
+        if today_pct > 10 or r5 > 25:
+            n_ext = 0.1
+            caps.append((30, "이미 급등"))
+            warn.append(f"이미 급등(당일 {today_pct:+.0f}% · 5일 {r5:+.0f}%)")
+        elif r5 > 12 or today_pct > 6:
+            n_ext = 0.4
+            warn.append(f"단기 상승 진행(5일 {r5:+.0f}%)")
+        elif r5 > 8:
+            n_ext = 0.7
+        elif r5 >= -8:
+            n_ext = 1.0
+        else:
+            n_ext = 0.6
+            warn.append(f"5일 {r5:+.0f}% 하락")
+        rsi = float(d["RSI"].iloc[-1]) if pd.notna(d["RSI"].iloc[-1]) else 50.0
+        rsi_f = 1.0 if 40 <= rsi <= 65 else (0.8 if rsi <= 75 and rsi > 65 else (0.5 if rsi > 75 else 0.7))
+        if rsi > 75:
+            warn.append(f"RSI {rsi:.0f} 과열")
+        f_not = max(0.7 * n_ext + 0.3 * rsi_f, 0.05)
+
+        # ── 게이트: 유동성 ────────────────────────────────
+        adv = float((c * v).tail(20).mean())                       # 20일 평균 거래대금($)
+        if adv < 300_000:
+            caps.append((40, "거래대금 부족"))
+            warn.append(f"20일 평균 거래대금 ${adv / 1000:,.0f}K")
+
+        w = PREBREAK_WEIGHTS
+        raw = (f_con ** w["contraction"]) * (f_acc ** w["accumulation"]) * (f_ma ** w["ma20"]) * (f_not ** w["notext"])
+        score = raw * 100
+        cap_val = min([x[0] for x in caps], default=100)
+        score = min(score, cap_val)
+        stage = "해당없음"
+        for name, cut in PREBREAK_CUTS:
+            if score >= cut:
+                stage = name
+                break
+        return {
+            "score": round(score, 1), "raw_score": round(raw * 100, 1), "stage": stage,
+            "why": " · ".join(why), "warn": " · ".join(warn),
+            "cap": cap_val if caps else None, "cap_reason": min(caps, key=lambda x: x[0])[1] if caps else "",
+            "factors": {"contraction": round(f_con, 2), "accumulation": round(f_acc, 2),
+                        "ma20": round(f_ma, 2), "notext": round(f_not, 2)},
+            "metrics": {"price": price, "today_pct": today_pct, "r5": r5, "bb_rank": bb_rank * 100,
+                        "contraction": contraction, "vr5": vr5, "ud": ud, "obv_chg": obv_chg,
+                        "ma20_dist": dist, "to_hi20": to_hi, "rsi": rsi, "adv": adv},
+        }
+    except Exception as _e:
+        _log_err("calc_prebreakout_score", _e)
+        return {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def prebreakout_enrich(tickers: tuple) -> dict:
+    """후보 종목들의 일봉을 병렬로 받아 돌파 임박 점수를 계산. 반환: {티커: 결과 dict}"""
+    def _one(t):
+        try:
+            hist = fetch_history(t)
+            if hist is None or hist.empty or len(hist) < 45:
+                return t, {}
+            res = calc_prebreakout_score(calc_indicators(hist.dropna()))
+            return t, res
+        except Exception as _e:
+            _log_err("prebreakout_enrich:" + t, _e)
+            return t, {}
+    out = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for t, res in ex.map(_one, tickers):
+            out[t] = res
+    return out
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_prebreakout_candidates(min_price: float, max_price: float, min_avg_vol: int,
+                                 max_cap_m: int, max_today_pct: float, limit: int = 300) -> list:
+    """'아직 안 오른' 후보 종목 수집: 당일 등락률이 -3% ~ max_today_pct% 이내이고 평소 거래량이 있는 종목.
+    당일 거래량 상위 + 3개월 평균거래량 상위 두 목록을 합쳐 모은다 (이후 일봉으로 정밀 점수 계산)."""
+    conds = [
+        EquityQuery('eq', ['region', 'us']),
+        EquityQuery('is-in', ['exchange', 'NMS', 'NGM', 'NCM', 'NYQ', 'ASE']),
+        EquityQuery('gte', ['intradayprice', min_price]),
+        EquityQuery('lte', ['intradayprice', max_price]),
+        EquityQuery('gt', ['avgdailyvol3m', int(min_avg_vol)]),
+        EquityQuery('btwn', ['percentchange', -3, max_today_pct]),
+    ]
+    if max_cap_m and max_cap_m > 0:
+        conds.append(EquityQuery('lte', ['intradaymarketcap', int(max_cap_m) * 1_000_000]))
+    query = EquityQuery('and', conds)
+    cand = {}
+    for sort_field, size in (('dayvolume', 150), ('avgdailyvol3m', 150)):
+        try:
+            res = yf.screen(query, sortField=sort_field, sortAsc=False, size=size)
+            for q in (res or {}).get('quotes', []):
+                sym = q.get('symbol')
+                if sym and sym not in cand:
+                    cand[sym] = {
+                        "ticker": sym, "name": q.get("shortName") or q.get("longName") or "",
+                        "price": q.get("regularMarketPrice", 0) or 0,
+                        "pct_change": q.get("regularMarketChangePercent", 0) or 0,
+                        "market_cap": q.get("marketCap", 0) or 0,
+                    }
+        except Exception as _e:
+            _log_err("fetch_prebreakout_candidates:" + sort_field, _e)
+    return list(cand.values())[:limit]
+
+
+# ── 예측 결과 기록: 점수를 매긴 뒤 5거래일 안에 실제로 올랐는지 추적 ─────────────────
+PREBREAK_LOG_PATH = os.environ.get("PREBREAK_LOG_PATH", "prebreakout_log.csv")
+_PREBREAK_LOCK = threading.Lock()
+PREBREAK_LOG_COLUMNS = [
+    "run_id", "logged_at_utc", "ticker", "price", "score", "stage", "why", "warn",
+    "f_contraction", "f_accumulation", "f_ma20", "f_notext",
+    "out_status", "out_max5_pct", "out_min5_pct", "out_close5_pct", "out_hit10", "out_hit20",
+]
+
+
+def _read_prebreak_log() -> pd.DataFrame:
+    try:
+        if os.path.exists(PREBREAK_LOG_PATH):
+            df = pd.read_csv(PREBREAK_LOG_PATH)
+            for c in PREBREAK_LOG_COLUMNS:
+                if c not in df.columns:
+                    df[c] = np.nan
+            df = df[PREBREAK_LOG_COLUMNS].copy()
+            df["out_status"] = df["out_status"].astype(object)
+            return df
+    except Exception as _e:
+        _log_err("_read_prebreak_log", _e)
+    return pd.DataFrame(columns=PREBREAK_LOG_COLUMNS)
+
+
+def _write_prebreak_log(df: pd.DataFrame) -> None:
+    tmp = PREBREAK_LOG_PATH + ".tmp"
+    df.to_csv(tmp, index=False, encoding="utf-8")
+    os.replace(tmp, PREBREAK_LOG_PATH)
+
+
+def log_prebreak_results(rows: list, top_n: int = 30) -> int:
+    """점수 상위 top_n 후보를 기록 (같은 날 같은 종목은 중복 기록하지 않음)."""
+    try:
+        now = pd.Timestamp.now(tz="UTC")
+        today_key = now.strftime("%Y-%m-%d")
+        with _PREBREAK_LOCK:
+            cur = _read_prebreak_log()
+            done_keys = set(zip(cur["logged_at_utc"].astype(str).str[:10], cur["ticker"]))
+            new = []
+            for r in rows[:top_n]:
+                if (today_key, r["ticker"]) in done_keys:
+                    continue
+                f = r.get("factors") or {}
+                new.append({
+                    "run_id": now.strftime("%Y%m%d%H%M%S"), "logged_at_utc": now.isoformat(),
+                    "ticker": r["ticker"], "price": r.get("pb_price"), "score": r.get("pb_score"),
+                    "stage": r.get("pb_stage"), "why": r.get("pb_why"), "warn": r.get("pb_warn"),
+                    "f_contraction": f.get("contraction"), "f_accumulation": f.get("accumulation"),
+                    "f_ma20": f.get("ma20"), "f_notext": f.get("notext"), "out_status": "",
+                })
+            if new:
+                _write_prebreak_log(pd.concat([cur, pd.DataFrame(new)], ignore_index=True)[PREBREAK_LOG_COLUMNS])
+            return len(new)
+    except Exception as _e:
+        _log_err("log_prebreak_results", _e)
+        return 0
+
+
+def update_prebreak_outcomes(max_rows: int = 80) -> tuple:
+    """기록일 다음 거래일부터 5거래일의 일봉으로 결과를 채운다. 5거래일이 아직 안 지났으면 대기.
+    - max5: 5일 내 최고가가 기록가 대비 몇 % 올랐나 / min5: 최저가 낙폭 / close5: 5일째 종가
+    - hit10·hit20: 5일 안에 +10%·+20%에 닿았는지(1/0)"""
+    with _PREBREAK_LOCK:
+        df = _read_prebreak_log()
+    if df.empty:
+        return 0, 0
+    todo = df[(df["out_status"].isna()) | (df["out_status"] == "")]
+    updated = waiting = 0
+    for i, row in todo.head(max_rows).iterrows():
+        try:
+            logged = pd.to_datetime(row["logged_at_utc"], utc=True).tz_convert("America/New_York")
+            raw = yf.Ticker(str(row["ticker"])).history(period="1mo")
+            if raw is None or raw.empty:
+                continue
+            idx_dates = pd.to_datetime(raw.index).tz_localize(None).date if raw.index.tz is None \
+                else pd.to_datetime(raw.index).tz_convert("America/New_York").date
+            after = raw[np.array(idx_dates) > logged.date()].head(5)
+            if len(after) < 5:
+                waiting += 1
+                continue
+            price = float(row["price"])
+            mx = (float(after["High"].max()) / price - 1) * 100
+            mn = (float(after["Low"].min()) / price - 1) * 100
+            cl = (float(after["Close"].iloc[-1]) / price - 1) * 100
+            df.at[i, "out_status"] = "done"
+            df.at[i, "out_max5_pct"], df.at[i, "out_min5_pct"], df.at[i, "out_close5_pct"] = round(mx, 2), round(mn, 2), round(cl, 2)
+            df.at[i, "out_hit10"], df.at[i, "out_hit20"] = float(mx >= 10), float(mx >= 20)
+            updated += 1
+        except Exception as _e:
+            _log_err("update_prebreak_outcomes", _e)
+    with _PREBREAK_LOCK:
+        cur = _read_prebreak_log()
+        key = ["run_id", "ticker"]
+        upd = df[df["out_status"] == "done"].drop_duplicates(key).set_index(key)
+        cur = cur.drop_duplicates(key, keep="last").set_index(key)
+        cur.update(upd[["out_status", "out_max5_pct", "out_min5_pct", "out_close5_pct", "out_hit10", "out_hit20"]])
+        _write_prebreak_log(cur.reset_index()[PREBREAK_LOG_COLUMNS])
+    return updated, waiting
+
+
+def _summarize_prebreak(df: pd.DataFrame) -> pd.DataFrame:
+    d = df[df["out_status"] == "done"].copy()
+    if d.empty:
+        return pd.DataFrame()
+    for c in ("out_max5_pct", "out_min5_pct", "out_close5_pct", "out_hit10", "out_hit20"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+
+    def _agg(g):
+        return pd.Series({"건수": len(g), "+10% 적중률(%)": g["out_hit10"].mean() * 100,
+                          "+20% 적중률(%)": g["out_hit20"].mean() * 100, "평균 최대상승(%)": g["out_max5_pct"].mean(),
+                          "평균 최대하락(%)": g["out_min5_pct"].mean(), "평균 5일종가(%)": g["out_close5_pct"].mean()})
+    out = d.groupby("stage").apply(_agg)
+    out.loc["전체(기준선)"] = _agg(d)
+    order = {"임박": 0, "준비": 1, "관찰": 2, "해당없음": 3, "전체(기준선)": 4}
+    return out.sort_index(key=lambda ix: [order.get(i, 9) for i in ix]).round(1)
+
+
+def render_prebreakout_log_panel():
+    with st.expander("📊 예측 검증 (점수 기록 · 5일 결과 추적)", expanded=False):
+        df = _read_prebreak_log()
+        done = int((df["out_status"] == "done").sum()) if not df.empty else 0
+        st.caption(f"기록 {len(df)}건 · 결과 확정 {done}건. 검색할 때마다 상위 후보가 자동 기록되고, 기록 후 5거래일이 지나면 "
+                   "'결과 업데이트'로 실제 상승 여부가 채워집니다.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 결과 업데이트", key="update_prebreak", use_container_width=True):
+                with st.spinner("5거래일 결과 계산 중..."):
+                    u, w = update_prebreak_outcomes()
+                st.success(f"{u}건 갱신 · 5거래일 미경과 대기 {w}건")
+                df = _read_prebreak_log()
+        with c2:
+            if not df.empty:
+                st.download_button("📥 기록 CSV 다운로드", df.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="prebreakout_log.csv", mime="text/csv", use_container_width=True)
+        up = st.file_uploader("이전 기록 CSV 병합", type=["csv"], key="prebreak_upload")
+        if up is not None and st.button("업로드한 기록 병합", key="merge_prebreak"):
+            try:
+                add = pd.read_csv(up)
+                for c in PREBREAK_LOG_COLUMNS:
+                    if c not in add.columns:
+                        add[c] = np.nan
+                with _PREBREAK_LOCK:
+                    merged = pd.concat([_read_prebreak_log(), add[PREBREAK_LOG_COLUMNS]], ignore_index=True)
+                    _write_prebreak_log(merged.drop_duplicates(subset=["run_id", "ticker"], keep="last"))
+                st.success("병합 완료")
+                df = _read_prebreak_log()
+            except Exception as _e:
+                st.error(f"병합 실패: {_e}")
+        summ = _summarize_prebreak(df) if done else pd.DataFrame()
+        if summ.empty:
+            st.info("아직 결과가 확정된 기록이 없습니다. 검색 후 5거래일이 지나면 '결과 업데이트'를 눌러 주세요.")
+            return
+        st.dataframe(summ, use_container_width=True)
+        st.caption("임박·준비 단계의 +10% 적중률이 '전체(기준선)'보다 뚜렷하게 높아야 점수가 의미 있는 것입니다. "
+                   "표본이 단계당 30건 미만이면 우연일 수 있으니 참고만 하세요.")
+
+
+def render_prebreakout_screener():
+    """'급등 전 매집 · 돌파 임박' 전용 스캐너 — 아직 안 오른 종목 중 터질 준비가 된 종목을 점수 순으로 보여준다."""
+    ui_section_header(mono_icon_badge("target", color="var(--c-violet)"), "급등 전 매집 스캐너", "icon-violet", "title-violet")
+    st.caption("변동성 축소 + 거래량 선행(매집) + 20일선 직전 + 미과열을 곱셈형으로 평가한 '돌파 임박' 점수입니다. "
+               "이미 급등한 종목은 상한 30점으로 묶입니다. 일봉 기준이라 타이밍은 장중 차트로 확인하세요.")
+    universe = st.radio("대상", ["시장 후보 (야후 스크리너)", "내 즐겨찾기"], horizontal=True, key="pb_universe")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        pb_price = st.slider("주가 범위 ($)", 0.5, 100.0, (1.0, 20.0), 0.5, key="pb_price")
+    with c2:
+        pb_min_avg_vol = st.number_input("최소 3개월 평균거래량", min_value=50_000, value=300_000, step=50_000, key="pb_avgvol")
+    with c3:
+        pb_max_cap = st.number_input("시총 상한 ($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="pb_cap")
+    pb_min_score = st.slider("최소 돌파임박 점수", 0, 90, 45, 5, key="pb_min_score",
+                             help="45 = '관찰' 단계 이상. 높일수록 후보가 줄어듭니다.")
+
+    if st.button("🔮 스캔 실행", key="run_prebreak", use_container_width=True):
+        with st.spinner("후보 수집 및 일봉 기반 돌파 임박 점수 계산 중... (후보가 많으면 1~2분 걸릴 수 있습니다)"):
+            if universe.startswith("내 즐겨찾기"):
+                base = [{"ticker": t, "name": "", "price": 0, "pct_change": 0, "market_cap": 0}
+                        for t in st.session_state.favorites]
+            else:
+                base = fetch_prebreakout_candidates(pb_price[0], pb_price[1], int(pb_min_avg_vol), int(pb_max_cap), 5.0)
+            scored = prebreakout_enrich(tuple(r["ticker"] for r in base)) if base else {}
+            rows = []
+            for r in base:
+                res = scored.get(r["ticker"]) or {}
+                if not res:
+                    continue
+                m = res["metrics"]
+                rows.append({**r, "pb_score": res["score"], "pb_stage": res["stage"], "pb_why": res["why"],
+                             "pb_warn": res["warn"], "factors": res["factors"], "pb_price": m["price"],
+                             "pb_metrics": m, "pb_cap_reason": res["cap_reason"]})
+            rows.sort(key=lambda x: x["pb_score"], reverse=True)
+            st.session_state["pb_results"] = rows
+            n_logged = log_prebreak_results([x for x in rows if x["pb_score"] >= 45])
+            st.session_state["pb_logged"] = n_logged
+
+    results = st.session_state.get("pb_results", [])
+    if not results:
+        st.info("조건을 설정하고 '🔮 스캔 실행'을 눌러 주세요.")
+        render_prebreakout_log_panel()
+        return
+    filtered = [r for r in results if r["pb_score"] >= pb_min_score]
+    st.markdown(f"**{len(filtered)}개 종목** (점수 계산된 {len(results)}개 중 {pb_min_score}점 이상)"
+                + (f" · 이번 스캔에서 {st.session_state.get('pb_logged', 0)}건 기록" if st.session_state.get("pb_logged") else ""))
+    if not filtered:
+        st.warning("조건에 맞는 종목이 없습니다. 최소 점수를 낮추거나 주가·거래량 조건을 완화해 보세요.")
+        render_prebreakout_log_panel()
+        return
+
+    table = []
+    for r in filtered:
+        m = r["pb_metrics"]
+        table.append({
+            "⭐": "★" if r["ticker"] in st.session_state.favorites else "",
+            "티커": r["ticker"], "종목명": (r.get("name") or "")[:24],
+            "단계": r["pb_stage"], "돌파임박점수": r["pb_score"],
+            "현재가": m["price"], "등락률(%)": m["today_pct"],
+            "근거": r["pb_why"], "경고": r["pb_warn"],
+            "BB폭순위(%)": m["bb_rank"], "5일거래량배": m["vr5"], "20일선대비(%)": m["ma20_dist"],
+            "20일고점까지(%)": m["to_hi20"], "RSI": m["rsi"], "20일평균거래대금($K)": m["adv"] / 1000,
+        })
+    event = st.dataframe(
+        pd.DataFrame(table), use_container_width=True, hide_index=True,
+        on_select="rerun", selection_mode="single-row", key="pb_df",
+        column_config={
+            "돌파임박점수": st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
+                                                      help="변동성축소×거래량선행×20일선직전×미과열 (게이트 적용 후). 임박≥75, 준비≥60, 관찰≥45"),
+            "현재가": st.column_config.NumberColumn(format="$%.2f"),
+            "등락률(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+            "BB폭순위(%)": st.column_config.NumberColumn(format="%.0f", help="최근 6개월 중 밴드폭 순위(낮을수록 좁음)"),
+            "5일거래량배": st.column_config.NumberColumn(format="%.1f배"),
+            "20일선대비(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+            "20일고점까지(%)": st.column_config.NumberColumn(format="%.1f%%"),
+            "RSI": st.column_config.NumberColumn(format="%.0f"),
+            "20일평균거래대금($K)": st.column_config.NumberColumn(format="%.0f"),
+        })
+    st.caption("행을 클릭하면 정밀 분석 화면으로 이동합니다. 가중치는 경험칙이므로 아래 '예측 검증'으로 단계별 적중률을 확인하세요. "
+               "점수는 매수 신호가 아닌 후보 선별용입니다.")
+    sel = []
+    if event is not None:
+        try:
+            sel = event.selection["rows"]
+        except Exception:
+            sel = []
+    if sel:
+        picked = filtered[sel[0]]["ticker"]
+        st.session_state["selected_ticker"] = picked
+        st.session_state["active_ticker"] = picked
+        st.session_state["has_searched"] = True
+        st.rerun()
+    render_prebreakout_log_panel()
+
+
+def render_prebreakout_panel(hist: pd.DataFrame):
+    """종목 상세 화면: 돌파 임박 점수의 구성요소를 보여주는 카드."""
+    res = calc_prebreakout_score(hist)
+    if not res:
+        return
+    ui_section_header(mono_icon_badge("target", color="var(--c-violet)"), "급등 전 매집 · 돌파 임박", "icon-violet", "title-violet")
+    m, f = res["metrics"], res["factors"]
+    sdot = {"임박": "dot-green", "준비": "dot-green", "관찰": "dot-yellow"}.get(res["stage"], "dot-blue")
+    cap_txt = f" · 상한 {res['cap']}점({_safe_html(res['cap_reason'])})" if res.get("cap") else ""
+    rows = [
+        (sdot, f"<strong>{res['stage']} · {res['score']:.0f}점</strong>{cap_txt} — {_safe_html(res['why'])}"),
+        ("dot-blue", f"변동성 축소 {f['contraction']:.2f} · 거래량 선행 {f['accumulation']:.2f} · "
+                     f"20일선 직전 {f['ma20']:.2f} · 미과열 {f['notext']:.2f} (각 0~1, 곱셈형이라 낮은 항목이 점수를 끌어내림)"),
+    ]
+    if res["warn"]:
+        rows.append(("dot-red", f"<strong>경고</strong> {_safe_html(res['warn'])}"))
+    items = "".join(f'<div class="status-item"><div class="status-dot {d}"></div><div class="status-text">{t}</div></div>' for d, t in rows)
+    st.markdown(f'<div class="glass-card"><div class="status-row">{items}</div></div>', unsafe_allow_html=True)
+
+
+
 def render_volume_surge_screener():
     """
     "최근 3일 평균 거래량이 최근 3개월 평균 거래량 대비 N배 이상"인
@@ -6245,6 +6723,10 @@ if st.session_state.get("show_vol_surge", False):
     render_volume_surge_screener()
     st.markdown("---")
 
+if st.session_state.get("show_prebreak", False):
+    render_prebreakout_screener()
+    st.markdown("---")
+
 # ════════════════════════════════════════════════════════════════
 # 메인 대시보드 로직
 # ════════════════════════════════════════════════════════════════
@@ -6305,9 +6787,9 @@ if st.session_state.get("has_searched"):
             pct_change_now = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
             current_rsi_val = today['RSI']
             current_rsi = round(float(current_rsi_val), 1) if pd.notna(current_rsi_val) else None
-            # 검색기와 같은 방식의 단타 셋업 점수(등급은 단타 보조 분석 카드에 표시)
-            _su = compute_setup_for_ticker(active_ticker)
-            ticker_score = _su.get("score") if _su else None
+            # 상단 카드 점수 = 급등 전 매집·돌파 임박 예측 점수 (당일 단타 셋업 등급은 '단타 보조 분석' 카드에 별도 표시)
+            _pbres = calc_prebreakout_score(hist)
+            ticker_score = _pbres.get("score") if _pbres else None
 
             top_cards_front, top_cards_end = build_top_summary_cards_html(
                 today, yesterday, hist, vol_ma20_ratio, score=ticker_score
