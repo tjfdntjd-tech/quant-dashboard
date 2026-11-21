@@ -104,7 +104,6 @@ TRADING_THRESHOLD = 70
 # 스윙용 신호(MACD·RSI 과매도·120일선·20일선 돌파)를 "급등 신호 알림 칩"에 표시할지 여부.
 # 단타(소형 급등주)에서는 후행/장기 지표라 기본 False. True로 바꾸면 예전처럼 칩에 다시 표시됩니다.
 SHOW_SWING_SIGNALS = False
-MEMO_FILE         = "memos.json"  # #9 메모 영구 저장 파일
 
 # ════════════════════════════════════════════════════════════════
 # #개선 번역 캐시 영구 저장 파일 (TTL 만료로 인한 재번역 방지)
@@ -318,30 +317,7 @@ SECTOR_ETFS = [
 ]
 
 # ════════════════════════════════════════════════════════════════
-# #9 메모 영구 저장 헬퍼
-# ════════════════════════════════════════════════════════════════
-def load_memos() -> dict:
-    """앱 재시작 후에도 메모를 복원합니다."""
-    try:
-        if os.path.exists(MEMO_FILE):
-            with open(MEMO_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as _e:
-        _log_err("load_memos", _e)
-        pass
-    return {}
-
-def save_memos(memos: dict) -> None:
-    """메모를 JSON 파일로 저장합니다."""
-    try:
-        with open(MEMO_FILE, "w", encoding="utf-8") as f:
-            json.dump(memos, f, ensure_ascii=False, indent=2)
-    except Exception as _e:
-        _log_err("save_memos", _e)
-        pass
-
-# ════════════════════════════════════════════════════════════════
-# 즐겨찾기 영구 저장 헬퍼 (메모와 동일한 방식)
+# 즐겨찾기 영구 저장 헬퍼
 # ════════════════════════════════════════════════════════════════
 FAVORITES_FILE = "favorites.json"
 
@@ -381,7 +357,6 @@ st.set_page_config(page_title="급등주 실시간 검증기 V3", layout="wide",
 _defaults = {
     "favorites":        load_favorites(),   # 파일에서 복원
     "selected_ticker":  "",
-    "memos":            load_memos(),   # #9 파일에서 복원
     "scan_results":     [],
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
     "show_screener":    False,          # 급등주 검색기 토글
@@ -2102,81 +2077,8 @@ def get_stock_titan_data(ticker: str) -> list:
         return []
 
 # ════════════════════════════════════════════════════════════════
-# 소셜 미디어 — StockTwits & Reddit
+# 소셜 미디어 — StockTwits
 # ════════════════════════════════════════════════════════════════
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_reddit(ticker: str) -> list:
-    """
-    Reddit 공개 검색 API(로그인 불필요)로 주요 투자 서브레딧에서 티커 언급
-    게시물을 수집. StockTwits 메시지와 동일한 스키마(user/body/body_en/
-    sentiment/likes/date/link)로 정규화해 render_social_section에서
-    같은 카드 UI로 그대로 렌더링할 수 있게 한다.
-
-    Reddit은 OAuth 앱 등록 없이도 www.reddit.com/.../search.json 형태의
-    공개 read-only 엔드포인트를 제공하지만, User-Agent가 없거나 너무
-    범용적이면 429(rate limit)를 반환하는 경우가 있어 구체적인 UA를 지정.
-    """
-    subreddits = "wallstreetbets+stocks+investing+StockMarket+options"
-    url = f"https://www.reddit.com/r/{subreddits}/search.json"
-    params = {"q": ticker, "restrict_sr": "on", "sort": "new", "limit": 15, "t": "week"}
-    headers = {"User-Agent": "quant-app-dashboard/1.0 (personal research tool; contact via app)"}
-
-    try:
-        resp = requests.get(url, params=params, headers=headers, timeout=6)
-        if resp.status_code != 200:
-            return []
-        posts = resp.json().get("data", {}).get("children", [])
-    except Exception as _e:
-        _log_err("fetch_reddit", _e)
-        return []
-
-    # StockTwits처럼 감성 라벨을 API가 주지 않으므로, 제목+본문에 대한
-    # 간단한 키워드 휴리스틱으로 Bullish/Bearish를 근사 분류한다.
-    POS_KW = {"bull", "bullish", "moon", "calls", "buy", "long", "squeeze",
-              "breakout", "rip", "printing", "green", "upgrade", "beat", "yolo"}
-    NEG_KW = {"bear", "bearish", "puts", "short", "sell", "dump", "crash",
-              "red", "downgrade", "miss", "bagholder", "rug", "tank"}
-
-    ticker_lower = ticker.lower()
-    entries = []
-    for child in posts:
-        d = child.get("data", {}) or {}
-        title = (d.get("title") or "").strip()
-        if not title:
-            continue
-        selftext = (d.get("selftext") or "").strip()
-        haystack = f"{title} {selftext}".lower()
-        # 검색 API가 가끔 티커와 무관한 결과를 섞어 반환하므로 재확인
-        if ticker_lower not in haystack and f"${ticker_lower}" not in haystack:
-            continue
-        words   = set(re.findall(r"[a-z']+", haystack))
-        is_bull = bool(words & POS_KW)
-        is_bear = bool(words & NEG_KW)
-        sentiment = "Bullish" if (is_bull and not is_bear) else ("Bearish" if (is_bear and not is_bull) else "")
-        body_en = title if len(selftext) < 5 else f"{title} — {selftext[:220]}".strip()
-        created = d.get("created_utc")
-        entries.append({
-            "user":      d.get("author", "익명"),
-            "subreddit": d.get("subreddit", ""),
-            "body_en":   body_en[:400],
-            "sentiment": sentiment,
-            "likes":     d.get("ups", 0) or 0,
-            "comments":  d.get("num_comments", 0) or 0,
-            "date":      datetime.fromtimestamp(created, timezone.utc).strftime("%Y-%m-%d") if created else "",
-            "link":      f"https://reddit.com{d.get('permalink')}" if d.get("permalink") else "",
-        })
-        if len(entries) >= 8:
-            break
-
-    if not entries:
-        return []
-
-    translations = translate_texts_batch([e["body_en"] for e in entries])
-    for e in entries:
-        e["body"] = translations.get(e["body_en"], e["body_en"])
-    return entries
-
-
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_stocktwits(ticker: str) -> dict:
     """
@@ -2390,73 +2292,8 @@ def render_social_section(ticker_input: str):
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-    # ── Reddit (wallstreetbets / stocks / investing 등) ──────────
-    st.markdown(
-        f'''<div class="section-header" style="margin-top:1rem;">
-            {mono_icon_badge("rocket", color="var(--c-orange)", size=26, glyph_size=13)}
-            <div class="section-title" style="color:var(--c-orange);font-size:0.88rem;">Reddit 투자자 의견</div>
-        </div>''',
-        unsafe_allow_html=True,
-    )
 
-    with st.spinner("Reddit 실시간 데이터 수집 중..."):
-        reddit_posts = fetch_reddit(ticker_input)
-
-    if not reddit_posts:
-        st.markdown(
-            '''<div class="glass-card"><div class="status-row"><div class="status-item">
-                <div class="status-dot dot-yellow"></div>
-                <div class="status-text">최근 1주일 내 관련 Reddit 게시물을 찾지 못했습니다 (wallstreetbets · stocks · investing · StockMarket · options 서브레딧 기준).</div>
-            </div></div></div>''',
-            unsafe_allow_html=True,
-        )
-    else:
-        for post in reddit_posts:
-            sent = post["sentiment"]
-            if sent == "Bullish":
-                card_cls = "social-card social-bull"
-                badge    = '<span class="bull-badge">🟢 Bullish</span>'
-            elif sent == "Bearish":
-                card_cls = "social-card social-bear"
-                badge    = '<span class="bear-badge">🔴 Bearish</span>'
-            else:
-                card_cls = "social-card"
-                badge    = ""
-
-            likes_val    = post.get("likes", 0)
-            comments_val = post.get("comments", 0)
-            stats_bits = []
-            if likes_val:
-                stats_bits.append(f'<span>⬆️ {likes_val}</span>')
-            if comments_val:
-                stats_bits.append(f'<span>💬 {comments_val}</span>')
-            stats_html = "".join(stats_bits)
-
-            sub_name     = _safe_html(post.get("subreddit", ""))
-            user_name    = _safe_html(post.get("user", "익명"))
-            post_date    = _safe_html(post.get("date", ""))
-            post_body    = _safe_html(post.get("body", ""))
-            post_body_en = _safe_html(post.get("body_en", ""))
-            post_link    = _safe_url(post.get("link", ""))
-
-            date_html = f'<span>·</span><span>{post_date}</span>' if post_date else ""
-            body_en_html = (f'<div style="font-size:0.75rem;color:rgba(148,163,184,0.45);margin-top:0.25rem;font-style:italic;">{post_body_en}</div>'
-                            if post_body_en and post_body_en != post_body else "")
-            source_html = (f'<span class="reddit-badge">r/{sub_name}</span>{badge}'
-                            f'<span>u/{user_name}</span>{date_html}')
-
-            card_html = (
-                f'<div class="{card_cls}">' +
-                f'<div class="social-meta">{source_html}</div>' +
-                f'<div class="social-body">{post_body}</div>' +
-                body_en_html +
-                f'<div class="social-stats">' +
-                stats_html +
-                (f'<a href="{post_link}" target="_blank" style="color:rgba(148,163,184,0.4);text-decoration:none;font-size:0.72rem;">원문 보기 →</a>' if post_link else "") +
-                f'</div></div>'
-            )
-            st.markdown(card_html, unsafe_allow_html=True)
-            # ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
 # Part 6 / AI 차트 해석 (5분봉·1시간봉 추세, Gemini 호출, 탭 렌더링)
 # ════════════════════════════════════════════════════════════════
 
@@ -3413,11 +3250,6 @@ CSS_TEMPLATE = r"""<style>
         border: none;
         padding: 0.14rem 0.55rem; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 800;
     }
-    .reddit-badge {
-        background: var(--neon-orange); color: var(--neon-orange-ink);
-        border: none;
-        padding: 0.14rem 0.55rem; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 800;
-    }
     .sentiment-bar-wrap {
         background: var(--card-solid-2); border-radius: 18px;
         padding: 0.85rem 1rem; margin-bottom: 0.8rem;
@@ -3784,13 +3616,12 @@ hr{border:0!important;border-top:1px solid var(--m-line)!important;opacity:1!imp
 .sector-cell{border:1px solid var(--m-line)!important;border-radius:var(--radius-card-sm)!important;box-shadow:none!important;}
 
 /* 배지 · 칩 — 옅은 틴트 + 얇은 테두리 */
-.sentiment-badge,.impact-badge,.bull-badge,.bear-badge,.platform-badge,.reddit-badge,.signal-chip{
+.sentiment-badge,.impact-badge,.bull-badge,.bear-badge,.platform-badge,.signal-chip{
   border:1px solid var(--m-line)!important;border-radius:var(--radius-pill)!important;font-weight:600!important;box-shadow:none!important;}
 .sent-pos,.bull-badge{background:var(--m-up-bg)!important;color:var(--m-up)!important;border-color:var(--m-up-line)!important;}
 .sent-neg,.bear-badge{background:var(--m-down-bg)!important;color:var(--m-down)!important;border-color:var(--m-down-line)!important;}
 .sent-neu{background:var(--m-warn-bg)!important;color:var(--m-warn)!important;border-color:var(--m-warn-line)!important;}
 .impact-badge,.platform-badge{background:var(--m-info-bg)!important;color:var(--m-info)!important;border-color:var(--m-info-line)!important;}
-.reddit-badge{background:var(--m-warn-bg)!important;color:var(--m-warn)!important;border-color:var(--m-warn-line)!important;}
 .signal-chip{background:#fff!important;color:var(--m-ink)!important;}
 .dot-green{background:var(--m-up)!important;box-shadow:none!important;}
 .dot-yellow{background:#d1a43a!important;box-shadow:none!important;}
@@ -4564,15 +4395,6 @@ else:
     st.sidebar.markdown("---")
     st.sidebar.caption("☆ 버튼으로 즐겨찾기를 추가하세요")
 
-# ── 저장된 메모 사이드바 표시 ───────────────────────────────────
-if st.session_state.memos:
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**📝 저장된 메모**")
-    for t_key, memo_val in st.session_state.memos.items():
-        if memo_val.strip():
-            st.sidebar.caption(f"**{t_key}:** {memo_val[:40]}{'...' if len(memo_val)>40 else ''}")
-
-
 # ════════════════════════════════════════════════════════════════
 # AI 차트 해석 — Gemini API 키 설정
 # 키는 st.secrets 또는 세션 입력으로만 사용하며 서버 파일에 저장하지 않는다.
@@ -5272,29 +5094,6 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 </div>
             </div>
             """, unsafe_allow_html=True)
-
-    # ── 📝 분석 메모 ─────────────────────────────────────────────
-    ui_section_header(mono_icon_badge("note", color="var(--c-violet)"), "분석 메모", "icon-violet", "title-violet")
-    existing_memo = st.session_state.memos.get(ticker_input, "")
-    new_memo = st.text_area(
-        "memo",
-        value=existing_memo,
-        placeholder="매수 근거, 목표가, 손절선 등 자유롭게 기록하세요...",
-        height=95,
-        key=f"memo_input_{ticker_input}",
-        label_visibility="collapsed",
-    )
-    memo_col1, memo_col2 = st.columns([3, 1])
-    with memo_col1:
-        if st.button("💾 메모 저장", key=f"save_memo_{ticker_input}", use_container_width=True):
-            st.session_state.memos[ticker_input] = new_memo
-            save_memos(st.session_state.memos)
-            st.success("✅ 저장 완료! (앱 재시작 후에도 유지됩니다)")
-    with memo_col2:
-        if st.button("🗑️ 삭제", key=f"del_memo_{ticker_input}", use_container_width=True):
-            st.session_state.memos.pop(ticker_input, None)
-            save_memos(st.session_state.memos)
-            st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════
