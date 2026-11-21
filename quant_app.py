@@ -5756,7 +5756,7 @@ def _render_surge_screener_main():
         )
     with c2:
         price_range = st.slider(
-            "주가 범위 ($)", min_value=0.0, max_value=200.0, value=(1.0, 20.0), step=0.5,
+            "주가 범위 ($)", min_value=0.1, max_value=200.0, value=(0.1, 20.0), step=0.1,
             key="screener_price_range"
         )
     with c3:
@@ -6558,7 +6558,7 @@ def render_prebreakout_screener():
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        pb_price = st.slider("주가 범위 ($)", 0.5, 100.0, (1.0, 20.0), 0.5, key="pb_price")
+        pb_price = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="pb_price")
     with c2:
         pb_min_avg_vol = st.number_input("최소 3개월 평균거래량", min_value=50_000, value=300_000, step=50_000, key="pb_avgvol")
     with c3:
@@ -6693,7 +6693,7 @@ def render_volume_surge_screener():
         )
     with v2:
         vs_price_range = st.slider(
-            "주가 범위 ($)", min_value=0.0, max_value=200.0, value=(1.0, 50.0), step=0.5,
+            "주가 범위 ($)", min_value=0.1, max_value=200.0, value=(0.1, 50.0), step=0.1,
             key="vol_surge_price_range"
         )
     with v3:
