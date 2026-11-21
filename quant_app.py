@@ -362,6 +362,8 @@ _defaults = {
     "show_screener":    False,          # 급등주 검색기 토글
     "show_vol_surge":   False,          # 거래량 급증 스크리너 토글
     "show_prebreak":    False,          # 급등 전 매집 스캐너 토글
+    "excl_delisted":    True,           # 상장폐지 확정·청산·OTC 이전 종목 제외
+    "excl_acquired":    True,           # 피인수(합병 확정) 종목 제외
     "excel_scan":       None,           # 엑셀 종목 일괄 분석 결과
     "screener_results": [],
     "has_searched":     False,          # #15 검색 실행 여부 — 기간 변경 등 리렌더링 후에도 결과 유지
@@ -4204,6 +4206,12 @@ with tcol3:
         "거래량 급증", key="show_vol_surge",
         help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다"
     )
+st.sidebar.checkbox(
+    "🚫 상장폐지 확정 종목 제외", key="excl_delisted",
+    help="Form 25·15 공시, 상장폐지 확정 뉴스, 청산, OTC 이전 종목을 검색기·스캐너 순위에서 뺍니다 (뉴스·공시 키워드 기반)")
+st.sidebar.checkbox(
+    "🚫 피인수(합병 확정) 종목 제외", key="excl_acquired",
+    help="'to be acquired / all-cash deal' 등 인수가 확정돼 가격이 고정된 종목을 순위에서 뺍니다 (변동성이 낮고 거래량이 몰려 '급등 전' 패턴처럼 보이는 오탐 방지)")
 with tcol4:
     st.checkbox(
         "급등 전 매집", key="show_prebreak",
@@ -5025,6 +5033,9 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     with col_breakout:
         render_breakout_probability(breakout_calc)
 
+    # ── 🚫 상장폐지 확정·청산·피인수 확정 경고 ──
+    render_delist_banner(ticker_input)
+
     # ── 🔮 급등 전 매집 · 돌파 임박 (변동성 축소 · 거래량 선행 · 20일선 직전) ──
     render_prebreakout_panel(hist)
 
@@ -5835,6 +5846,9 @@ def _render_surge_screener_main():
                 merged.append(combined)
             # 1차 사전 순위(구 종합점수): 상위 30개에만 아래의 무거운 조회(뉴스·장중 데이터)를 수행한다
             merged.sort(key=lambda r: r.get("score", 0), reverse=True)
+            # 상장폐지 확정·청산·피인수 확정·OTC 종목 제외 (상위 60개 조회) — 이후 상위 30개 평가가 정상 종목으로 채워진다
+            merged, _excl = filter_delisted(merged, limit=60)
+            st.session_state["screener_excluded"] = _excl
             attach_beams(merged, "ticker", "beam", [True] * len(merged), limit=30)
             attach_catalysts(merged, limit=30)          # 재료 종류·신선도·오퍼링 공시
             attach_intraday_context(merged, limit=30)   # VWAP·당일 고가·저항·손익비·시간보정 RVOL
@@ -5897,6 +5911,7 @@ def _render_surge_screener_main():
         return
 
     st.markdown(f"**{len(filtered)}개 종목** (1차 후보 {len(results)}개 중 필터링 결과)")
+    render_excluded_expander("screener_excluded")
 
     # ── 상장 리스크 요약 텍스트 (calc_nasdaq_compliance 응용) ───
     def _risk_text(r: dict) -> str:
@@ -6023,6 +6038,157 @@ def _render_surge_screener_main():
         st.session_state["active_ticker"]   = picked_ticker
         st.session_state["has_searched"]    = True
         st.rerun()
+
+
+# ════════════════════════════════════════════════════════════════
+# 🚫 상장폐지 확정 · 피인수(합병 확정) 종목 제외
+#   상장폐지가 확정됐거나 인수가 확정돼 가격이 고정된 종목은 변동성이 줄고 거래량이 몰려서
+#   '급등 전 매집' 패턴처럼 보이므로 순위에서 걸러낸다. (사이드바 체크박스로 켜고 끔)
+#   판정 근거: ① 거래소가 OTC/핑크시트 ② 최근 6개월 SEC Form 25·15(상장폐지·등록말소)
+#             ③ 최근 뉴스 제목의 확정 표현(delisting determination, will be delisted, 거래정지, 청산 등)
+#   '결손 통지(deficiency notice)'·'규정 준수 기간 부여'처럼 아직 확정이 아닌 소식은 제외하지 않고 경고만 한다.
+#   ⚠️ 키워드 기반이라 오탐이 있을 수 있어, 제외된 종목은 화면의 '🚫 제외된 종목'에서 사유·원문을 확인할 수 있다.
+# ════════════════════════════════════════════════════════════════
+DELIST_NEWS_DAYS = 120
+DELIST_SEC_DAYS = 180
+_DL_STRIP = _EV_STRIP     # 'Foo Acquisition Corp' 같은 SPAC 상호는 먼저 지운다
+_DL_CONFIRM = [re.compile(p, re.I) for p in (
+    r"\bwill be delisted\b", r"\bto be delisted\b", r"\bdelisting (?:determination|decision)\b",
+    r"\b(?:determination|determined|decision|decided) to delist\b", r"\bstaff (?:delisting )?determination\b",
+    r"\bsuspen(?:d|ds|ded|sion)\b[^.]{0,40}\btrading\b", r"\btrading suspension\b", r"\bform 25\b",
+    r"\bvoluntar(?:y|ily)\b[^.]{0,30}\bdelist", r"\bdelist\w*\b[^.]{0,40}\b(?:effective|completed|completes|finalized)\b",
+    r"\bremoved? from (?:the )?(?:nasdaq|nyse|nyse american|nyse arca)\b",
+    r"\b(?:move|moves|moved|transfer|transfers|transferred)\b[^.]{0,30}\b(?:to|onto) (?:the )?otc",
+    r"\bdelisted from\b", r"\bdelisting of (?:its |the )?(?:common|ordinary|shares|stock)\b")]
+_DL_LIQ = [re.compile(p, re.I) for p in (
+    r"\bchapter\s*7\b", r"\bplan of (?:complete )?(?:liquidation|dissolution)\b", r"\bvoluntary liquidation\b",
+    r"\bliquidat(?:e|ing) the company\b", r"\bcease[sd]? (?:all )?operations\b",
+    r"\bwind(?:ing)?[\s-]*down (?:the )?(?:company|operations|business)\b")]
+_DL_ACQ = [re.compile(p, re.I) for p in (
+    r"\b(?:to|will|agrees? to|agreed to) be (?:acquired|taken private|bought|purchased)\b",
+    r"\bgo(?:es|ing)?[\s-]private\b", r"\btake[\s-]private\b",
+    r"\b(?:\$\s?)?\d+(?:\.\d+)? per share in cash\b", r"\ball[\s-]cash (?:deal|transaction|offer)\b")]
+_DL_KIND_LABEL = {"delisting": "상장폐지 확정", "liquidation": "파산·청산 진행", "acquired": "피인수(합병 확정)",
+                  "otc": "OTC/핑크시트(상장폐지 후 거래 추정)"}
+
+
+def classify_delisting_text(text):
+    """뉴스 제목 한 줄 → 'delisting'(상장폐지 확정) / 'liquidation'(청산) / 'acquired'(피인수 확정) / None"""
+    t = _DL_STRIP.sub(" ", str(text or ""))
+    if any(p.search(t) for p in _DL_CONFIRM):
+        return "delisting"
+    if any(p.search(t) for p in _DL_LIQ):
+        return "liquidation"
+    if any(p.search(t) for p in _DL_ACQ):
+        return "acquired"
+    return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def detect_delisting(ticker: str) -> dict:
+    """한 종목의 상장폐지·청산·피인수 확정 여부를 판정. 반환: {"kind", "label", "title", "date", "link", "source"} / 해당 없으면 {}
+    우선순위: 상장폐지 > 청산 > 피인수 (더 심각한 쪽을 반환)."""
+    now = pd.Timestamp.now(tz="UTC")
+    found = []      # (심각도 순위, 결과 dict)
+    rank = {"delisting": 0, "liquidation": 1, "acquired": 2}
+    try:       # ① SEC 서식: Form 25(상장폐지)·Form 15(등록 말소)
+        for f in fetch_sec_filings(ticker) or []:
+            t = re.sub(r"[\s\-_/]", "", str(f.get("type") or "").upper())
+            if not (t in {"25", "25NSE", "25NSEA"} or t.startswith(("1512", "1515", "15F"))):
+                continue
+            dt = pd.to_datetime(f.get("date"), utc=True, errors="coerce")
+            if pd.isna(dt) or (now - dt) > pd.Timedelta(days=DELIST_SEC_DAYS):
+                continue
+            found.append((0, {"kind": "delisting", "title": f"SEC {f.get('type')} — {f.get('title') or ''}".strip(" —"),
+                              "date": dt.strftime("%Y-%m-%d"), "link": f.get("url", ""), "source": "SEC 공시"}))
+    except Exception as _e:
+        _log_err("detect_delisting_sec:" + ticker, _e)
+    try:       # ② 뉴스 제목
+        for raw in fetch_yahoo_news(ticker) or []:
+            p = parse_yahoo_news_item(raw)
+            dt = _news_dt(raw)
+            if dt is not None and (now - dt) > pd.Timedelta(days=DELIST_NEWS_DAYS):
+                continue
+            kind = classify_delisting_text(p.get("title", ""))
+            if kind:
+                found.append((rank[kind], {"kind": kind, "title": p.get("title", ""),
+                                           "date": dt.strftime("%Y-%m-%d") if dt is not None else "",
+                                           "link": p.get("link", ""), "source": "뉴스"}))
+    except Exception as _e:
+        _log_err("detect_delisting_news:" + ticker, _e)
+    if not found:
+        return {}
+    found.sort(key=lambda x: (x[0], x[1].get("date") or ""), reverse=False)
+    best = found[0][1]
+    best["label"] = _DL_KIND_LABEL[best["kind"]]
+    return best
+
+
+def _delist_excluded(kind: str) -> bool:
+    """사이드바 설정에 따라 이 종류를 제외할지 여부. 상장폐지·OTC·청산은 '상장폐지 제외', 피인수는 '피인수 제외' 설정을 따른다."""
+    if kind in ("delisting", "liquidation", "otc"):
+        return bool(st.session_state.get("excl_delisted", True))
+    if kind == "acquired":
+        return bool(st.session_state.get("excl_acquired", True))
+    return False
+
+
+def filter_delisted(rows: list, limit: int = 60, max_workers: int = 6) -> tuple:
+    """순위 후보에서 상장폐지 확정(·청산·피인수 확정) 종목을 제거. 반환: (남은 행, 제외된 행 목록)
+    상위 limit개만 뉴스·공시를 조회한다(속도). OTC/핑크시트 상장 종목은 조회 없이 바로 제외."""
+    if not (st.session_state.get("excl_delisted", True) or st.session_state.get("excl_acquired", True)):
+        return rows, []
+    excluded, status = [], {}
+    otc_re = re.compile(r"otc|pink|pnk|grey|gray", re.I)
+
+    def _clean(r):
+        return str(r.get("ticker", "")).replace("⚠️ ", "").strip()
+
+    to_check = []
+    for r in rows[:limit]:
+        if otc_re.search(str(r.get("exchange") or "")):
+            status[_clean(r)] = {"kind": "otc", "label": _DL_KIND_LABEL["otc"], "title": str(r.get("exchange")),
+                                 "date": "", "link": "", "source": "거래소"}
+        else:
+            to_check.append(_clean(r))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for t, res in zip(to_check, ex.map(detect_delisting, to_check)):
+            if res:
+                status[t] = res
+    kept = []
+    for r in rows:
+        st_ = status.get(_clean(r))
+        if st_ and _delist_excluded(st_["kind"]):
+            excluded.append({"티커": _clean(r), "종목명": (r.get("name") or "")[:24], "사유": st_["label"],
+                             "출처": st_["source"], "일자": st_["date"], "근거": st_["title"][:120], "링크": st_.get("link", "")})
+        else:
+            kept.append(r)
+    return kept, excluded
+
+
+def render_excluded_expander(state_key: str):
+    """제외된 종목을 사유·원문 링크와 함께 보여주는 접이식 표 (오탐 확인용)."""
+    ex = st.session_state.get(state_key) or []
+    if not ex:
+        return
+    with st.expander(f"🚫 제외된 종목 {len(ex)}개 (상장폐지 확정·피인수·청산 등)", expanded=False):
+        st.dataframe(pd.DataFrame(ex), use_container_width=True, hide_index=True,
+                     column_config={"링크": st.column_config.LinkColumn("링크", display_text="원문")})
+        st.caption("키워드 기반 판정이라 오탐이 있을 수 있습니다. 잘못 제외된 종목이 있으면 사이드바 설정을 끄거나 원문을 확인하세요.")
+
+
+def render_delist_banner(ticker: str):
+    """종목 상세 화면 상단 경고 배너 (설정과 무관하게 항상 표시)."""
+    res = detect_delisting(ticker)
+    if res:
+        link = _safe_url(res.get("link", ""))
+        link_html = f' · <a href="{link}" target="_blank" rel="noopener">원문 →</a>' if link else ""
+        st.markdown(
+            f'<div class="split-banner"><div class="split-banner-title">🚫 {_safe_html(res["label"])} 감지 '
+            f'({_safe_html(res["source"])} · {_safe_html(res["date"])})</div>'
+            f'<div>{_safe_html(res["title"])}{link_html}</div>'
+            f'<div style="font-size:0.8rem;opacity:0.7;margin-top:0.3rem;">키워드 기반 자동 판정이라 원문 확인이 필요합니다. '
+            f'이 종목의 점수는 신뢰하지 마세요.</div></div>', unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -6218,6 +6384,7 @@ def fetch_prebreakout_candidates(min_price: float, max_price: float, min_avg_vol
                         "price": q.get("regularMarketPrice", 0) or 0,
                         "pct_change": q.get("regularMarketChangePercent", 0) or 0,
                         "market_cap": q.get("marketCap", 0) or 0,
+                        "exchange": q.get("fullExchangeName", ""),
                     }
         except Exception as _e:
             _log_err("fetch_prebreakout_candidates:" + sort_field, _e)
@@ -6417,6 +6584,9 @@ def render_prebreakout_screener():
                              "pb_warn": res["warn"], "factors": res["factors"], "pb_price": m["price"],
                              "pb_metrics": m, "pb_cap_reason": res["cap_reason"]})
             rows.sort(key=lambda x: x["pb_score"], reverse=True)
+            # 상장폐지 확정·청산·피인수 확정·OTC 종목 제외 — 상위 80개를 점검해 순위·기록에서 뺀다
+            rows, _excl = filter_delisted(rows, limit=80)
+            st.session_state["pb_excluded"] = _excl
             st.session_state["pb_results"] = rows
             n_logged = log_prebreak_results([x for x in rows if x["pb_score"] >= 45])
             st.session_state["pb_logged"] = n_logged
@@ -6429,6 +6599,7 @@ def render_prebreakout_screener():
     filtered = [r for r in results if r["pb_score"] >= pb_min_score]
     st.markdown(f"**{len(filtered)}개 종목** (점수 계산된 {len(results)}개 중 {pb_min_score}점 이상)"
                 + (f" · 이번 스캔에서 {st.session_state.get('pb_logged', 0)}건 기록" if st.session_state.get("pb_logged") else ""))
+    render_excluded_expander("pb_excluded")
     if not filtered:
         st.warning("조건에 맞는 종목이 없습니다. 최소 점수를 낮추거나 주가·거래량 조건을 완화해 보세요.")
         render_prebreakout_log_panel()
@@ -6547,6 +6718,12 @@ def render_volume_surge_screener():
                     continue
                 merged.append({**r, **extra})
             _hits = [r for r in merged if r.get("vol_surge_ratio", 0) >= surge_multiple]
+            _hits.sort(key=lambda r: r.get("vol_surge_ratio", 0), reverse=True)
+            # 상장폐지 확정·청산·피인수 확정·OTC 종목 제외 (배율 상위 60개 조회)
+            _hits, _excl = filter_delisted(_hits, limit=60)
+            _ex_set = {e["티커"] for e in _excl}
+            merged = [r for r in merged if str(r.get("ticker", "")).replace("⚠️ ", "").strip() not in _ex_set]
+            st.session_state["vol_surge_excluded"] = _excl
             attach_beams(_hits, "ticker", "beam", [True] * len(_hits), limit=30)
             st.session_state["vol_surge_results"] = merged
 
@@ -6559,6 +6736,7 @@ def render_volume_surge_screener():
     filtered.sort(key=lambda r: r.get("vol_surge_ratio", 0), reverse=True)
 
     st.markdown(f"**{len(filtered)}개 종목** (1차 후보 {len(results)}개 중 {surge_multiple}배 이상 필터링 결과)")
+    render_excluded_expander("vol_surge_excluded")
 
     if not filtered:
         st.warning("조건에 맞는 종목이 없습니다. 배율을 낮추거나 1차 후보 최소 거래량을 낮춰 보세요.")
@@ -6790,6 +6968,8 @@ if st.session_state.get("has_searched"):
             # 상단 카드 점수 = 급등 전 매집·돌파 임박 예측 점수 (당일 단타 셋업 등급은 '단타 보조 분석' 카드에 별도 표시)
             _pbres = calc_prebreakout_score(hist)
             ticker_score = _pbres.get("score") if _pbres else None
+            if detect_delisting(active_ticker):      # 상장폐지·청산·피인수 확정 종목은 점수가 무의미하므로 카드에서 숨긴다
+                ticker_score = None
 
             top_cards_front, top_cards_end = build_top_summary_cards_html(
                 today, yesterday, hist, vol_ma20_ratio, score=ticker_score
