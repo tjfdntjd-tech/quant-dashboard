@@ -627,6 +627,10 @@ def enrich_screener_results(tickers: tuple) -> dict:
             _spf = info.get("shortPercentOfFloat")
             short_pct = round(float(_spf) * 100, 1) if _spf else None
 
+            # 호가 스프레드(%) — 넓으면 체결 손실이 커서 단타에 불리 (장 마감 후에는 값이 없을 수 있음)
+            _bid, _ask = info.get("bid") or 0, info.get("ask") or 0
+            spread_pct = ((_ask - _bid) / ((_ask + _bid) / 2) * 100) if (_bid and _ask and _ask >= _bid) else None
+
             return {
                 "ticker":            ticker,
                 "rsi":               rsi,
@@ -643,6 +647,16 @@ def enrich_screener_results(tickers: tuple) -> dict:
                 "market_cap_info":   market_cap,
                 "float_turnover":    round(float_turnover, 1) if float_turnover is not None else None,
                 "short_pct":         short_pct,
+                # ── 셋업 점수용: 일봉 마지막 2개 행 정보 (장 시작 전/후에 따라 '전일'이 달라 둘 다 저장) ──
+                "atr":               calc_atr(hist),
+                "avg_vol20":         float(today['VOL_MA20']) if pd.notna(today['VOL_MA20']) else None,
+                "last_high":         float(today['High']),
+                "prev2_high":        float(yesterday['High']),
+                "last_close":        float(today['Close']),
+                "prev2_close":       float(yesterday['Close']),
+                "last_pct":          float((today['Close'] / yesterday['Close'] - 1) * 100),
+                "last_date":         pd.to_datetime(hist.index[-1]).date(),
+                "spread_pct":        spread_pct,
                 "error":             False,
             }
         except Exception as _e:
@@ -1420,10 +1434,15 @@ def attach_catalysts(rows: list, limit: int = 30, max_workers: int = 6) -> None:
             r["catalyst"] = " · ".join(f"{c['label']} {c['age']}" for c in pick[:2]) or "—"
             r["catalyst_ok"] = any(c["good"] and c["hours"] <= 48 for c in cats)
             r["offering_days"] = off_days
-            if off_days is not None:
-                penalty = 10 if off_days <= 7 else (5 if off_days <= 30 else 0)
-                if penalty:
-                    r["score"] = round(max((r.get("score") or 0) - penalty, 0), 1)
+            r["catalyst_checked"] = True
+            # 재료 품질(0~1) = 종류 가중치 × 신선도 가중치 중 가장 높은 호재. 호재가 없으면 0.
+            # 오퍼링은 이제 점수 차감이 아니라 '게이트(점수 상한)'로 처리한다 (calc_trade_setup 참고)
+            tier = {"fda": 1.0, "contract": 1.0, "earnings": 0.85, "analyst": 0.65}
+            def _fresh(h):
+                return 1.0 if h <= 6 else 0.9 if h <= 24 else 0.75 if h <= 48 else 0.6 if h <= 72 else 0.4
+            good_scores = [tier.get(c["key"], 0.6) * _fresh(c["hours"]) for c in cats if c["good"]]
+            r["catalyst_score"] = max(good_scores) if good_scores else 0.0
+            r["catalyst_offering_news"] = any((not c["good"]) and c["hours"] <= 72 for c in cats)
 
 
 def catalyst_summary_text(ticker: str, top: int = 2) -> str:
@@ -4622,7 +4641,7 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
     rsi_status  = "과매수" if current_rsi >= 70 else ("과매도" if current_rsi <= 30 else "보통")
     score_label = None
     if score is not None:
-        score_label = "강세" if score >= 70 else ("보통" if score >= 40 else "약세")
+        score_label = "A등급" if score >= 75 else ("B등급" if score >= 60 else ("C등급" if score >= 45 else "D등급"))
 
     pct_color = "delta-up" if price_chg >= 0 else "delta-down"
     pct_arrow = "▲" if price_chg >= 0 else "▼"
@@ -4630,10 +4649,10 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
 
     score_card_html = ""
     if score is not None:
-        score_color = "delta-up" if score_label == "강세" else ("delta-neu" if score_label == "보통" else "delta-down")
+        score_color = "delta-up" if score_label in ("A등급", "B등급") else ("delta-neu" if score_label == "C등급" else "delta-down")
         score_card_html = (
             f'<div class="metric-card mc-amber" style="grid-column: span 3;">'
-            f'<div class="metric-label">종합점수</div>'
+            f'<div class="metric-label">단타 셋업 점수</div>'
             f'<div class="metric-value">{score:.1f}점</div>'
             f'<div class="metric-delta {score_color}">{score_label}</div>'
             f'</div>'
@@ -4745,12 +4764,48 @@ def calc_near_resistances(ticker: str, price: float, today, yesterday) -> list:
     return out
 
 
+def calc_premarket_summary(ticker: str, hist: pd.DataFrame) -> dict:
+    """프리마켓(04:00~09:30 ET) 갭 %, 누적 거래량, 고가를 계산. 프리마켓 거래가 없으면 {}.
+
+    전일 종가 기준을 잡을 때 주의: 장 시작 전에는 일봉의 마지막 행이 '어제'이고,
+    장이 열린 뒤에는 마지막 행이 '오늘'이라서 하루 앞의 행을 전일 종가로 써야 합니다.
+    그래서 5분봉의 날짜와 일봉 마지막 날짜를 비교해 전일 종가를 고릅니다."""
+    try:
+        intr = fetch_intraday_5min(ticker)
+        if intr.empty or "Session" not in intr.columns or len(hist) < 2:
+            return {}
+        mins = intr.index.hour * 60 + intr.index.minute
+        pre = intr[(intr["Session"] == "EXT") & (mins < 570)]
+        if pre.empty:
+            return {}
+        intr_date = intr.index[-1].date()
+        last_daily_date = pd.to_datetime(hist.index[-1]).date()
+        prev_close = float(hist["Close"].iloc[-1] if last_daily_date < intr_date else hist["Close"].iloc[-2])
+        if prev_close <= 0:
+            return {}
+        last_px = float(pre["Close"].iloc[-1])
+        return {"gap": (last_px / prev_close - 1) * 100, "volume": int(pre["Volume"].sum()),
+                "high": float(pre["High"].max()), "prev_close": prev_close}
+    except Exception as _e:
+        _log_err("calc_premarket_summary:" + ticker, _e)
+        return {}
+
+
 def render_daytrade_panel(ticker: str, hist, today, yesterday, info: dict):
     """단타용 보조 지표 카드: 시간보정 RVOL, 유통주식수/플로트 회전율, 공매도, 가까운 저항, ATR 손절·손익비."""
     ui_section_header(mono_icon_badge("target", color="var(--c-rose)"),
                       "단타 보조 분석", "icon-rose", "title-rose")
     price = float(today["Close"])
     rows = []
+
+    # 0) 단타 셋업 등급 (재료×수급×진입위치×손익비×거래가능성, 게이트 적용)
+    su = compute_setup_for_ticker(ticker)
+    if su:
+        gdot = {"A": "dot-green", "B": "dot-green", "C": "dot-yellow"}.get(su["grade"], "dot-red")
+        cap_txt = f" · 상한 {su['cap']}점({_safe_html(su['cap_reason'])})" if su.get("cap") else ""
+        rows.append((gdot, f"<strong>셋업 {su['grade']}등급 · {su['score']:.0f}점</strong> ({_safe_html(su['setup'])}){cap_txt} — {_safe_html(su['why'])}"))
+        if su.get("warn"):
+            rows.append(("dot-red", f"<strong>경고</strong> {_safe_html(su['warn'])}"))
 
     # 1) 시간보정 RVOL
     rv = calc_time_adjusted_rvol(ticker)
@@ -4760,6 +4815,16 @@ def render_daytrade_panel(ticker: str, hist, today, yesterday, info: dict):
                           f"최근 {rv['n_days']}일 같은 시각 평균과 비교 (5배 이상이면 강한 수급)"))
     else:
         rows.append(("dot-blue", "시간보정 RVOL — 1분봉 데이터를 가져오지 못했습니다"))
+
+    # 1-2) 프리마켓 갭 · 거래량 (기준: 전일 종가 대비 프리마켓 마지막 가격)
+    pm = calc_premarket_summary(ticker, hist)
+    if pm:
+        dot = "dot-green" if (pm["gap"] >= 5 and pm["volume"] >= 200_000) else ("dot-yellow" if pm["gap"] >= 0 else "dot-red")
+        rows.append((dot, f"<strong>프리마켓 갭 {pm['gap']:+.1f}%</strong> (전일 종가 ${pm['prev_close']:.2f} 대비) · "
+                          f"프리마켓 거래량 <strong>{pm['volume']:,}주</strong> · 프리마켓 고가 ${pm['high']:.2f}"
+                          f"{' — 갭 +5% · 거래량 20만 주 이상 충족' if dot == 'dot-green' else ''}"))
+    else:
+        rows.append(("dot-blue", "프리마켓 거래 데이터 없음 (프리마켓 시간이 아니거나 거래 없음)"))
 
     # 2) 유통주식수 · 플로트 회전율 · 시총
     fl = info.get("floatShares") or 0
@@ -5321,7 +5386,535 @@ def render_sector_heatmap():
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 급등주 검색기 (Yahoo Finance 실시간 스크리너)
 # ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+# 단타 셋업 점수 (A/B/C/D 등급) — 기존 "종합점수"를 대체하는 구조
+#
+# 기존 점수의 문제: 등락률·거래량처럼 "이미 일어난 일"을 더하는 방식이라 이미 다 오른 종목이 1등,
+# 초기 진입 후보가 꼴찌가 됐고, 재료 없음·오퍼링 같은 약점이 합산에 묻혔습니다.
+#
+# 새 구조
+#  1) 게이트(상한): 오퍼링·나스닥 경고·재료 없음·스프레드 과대·유통주식 불명이면 점수 상한을 건다 (감점이 아님)
+#  2) 셋업 점수(곱셈형): 재료 × 수급 × 진입위치 × 손익비 × 거래 가능성 — 하나라도 약하면 전체가 낮아진다
+#  3) 출력: 등급 + 이유 태그 + 경고 태그
+# ⚠️ 가중치(0.30/0.25/0.25/0.10/0.10)와 구간은 경험칙입니다. 아래 '결과 기록'으로 실제 성과를 쌓아 보정하세요.
+# ════════════════════════════════════════════════════════════════
+import math as _math
+
+SETUP_WEIGHTS = {"catalyst": 0.30, "participation": 0.25, "extension": 0.25, "rr": 0.10, "tradability": 0.10}
+GRADE_CUTS = (("A", 75), ("B", 60), ("C", 45))     # 이 점수 이상이면 해당 등급, 미만이면 D
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def _clean_ticker(r: dict) -> str:
+    return str(r.get("ticker", "")).replace("⚠️ ", "").strip()
+
+
+def _extension_factor(pct: float) -> float:
+    """등락률(또는 프리마켓 갭)이 '초기 진입'에 얼마나 적합한지 구간으로 평가.
+    높을수록 좋은 게 아니라 +10~40%가 최적, 80% 넘으면 이미 늦은 자리라고 본다."""
+    if pct is None:
+        return 0.5
+    if pct < 3:
+        return 0.25
+    if pct < 5:
+        return 0.5
+    if pct < 10:
+        return 0.8
+    if pct <= 40:
+        return 1.0
+    if pct <= 80:
+        return 1.0 - (pct - 40) / 80          # 40%→1.0, 80%→0.5
+    if pct <= 150:
+        return 0.5 - (pct - 80) / 70 * 0.3    # 80%→0.5, 150%→0.2
+    return 0.15
+
+
+def attach_intraday_context(rows: list, limit: int = 30, max_workers: int = 6) -> None:
+    """상위 limit개 종목에 장중 맥락(VWAP·당일 고가·저항·ATR 손익비·시간보정 RVOL·프리마켓 거래량)을 병렬로 붙인다.
+    결과는 r["ctx_*"] 키로 저장. 장중 데이터를 못 받으면 r["ctx_ok"]=False."""
+    targets = rows[:limit]
+
+    def _one(r):
+        t = _clean_ticker(r)
+        out = {"ctx_ok": False}
+        try:
+            intr = fetch_intraday_5min(t)
+            if intr is None or intr.empty:
+                return r, out
+            has_session = "Session" in intr.columns
+            has_reg = bool((intr["Session"] == "REG").any()) if has_session else True
+            base = intr[intr["Session"] == "REG"] if (has_session and has_reg) else intr
+            price = float(intr["Close"].iloc[-1])
+            vol = base["Volume"].astype(float)
+            tp = (base["High"] + base["Low"] + base["Close"]) / 3
+            vwap = float((tp * vol).sum() / vol.sum()) if vol.sum() > 0 else None
+            day_high = float(base["High"].max())
+            off_high = (day_high - price) / day_high * 100 if day_high > 0 else None
+
+            # 전일 종가/고가: 장 시작 전엔 일봉 마지막 행이 '어제', 장중엔 두 번째 행이 '어제'
+            intr_date = intr.index[-1].date()
+            last_dt = r.get("last_date")
+            use_last = last_dt is not None and last_dt < intr_date
+            prev_close = r.get("last_close") if use_last else r.get("prev2_close")
+            prev_high = r.get("last_high") if use_last else r.get("prev2_high")
+            live_pct = (price / prev_close - 1) * 100 if prev_close else None
+
+            res = calc_near_resistances(t, price, {"High": day_high}, {"High": prev_high or day_high})
+            atr = r.get("atr") or 0
+            stop = (price - atr) if atr > 0 else None
+            res1 = res[0] if res else None
+            rr = ((res1[1] - price) / atr) if (res1 and atr > 0) else None
+
+            rvol_t = None
+            if has_reg:     # 장 시작 전에는 직전 거래일 전체와 비교하게 되어 의미가 없으므로 계산하지 않음
+                _rv = calc_time_adjusted_rvol(t)
+                rvol_t = _rv.get("rvol") if _rv else None
+
+            pm_vol = None
+            if has_session:
+                mins = intr.index.hour * 60 + intr.index.minute
+                pre = intr[(intr["Session"] == "EXT") & (mins < 570)]
+                pm_vol = int(pre["Volume"].sum()) if not pre.empty else 0
+
+            out.update({
+                "ctx_ok": True, "ctx_has_reg": has_reg, "ctx_price": price, "ctx_vwap": vwap,
+                "ctx_above_vwap": (price >= vwap) if vwap else None,
+                "ctx_day_high": day_high, "ctx_off_high": off_high, "ctx_live_pct": live_pct,
+                "ctx_res1_name": res1[0] if res1 else None, "ctx_res1": res1[1] if res1 else None,
+                "ctx_stop": stop, "ctx_rr": rr, "ctx_rvol_t": rvol_t, "ctx_pm_vol": pm_vol,
+            })
+        except Exception as _e:
+            _log_err("attach_intraday_context:" + t, _e)
+        return r, out
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for r, out in ex.map(_one, targets):
+            r.update(out)
+
+
+def calc_trade_setup(r: dict) -> dict:
+    """한 종목의 단타 셋업을 평가해 {grade, score, setup, why, warn, factors, ...}를 반환.
+    필요한 값: attach_catalysts + attach_intraday_context 가 붙인 키들 (없으면 중립값으로 처리하고 경고)."""
+    why, warn, caps = [], [], []     # caps: (상한점수, 이유)
+
+    # ── ① 재료 ──────────────────────────────────────────────
+    if r.get("catalyst_checked"):
+        f_cat = r.get("catalyst_score") or 0.0
+        if f_cat <= 0:
+            f_cat = 0.3
+            caps.append((55, "호재성 재료 없음"))
+        else:
+            why.append(f"재료 {r.get('catalyst', '')}")
+        if r.get("catalyst_offering_news"):
+            warn.append("오퍼링 뉴스(72시간 내)")
+            caps.append((50, "오퍼링 뉴스"))
+    else:
+        f_cat = 0.5
+        warn.append("재료 미조회")
+
+    # ── ② 수급(참여도) ─────────────────────────────────────
+    ctx_ok = bool(r.get("ctx_ok"))
+    has_reg = r.get("ctx_has_reg", True) if ctx_ok else True
+    fl = r.get("float_shares")
+    if has_reg:
+        rvol = r.get("ctx_rvol_t")
+        rvol_src = "시간보정"
+        if rvol is None:
+            rvol = (r.get("vol_ma20_ratio") or 0) / 100.0      # 일봉 기준 대체값(장 초반엔 낮게 나옴)
+            rvol_src = "일봉"
+        rvol_s = _clamp01(_math.log(max(rvol, 1.0)) / _math.log(8))     # 1배→0, 8배→1
+        turn = r.get("float_turnover")
+        if turn is None:
+            f_part, why_part = rvol_s * 0.9, f"RVOL {rvol:.1f}배({rvol_src})"
+        else:
+            f_part = 0.6 * rvol_s + 0.4 * _clamp01(turn / 60.0)
+            why_part = f"RVOL {rvol:.1f}배({rvol_src}) · 회전 {turn:.0f}%"
+    else:
+        # 프리마켓: 프리마켓 거래량이 평소 하루 거래량·유통주식수 대비 얼마나 되는지
+        pm_vol = r.get("ctx_pm_vol") or r.get("pm_volume") or 0
+        avg20 = r.get("avg_vol20") or 0
+        rel = (pm_vol / avg20) if avg20 else 0.0
+        pm_turn = (pm_vol / fl * 100) if fl else None
+        if pm_turn is None:
+            f_part = 0.9 * _clamp01(rel / 0.5)
+        else:
+            f_part = 0.5 * _clamp01(rel / 0.5) + 0.5 * _clamp01(pm_turn / 20.0)
+        why_part = f"프리거래량 평소의 {rel * 100:.0f}%" + (f" · 프리회전 {pm_turn:.0f}%" if pm_turn is not None else "")
+    f_part = max(f_part, 0.05)
+    why.append(why_part)
+    if fl is None:
+        warn.append("유통주식수 불명")
+        caps.append((70, "유통주식수 불명"))
+
+    # ── ③ 진입 위치(확장도) ────────────────────────────────
+    pct = r.get("ctx_live_pct") if r.get("ctx_live_pct") is not None else r.get("pct_change")
+    f_ext = _extension_factor(pct)
+    why.append(f"{'갭' if not has_reg else '등락'} {pct:+.0f}%" if pct is not None else "등락률 불명")
+    if pct is not None and pct > 80:
+        warn.append(f"이미 {pct:.0f}% 상승(늦은 자리)")
+    if ctx_ok:
+        if r.get("ctx_above_vwap") is False:
+            f_ext *= 0.65
+            warn.append("VWAP 아래")
+        off = r.get("ctx_off_high")
+        if off is not None:
+            if off > 20:
+                f_ext *= 0.6
+                warn.append(f"고점 대비 -{off:.0f}% (꺾임)")
+            elif off > 8:
+                f_ext *= 0.85
+                why.append(f"고점 대비 -{off:.0f}% 눌림")
+    else:
+        f_ext *= 0.8
+        warn.append("장중 데이터 없음")
+    f_ext = max(f_ext, 0.05)
+
+    # ── ④ 손익비(첫 저항까지 / ATR 1배 손절) ───────────────
+    rr = r.get("ctx_rr")
+    if rr is None:
+        f_rr = 0.7
+    elif rr >= 3:
+        f_rr = 1.0
+    elif rr >= 2:
+        f_rr = 0.85
+    elif rr >= 1:
+        f_rr = 0.5
+    else:
+        f_rr = 0.25
+        warn.append("저항이 가까움(손익비 1 미만)")
+    if rr is not None:
+        why.append(f"손익비 {rr:.1f}")
+
+    # ── ⑤ 거래 가능성(스프레드·거래대금) ──────────────────
+    sp = r.get("spread_pct")
+    f_trd = 1.0 if (sp is None or sp <= 1) else (0.8 if sp <= 3 else 0.5)
+    if sp is not None and sp > 3:
+        warn.append(f"스프레드 {sp:.1f}%")
+        caps.append((50, "스프레드 과대"))
+    tv = r.get("trading_value_eok") or 0
+    f_trd *= 0.6 + 0.4 * _clamp01(tv / 270.0)
+
+    # ── 게이트: 오퍼링·나스닥 경고 ─────────────────────────
+    off_days = r.get("offering_days")
+    if off_days is not None:
+        if off_days <= 7:
+            caps.append((40, f"오퍼링 공시 {off_days}일 전"))
+            warn.append(f"오퍼링 공시 {off_days}일 전")
+        elif off_days <= 30:
+            caps.append((60, f"오퍼링 공시 {off_days}일 전"))
+            warn.append(f"오퍼링 공시 {off_days}일 전")
+    nr = r.get("nasdaq_risk") or {}
+    if nr.get("applicable"):
+        if nr.get("phase") == "notice_issued_est":
+            caps.append((40, "나스닥 $1 유예기간"))
+            warn.append(f"나스닥 유예 D-{nr.get('days_left', '?')}")
+        else:
+            caps.append((60, "나스닥 $1 미달"))
+            warn.append(f"나스닥 $1 미달 {nr.get('streak_days', 0)}일째")
+    if r.get("is_china"):
+        warn.append("중국/홍콩계")
+
+    # ── 곱셈형 합성 (가중 기하평균) ───────────────────────
+    w = SETUP_WEIGHTS
+    raw = (f_cat ** w["catalyst"]) * (f_part ** w["participation"]) * (f_ext ** w["extension"]) \
+        * (f_rr ** w["rr"]) * (f_trd ** w["tradability"])
+    score = raw * 100
+    cap_val = min([c[0] for c in caps], default=100)
+    score = min(score, cap_val)
+    grade = "D"
+    for g, cut in GRADE_CUTS:
+        if score >= cut:
+            grade = g
+            break
+
+    # A등급은 '손익비 2 이상 + VWAP 위'를 충족해야 한다 (점수가 높아도 자리가 나쁘면 B로 낮춤)
+    if grade == "A":
+        rr_ok = (rr is None) or rr >= 2
+        vwap_ok = r.get("ctx_above_vwap") is not False
+        if not (rr_ok and vwap_ok):
+            grade = "B"
+            warn.append("A 조건 미충족(손익비 2 이상·VWAP 위 필요)")
+
+    # ── 셋업 유형 ─────────────────────────────────────────
+    if not has_reg:
+        setup = "갭앤고(프리마켓)"
+    elif ctx_ok and r.get("ctx_above_vwap") is False:
+        setup = "관망(VWAP 아래)"
+    elif ctx_ok and (r.get("ctx_off_high") or 0) > 8:
+        setup = "눌림 후 재상승 대기"
+    else:
+        setup = "장중 모멘텀"
+
+    return {
+        "grade": grade, "score": round(score, 1), "raw_score": round(raw * 100, 1), "setup": setup,
+        "why": " · ".join(why), "warn": " · ".join(warn), "cap": cap_val if caps else None,
+        "cap_reason": min(caps, key=lambda c: c[0])[1] if caps else "",
+        "factors": {"catalyst": round(f_cat, 2), "participation": round(f_part, 2),
+                    "extension": round(f_ext, 2), "rr": round(f_rr, 2), "tradability": round(f_trd, 2)},
+    }
+
+
+def apply_setup_to_rows(rows: list) -> None:
+    """각 행에 calc_trade_setup 결과를 r["grade"], r["setup_score"] 등으로 붙인다."""
+    for r in rows:
+        if "catalyst_checked" not in r and "ctx_ok" not in r:
+            r.update({"grade": "—", "setup_score": None, "setup": "", "why": "", "warn": "", "factors": {}})
+            continue
+        su = calc_trade_setup(r)
+        r.update({"grade": su["grade"], "setup_score": su["score"], "setup": su["setup"],
+                  "why": su["why"], "warn": su["warn"], "factors": su["factors"],
+                  "setup_raw": su["raw_score"], "setup_cap": su["cap"]})
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def compute_setup_for_ticker(ticker: str) -> dict:
+    """종목 상세 화면용: 한 종목에 대해 검색기와 같은 방식으로 셋업 평가를 수행."""
+    try:
+        enr = enrich_screener_results((ticker,)).get(ticker) or {}
+        if not enr or enr.get("error"):
+            return {}
+        row = {"ticker": ticker, "price": enr.get("last_close"), "pct_change": enr.get("last_pct"), **enr}
+        attach_catalysts([row], limit=1)
+        attach_intraday_context([row], limit=1)
+        su = calc_trade_setup(row)
+        su["row"] = {k: row.get(k) for k in ("ctx_price", "ctx_stop", "ctx_res1_name", "ctx_res1", "ctx_rr")}
+        return su
+    except Exception as _e:
+        _log_err("compute_setup_for_ticker:" + ticker, _e)
+        return {}
+
+
+# ════════════════════════════════════════════════════════════════
+# 결과 기록 — 검색 후보와 점수 구성요소를 CSV로 남기고, 장 마감 후 실제 성과를 채워 등급별로 비교
+# 저장 위치: 환경변수 SCREEN_LOG_PATH (기본 screen_log.csv).
+# ⚠️ Streamlit Cloud 등은 재시작 시 파일이 초기화되므로 아래 '📥 기록 CSV 다운로드'로 정기 백업하세요.
+# ════════════════════════════════════════════════════════════════
+SCREEN_LOG_PATH = os.environ.get("SCREEN_LOG_PATH", "screen_log.csv")
+_SCREEN_LOG_LOCK = threading.Lock()
+SCREEN_LOG_COLUMNS = [
+    "run_id", "logged_at_utc", "scan_mode", "ticker", "price", "grade", "score", "setup", "why", "warn",
+    "f_catalyst", "f_participation", "f_extension", "f_rr", "f_tradability",
+    "pct", "rvol", "float_turnover", "catalyst", "offering_days", "rr", "stop", "res1_name", "res1",
+    "vwap", "off_high_pct", "atr",
+    "out_status", "out_mfe_pct", "out_mae_pct", "out_close_pct", "out_R",
+]
+
+
+def _read_screen_log() -> pd.DataFrame:
+    try:
+        if os.path.exists(SCREEN_LOG_PATH):
+            df = pd.read_csv(SCREEN_LOG_PATH)
+            for c in SCREEN_LOG_COLUMNS:
+                if c not in df.columns:
+                    df[c] = np.nan
+            df = df[SCREEN_LOG_COLUMNS].copy()
+            df["out_status"] = df["out_status"].astype(object)      # 'done' 같은 문자열을 넣을 수 있게
+            return df
+    except Exception as _e:
+        _log_err("_read_screen_log", _e)
+    return pd.DataFrame(columns=SCREEN_LOG_COLUMNS)
+
+
+def _write_screen_log(df: pd.DataFrame) -> None:
+    tmp = SCREEN_LOG_PATH + ".tmp"
+    df.to_csv(tmp, index=False, encoding="utf-8")
+    os.replace(tmp, SCREEN_LOG_PATH)          # 임시 파일로 쓴 뒤 교체 → 쓰는 도중 깨지는 것 방지
+
+
+def log_screen_results(rows: list, scan_mode: str) -> int:
+    """등급이 계산된 후보(상위 종목)를 기록 파일에 추가하고 기록한 건수를 반환. 실패해도 앱은 계속 동작."""
+    try:
+        now = pd.Timestamp.now(tz="UTC")
+        run_id = now.strftime("%Y%m%d%H%M%S")
+        new = []
+        for r in rows:
+            if r.get("setup_score") is None:
+                continue
+            f = r.get("factors") or {}
+            price = r.get("ctx_price") or r.get("price")
+            if not price:
+                continue
+            rvol = r.get("ctx_rvol_t") if r.get("ctx_rvol_t") is not None else (r.get("vol_ma20_ratio") or 0) / 100
+            new.append({
+                "run_id": run_id, "logged_at_utc": now.isoformat(), "scan_mode": scan_mode,
+                "ticker": _clean_ticker(r), "price": float(price), "grade": r.get("grade"),
+                "score": r.get("setup_score"), "setup": r.get("setup"), "why": r.get("why"), "warn": r.get("warn"),
+                "f_catalyst": f.get("catalyst"), "f_participation": f.get("participation"),
+                "f_extension": f.get("extension"), "f_rr": f.get("rr"), "f_tradability": f.get("tradability"),
+                "pct": r.get("ctx_live_pct") if r.get("ctx_live_pct") is not None else r.get("pct_change"),
+                "rvol": rvol, "float_turnover": r.get("float_turnover"), "catalyst": r.get("catalyst"),
+                "offering_days": r.get("offering_days"), "rr": r.get("ctx_rr"), "stop": r.get("ctx_stop"),
+                "res1_name": r.get("ctx_res1_name"), "res1": r.get("ctx_res1"), "vwap": r.get("ctx_vwap"),
+                "off_high_pct": r.get("ctx_off_high"), "atr": r.get("atr"), "out_status": "",
+            })
+        if not new:
+            return 0
+        with _SCREEN_LOG_LOCK:
+            df = pd.concat([_read_screen_log(), pd.DataFrame(new)], ignore_index=True)
+            _write_screen_log(df[SCREEN_LOG_COLUMNS])
+        return len(new)
+    except Exception as _e:
+        _log_err("log_screen_results", _e)
+        return 0
+
+
+def _compute_outcome(row) -> dict:
+    """기록된 한 건의 '기록 시점 이후 같은 날' 성과를 5분봉으로 계산.
+    - MFE/MAE: 기록가 대비 이후 최고가/최저가 변동(%)
+    - R 결과: 손절 = 기록가 − ATR 1배(1R), 목표 = +2R. 먼저 닿는 쪽이 결과, 같은 봉에서 둘 다면 손절 우선(보수적).
+      둘 다 안 닿으면 정규장 종가 기준 R."""
+    t, price = str(row["ticker"]), float(row["price"])
+    logged = pd.to_datetime(row["logged_at_utc"], utc=True).tz_convert("America/New_York")
+    raw = yf.Ticker(t).history(period="5d", interval="5m", prepost=True)
+    if raw is None or raw.empty:
+        return {}
+    raw.index = pd.to_datetime(raw.index)
+    if raw.index.tz is None:
+        raw.index = raw.index.tz_localize("UTC")
+    idx = raw.index.tz_convert("America/New_York")
+    mins = idx.hour * 60 + idx.minute
+    same_day = np.array(idx.date) == logged.date()
+    bars = raw[(idx >= logged) & same_day & (mins < 960)]       # 기록 이후 ~ 정규장 마감(16:00)
+    if bars.empty:
+        bars = raw[(idx >= logged) & same_day]
+    if bars.empty:
+        return {}
+    mfe = (float(bars["High"].max()) / price - 1) * 100
+    mae = (float(bars["Low"].min()) / price - 1) * 100
+    close_pct = (float(bars["Close"].iloc[-1]) / price - 1) * 100
+    out = {"out_status": "done", "out_mfe_pct": round(mfe, 2), "out_mae_pct": round(mae, 2),
+           "out_close_pct": round(close_pct, 2), "out_R": np.nan}
+    stop = row.get("stop")
+    if pd.notna(stop) and float(stop) < price:
+        risk = price - float(stop)
+        target = price + 2 * risk
+        r_val = (float(bars["Close"].iloc[-1]) - price) / risk
+        for _, b in bars.iterrows():
+            if float(b["Low"]) <= float(stop):
+                r_val = -1.0
+                break
+            if float(b["High"]) >= target:
+                r_val = 2.0
+                break
+        out["out_R"] = round(r_val, 2)
+    return out
+
+
+def update_screen_outcomes(max_rows: int = 80) -> tuple:
+    """장 마감(16:10 ET) 이후가 된 미완료 기록의 결과를 채운다. 반환: (갱신 건수, 대기 건수)."""
+    with _SCREEN_LOG_LOCK:
+        df = _read_screen_log()
+    if df.empty:
+        return 0, 0
+    now_et = pd.Timestamp.now(tz="America/New_York")
+    todo = df[(df["out_status"].isna()) | (df["out_status"] == "")]
+    updated = waiting = 0
+    for i, row in todo.head(max_rows).iterrows():
+        try:
+            logged = pd.to_datetime(row["logged_at_utc"], utc=True).tz_convert("America/New_York")
+            if now_et < logged.normalize() + pd.Timedelta(hours=16, minutes=10):
+                waiting += 1
+                continue
+            res = _compute_outcome(row)
+            if res:
+                for k, v in res.items():
+                    df.at[i, k] = v
+                updated += 1
+            elif (now_et - logged).days >= 4:
+                df.at[i, "out_status"] = "no_data"      # 5분봉 보관 기간이 지나 더는 채울 수 없음
+        except Exception as _e:
+            _log_err("update_screen_outcomes", _e)
+    with _SCREEN_LOG_LOCK:
+        cur = _read_screen_log()
+        # 다른 세션이 그 사이 추가한 기록은 유지하고, 우리가 채운 건만 덮어쓴다
+        key = ["run_id", "ticker"]
+        upd = df.dropna(subset=["out_status"]).query("out_status != ''")
+        cur = cur.drop_duplicates(key, keep="last").set_index(key)
+        upd = upd.drop_duplicates(key).set_index(key)
+        cur.update(upd[["out_status", "out_mfe_pct", "out_mae_pct", "out_close_pct", "out_R"]])
+        _write_screen_log(cur.reset_index()[SCREEN_LOG_COLUMNS])
+    return updated, waiting
+
+
+def _summarize_log(df: pd.DataFrame, by: str) -> pd.DataFrame:
+    d = df[df["out_status"] == "done"].copy()
+    for c in ("out_R", "out_mfe_pct", "out_mae_pct", "out_close_pct"):
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    if d.empty:
+        return pd.DataFrame()
+    g = d.groupby(by)
+    out = pd.DataFrame({
+        "건수": g["ticker"].count(),
+        "승률(R>0,%)": g["out_R"].apply(lambda x: (x.dropna() > 0).mean() * 100 if x.notna().any() else np.nan),
+        "평균R": g["out_R"].mean(),
+        "평균MFE(%)": g["out_mfe_pct"].mean(),
+        "평균MAE(%)": g["out_mae_pct"].mean(),
+        "평균종가(%)": g["out_close_pct"].mean(),
+    }).round(2)
+    return out
+
+
+def render_screen_log_panel():
+    """검색 결과 기록과 등급별 실제 성과 비교 패널."""
+    with st.expander("📊 점수 검증 (후보 기록 · 결과 추적)", expanded=False):
+        df = _read_screen_log()
+        done = int((df["out_status"] == "done").sum()) if not df.empty else 0
+        st.caption(f"기록 {len(df)}건 · 결과 확정 {done}건. 검색을 실행할 때마다 등급이 계산된 후보가 자동 기록되고, "
+                   "장 마감(16:10 ET) 후 '결과 업데이트'를 누르면 그날 성과가 채워집니다.")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 결과 업데이트", key="update_outcomes", use_container_width=True):
+                with st.spinner("5분봉으로 기록 이후 성과 계산 중..."):
+                    u, w = update_screen_outcomes()
+                st.success(f"{u}건 갱신 · 장 마감 전이라 대기 {w}건")
+                df = _read_screen_log()
+        with c2:
+            if not df.empty:
+                st.download_button("📥 기록 CSV 다운로드", df.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="screen_log.csv", mime="text/csv", use_container_width=True)
+        up = st.file_uploader("이전 기록 CSV 병합 (서버 재시작으로 기록이 사라졌을 때)", type=["csv"], key="log_upload")
+        if up is not None and st.button("업로드한 기록 병합", key="merge_log"):
+            try:
+                add = pd.read_csv(up)
+                for c in SCREEN_LOG_COLUMNS:
+                    if c not in add.columns:
+                        add[c] = np.nan
+                with _SCREEN_LOG_LOCK:
+                    merged = pd.concat([_read_screen_log(), add[SCREEN_LOG_COLUMNS]], ignore_index=True)
+                    merged = merged.drop_duplicates(subset=["run_id", "ticker"], keep="last")
+                    _write_screen_log(merged)
+                st.success("병합 완료")
+                df = _read_screen_log()
+            except Exception as _e:
+                st.error(f"병합 실패: {_e}")
+        if done == 0:
+            st.info("아직 결과가 확정된 기록이 없습니다. 검색 후 장 마감 뒤에 '결과 업데이트'를 눌러 주세요.")
+            return
+        order = {"A": 0, "B": 1, "C": 2, "D": 3}
+        by_grade = _summarize_log(df, "grade")
+        if not by_grade.empty:
+            by_grade = by_grade.sort_index(key=lambda ix: [order.get(i, 9) for i in ix])
+            st.markdown("**등급별 성과**")
+            st.dataframe(by_grade, use_container_width=True)
+        by_setup = _summarize_log(df, "setup")
+        if not by_setup.empty:
+            st.markdown("**셋업 유형별 성과**")
+            st.dataframe(by_setup, use_container_width=True)
+        st.caption("R 기준: 기록 시점 가격 − ATR 1배 = 손절(1R), +2R = 목표. 먼저 닿는 쪽이 결과(같은 봉이면 손절 우선), "
+                   "둘 다 안 닿으면 정규장 종가 기준. A등급이 B·C·D보다 실제로 낫게 나오는지 확인하세요. "
+                   "표본이 등급당 30건 미만이면 우연일 수 있어 참고만 하세요.")
+
+
 def render_surge_screener():
+    """급등주 검색기 + 점수 검증 패널 (화면 진입점)."""
+    _render_surge_screener_main()
+    render_screen_log_panel()
+
+
+def _render_surge_screener_main():
     """
     조건(상승률/주가/거래량/거래대금/기술지표/리스크)에 맞는 급등주를 검색합니다.
     1차: Yahoo Finance 공식 스크리너로 후보 종목 수집
@@ -5386,7 +5979,7 @@ def render_surge_screener():
     d1, d2 = st.columns(2)
     with d1:
         sort_option = st.radio(
-            "정렬 기준", ["종합점수 순", "등락률 순", "거래대금 순", "거래량 순", "플로트 회전율 순"],
+            "정렬 기준", ["셋업점수 순", "사전점수 순", "등락률 순", "거래대금 순", "거래량 순", "플로트 회전율 순"],
             horizontal=True, key="screener_sort"
         )
     with d2:
@@ -5412,6 +6005,8 @@ def render_surge_screener():
             "⚠️ 중국계 기업 제외", value=False, key="screener_exclude_china"
         )
     only_beam = st.checkbox("🧨 빔 신호 종목만", value=False, key="screener_only_beam")
+    only_grade_b = st.checkbox("🅰 셋업 B등급 이상만", value=False, key="screener_only_grade_b",
+                               help="상위 30개 종목만 등급을 계산합니다. 등급이 없는 종목은 제외됩니다.")
     only_catalyst = st.checkbox(
         "📰 재료(최근 48시간 호재성 뉴스) 있는 종목만", value=False, key="screener_only_catalyst",
         help="FDA·계약·실적·애널리스트 뉴스가 48시간 안에 있는 종목만 남깁니다. 상위 30개 종목만 뉴스를 조회하므로 그 아래 종목은 제외됩니다.")
@@ -5435,10 +6030,16 @@ def render_surge_screener():
                 combined = {**r, **extra}
                 combined["score"] = calc_screener_score(combined)
                 merged.append(combined)
+            # 1차 사전 순위(구 종합점수): 상위 30개에만 아래의 무거운 조회(뉴스·장중 데이터)를 수행한다
             merged.sort(key=lambda r: r.get("score", 0), reverse=True)
             attach_beams(merged, "ticker", "beam", [True] * len(merged), limit=30)
-            attach_catalysts(merged, limit=30)     # 재료 종류·신선도 + 오퍼링 공시 점수 보정
-            merged.sort(key=lambda r: r.get("score", 0), reverse=True)
+            attach_catalysts(merged, limit=30)          # 재료 종류·신선도·오퍼링 공시
+            attach_intraday_context(merged, limit=30)   # VWAP·당일 고가·저항·손익비·시간보정 RVOL
+            apply_setup_to_rows(merged)                 # 셋업 등급/점수/근거/경고 계산
+            # 정렬: 등급 평가가 된 종목을 셋업 점수 순으로 먼저, 평가 안 된 종목은 사전 순위대로 뒤에
+            merged.sort(key=lambda r: (r.get("setup_score") is not None, r.get("setup_score") or 0, r.get("score", 0)),
+                        reverse=True)
+            log_screen_results(merged, scan_mode)       # 후보·점수 구성요소 기록 (결과 추적용)
             st.session_state["screener_results"] = merged
 
     results = st.session_state.get("screener_results", [])
@@ -5458,6 +6059,8 @@ def render_surge_screener():
         filtered = [r for r in filtered if r.get("beam")]
     if only_catalyst:
         filtered = [r for r in filtered if r.get("catalyst_ok")]
+    if only_grade_b:
+        filtered = [r for r in filtered if r.get("grade") in ("A", "B")]
     # 소형 저유통주 필터 — 정보가 없는(None) 종목은 필터가 켜져 있으면 제외
     if max_float_m > 0:
         filtered = [r for r in filtered
@@ -5477,7 +6080,8 @@ def render_surge_screener():
 
     # ── 정렬 ─────────────────────────────────────────────────────
     sort_key_map = {
-        "종합점수 순": lambda r: r.get("score", 0) or 0,
+        "셋업점수 순": lambda r: (r.get("setup_score") is not None, r.get("setup_score") or 0),
+        "사전점수 순": lambda r: r.get("score", 0) or 0,
         "등락률 순":   lambda r: r.get("pct_change", 0) or 0,
         "거래대금 순": lambda r: r.get("trading_value_eok", 0) or 0,
         "거래량 순":   lambda r: r.get("volume", 0) or 0,
@@ -5507,10 +6111,15 @@ def render_surge_screener():
             "⭐":            "★" if is_fav else "",
             "티커":          ("⚠️ " if r.get("is_china") else "") + r["ticker"],
             "종목명":        (r.get("name") or "")[:26],
+            "등급":          r.get("grade", "—"),
+            "셋업점수":      r.get("setup_score"),
+            "셋업":          r.get("setup", ""),
+            "근거":          r.get("why", ""),
+            "경고":          r.get("warn", ""),
             "현재가":        r.get("price", 0),
             "등락률(%)":     r.get("pct_change", 0),     # 프리마켓 모드에서는 프리마켓 갭(%)
             "프리고가":      r.get("pm_high"),
-            "종합점수":      r.get("score", 0),
+            "사전점수":      r.get("score", 0),
             "거래량":        r.get("volume", 0),
             "거래대금(억)":  r.get("trading_value_eok", 0),
             "RSI":           r.get("rsi"),
@@ -5538,7 +6147,9 @@ def render_surge_screener():
             "현재가":        st.column_config.NumberColumn(format="$%.2f"),
             "프리고가":      st.column_config.NumberColumn(format="$%.2f"),
             "등락률(%)":     st.column_config.NumberColumn(format="%+.2f%%"),
-            "종합점수":      st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+            "셋업점수":      st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
+                                                         help="재료×수급×진입위치×손익비×거래가능성 (게이트 적용 후). A≥75, B≥60, C≥45"),
+            "사전점수":      st.column_config.NumberColumn(format="%.1f", help="1차 사전 순위용(구 종합점수). 매매 판단에는 셋업점수·등급을 보세요."),
             "거래량":        st.column_config.NumberColumn(format="%d"),
             "거래대금(억)":  st.column_config.NumberColumn(format="%.1f억"),
             "RSI":           st.column_config.NumberColumn(format="%.1f"),
@@ -5557,7 +6168,8 @@ def render_surge_screener():
         st.caption("프리마켓 모드: 등락률 = 전일 종가 대비 프리마켓 갭, 거래량 = 프리마켓 누적 거래량입니다. "
                    "거래대금·RSI·20일MA비율은 전일 일봉 기준이라 참고용입니다.")
     st.caption("⚠️ = 중국/홍콩 소재 기업 · ⭐ = 즐겨찾기 등록 종목 · 상장리스크는 나스닥 최소호가($1) 규정 기준 추정치입니다. "
-               "행을 클릭하면 해당 종목의 정밀 분석 화면으로 이동합니다. 종합점수는 절대적 매매 신호가 아닌 상대 비교용 참고 지표입니다.")
+               "행을 클릭하면 해당 종목의 정밀 분석 화면으로 이동합니다. 등급·셋업점수는 상위 30개 종목만 계산하며, "
+               "가중치는 경험칙이라 아래 '점수 검증' 기록으로 실제 성과를 확인하며 보정하세요. 매매 신호가 아닌 참고 지표입니다.")
 
     # ── 검색 결과에서 바로 즐겨찾기 추가/제거 ───────────────────
     fav_candidates = [r["ticker"] for r in filtered]
@@ -5894,14 +6506,9 @@ if st.session_state.get("has_searched"):
             pct_change_now = ((today['Close'] - yesterday['Close']) / yesterday['Close']) * 100
             current_rsi_val = today['RSI']
             current_rsi = round(float(current_rsi_val), 1) if pd.notna(current_rsi_val) else None
-            ticker_score = calc_screener_score({
-                "pct_change":        pct_change_now,
-                "vol_ma20_ratio":    vol_ma20_ratio,
-                "trading_value_eok": trading_value_krw_eok,
-                "vol_ratio":         vol_ratio,
-                "rsi":               current_rsi,
-                "float_turnover":    calc_float_turnover(active_ticker, today['Volume']),
-            })
+            # 검색기와 같은 방식의 단타 셋업 점수(등급은 단타 보조 분석 카드에 표시)
+            _su = compute_setup_for_ticker(active_ticker)
+            ticker_score = _su.get("score") if _su else None
 
             top_cards_front, top_cards_end = build_top_summary_cards_html(
                 today, yesterday, hist, vol_ma20_ratio, score=ticker_score
