@@ -361,7 +361,8 @@ _defaults = {
     "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
     "show_screener":    False,          # 급등주 검색기 토글
     "show_vol_surge":   False,          # 거래량 급증 스크리너 토글
-    "show_prebreak":    False,          # 급등 전 매집 스캐너 토글
+    "show_prebreak":    False,          # 급등 전 매집 스캐너 토글 (구버전)
+    "show_unified":     False,          # 통합 스캐너 토글
     "excl_delisted":    True,           # 상장폐지 확정·청산·OTC 이전 종목 제외
     "excl_acquired":    True,           # 피인수(합병 확정) 종목 제외
     "excel_scan":       None,           # 엑셀 종목 일괄 분석 결과
@@ -4229,8 +4230,7 @@ render_excel_scan_results()
 st.sidebar.header("🔍 주식 분석 설정")
 
 # ── 섹터 히트맵 / 급등주 검색기 / 거래량 급증 스크리너 토글 (스크롤 없이 바로 보이도록 상단 배치) ──
-tcol1, tcol2, tcol3 = st.sidebar.columns(3)
-tcol4, _tcol5, _tcol6 = st.sidebar.columns(3)
+tcol1, tcol2 = st.sidebar.columns(2)
 with tcol1:
     st.checkbox(
         "섹터 히트맵", key="show_heatmap",
@@ -4238,13 +4238,8 @@ with tcol1:
     )
 with tcol2:
     st.checkbox(
-        "급등주 검색기", key="show_screener",
-        help="Yahoo Finance 실시간 스크리너로 조건에 맞는 급등 종목을 찾습니다"
-    )
-with tcol3:
-    st.checkbox(
-        "거래량 급증", key="show_vol_surge",
-        help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다"
+        "통합 스캐너", key="show_unified",
+        help="급등주 검색기 + 거래량 급증 + 급등 전 매집을 종목별 점수 하나로 합친 스캐너입니다. 프리마켓·정규장·마감 후(내일 준비)를 자동 감지합니다"
     )
 st.sidebar.checkbox(
     "🚫 상장폐지 확정 종목 제외", key="excl_delisted",
@@ -4252,11 +4247,14 @@ st.sidebar.checkbox(
 st.sidebar.checkbox(
     "🚫 피인수(합병 확정) 종목 제외", key="excl_acquired",
     help="'to be acquired / all-cash deal' 등 인수가 확정돼 가격이 고정된 종목을 순위에서 뺍니다 (변동성이 낮고 거래량이 몰려 '급등 전' 패턴처럼 보이는 오탐 방지)")
-with tcol4:
-    st.checkbox(
-        "급등 전 매집", key="show_prebreak",
-        help="프리마켓 갭 5~15% 종목 중 촉매·프리마켓 거래량·플로트·일봉 위치로 장 시작 후 이어갈 후보를 등급(A/B/C)으로 찾습니다 (증자·역분할·인수확정 제외)"
-    )
+with st.sidebar.expander("기존 스캐너 (구버전)", expanded=False):
+    st.caption("통합 스캐너로 합치기 전의 개별 스캐너입니다. 상세 필터·점수 검증 패널이 필요할 때만 사용하세요.")
+    st.checkbox("급등주 검색기", key="show_screener",
+                help="Yahoo Finance 실시간 스크리너로 조건에 맞는 급등 종목을 찾습니다")
+    st.checkbox("거래량 급증", key="show_vol_surge",
+                help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다")
+    st.checkbox("급등 전 매집 (v0.4)", key="show_prebreak",
+                help="프리마켓 갭 종목을 촉매·프리마켓 거래량·강도·플로트·일봉 위치로 평가하는 구버전 갭 이어가기 스캐너입니다")
 st.sidebar.markdown("---")
 
 with st.sidebar.expander("엑셀 종목 일괄 분석", expanded=False):
@@ -6490,13 +6488,13 @@ def gapgo_pmvol_factor(projected_volume: float, avg_volume, large: bool = False)
     return _gg_clamp((float(projected_volume) / float(avg_volume) - lo) / (hi - lo))
 
 
-def gapgo_float_factor(float_shares, pm_volume: float) -> float:
+def gapgo_float_factor(float_shares, pm_volume: float, rot_full: float = 0.25) -> float:
     """플로트 점수(0~1) = 0.7×크기 + 0.3×프리마켓 회전율. 1천만 주 이하 만점, 2천만 주에서 0.6. 플로트를 모르면 중립 0.5."""
     if not float_shares or float(float_shares) <= 0:
         return 0.5
     f = float(float_shares)
     base = 1.0 if f <= 10_000_000 else _gg_clamp(1.0 - (f - 10_000_000) / 10_000_000 * 0.4)
-    rot = _gg_clamp((float(pm_volume) / f) / 0.25)        # 프리마켓에서 플로트의 25%가 돌면 만점
+    rot = _gg_clamp((float(pm_volume) / f) / rot_full)    # 회전율 만점 기준: 프리마켓 25%, 정규장·마감 후는 하루 100%
     return 0.7 * base + 0.3 * rot
 
 
@@ -6830,11 +6828,12 @@ def run_gapgo_scan(min_gap: float, max_gap: float, price_lo: float, price_hi: fl
 GAPGO_LOG_PATH = os.environ.get("GAPGO_LOG_PATH", "gapgo_log.csv")
 _GAPGO_LOCK = threading.Lock()
 GAPGO_LOG_COLUMNS = [
-    "run_id", "logged_at_utc", "ticker", "mode", "scan_bucket", "scan_et", "pm_price", "gap_pct", "pm_volume", "proj_ratio",
-    "score", "grade", "why", "warn", "regime",
+    "run_id", "logged_at_utc", "ticker", "mode", "session", "scan_bucket", "scan_et", "ref_date", "tags",
+    "pm_price", "gap_pct", "pm_volume", "proj_ratio", "score", "grade", "why", "warn", "regime",
     "f_catalyst", "f_pm_volume", "f_strength", "f_gap", "f_float", "f_market", "f_daily",
+    "f_activity", "f_move", "f_accum", "f_struct",
     "out_status", "out_open", "out_open_to_high", "out_open_to_close", "out_hit5", "out_hit10", "out_green",
-    "out_next_high_vs_close",
+    "out_next_high_vs_close", "out_gap_open", "out_high_vs_prev_close",
 ]
 GAPGO_BUCKETS = ("04:00~07:00", "07:00~08:00", "08:00~09:00", "09:00~09:30")
 
@@ -6851,7 +6850,7 @@ def _gapgo_bucket(now_et=None):
 
 
 _GAPGO_OUT_COLS = ["out_status", "out_open", "out_open_to_high", "out_open_to_close", "out_hit5", "out_hit10",
-                   "out_green", "out_next_high_vs_close"]
+                   "out_green", "out_next_high_vs_close", "out_gap_open", "out_high_vs_prev_close"]
 
 
 def _read_gapgo_log() -> pd.DataFrame:
@@ -6897,7 +6896,7 @@ def log_gapgo_results(rows: list, top_n: int = 30, now_et=None) -> int:
                 proj = r.get("gg_proj")
                 new.append({
                     "run_id": now.strftime("%Y%m%d%H%M%S"), "logged_at_utc": now.isoformat(), "ticker": r["ticker"],
-                    "mode": r.get("gg_mode"), "scan_bucket": bucket, "scan_et": t.strftime("%H:%M"),
+                    "mode": r.get("gg_mode"), "session": "pre", "scan_bucket": bucket, "scan_et": t.strftime("%H:%M"),
                     "pm_price": r.get("price"), "gap_pct": round(float(r.get("pm_gap") or 0), 2),
                     "pm_volume": r.get("pm_volume"), "proj_ratio": (round(float(proj), 3) if proj is not None else None),
                     "score": r.get("gg_score"), "grade": r.get("gg_grade"),
@@ -6915,10 +6914,12 @@ def log_gapgo_results(rows: list, top_n: int = 30, now_et=None) -> int:
 
 
 def update_gapgo_outcomes(max_rows: int = 80) -> tuple:
-    """기록한 날(미국 거래일 D)의 일봉으로 결과를 채운다. 반환: (갱신 건수, 대기 건수)
-    - 시가→고가(%)·시가→종가(%)·양봉 여부, 시가→고가가 +5%/+10%에 닿았는지(적중)
-    - 익일: D+1 일봉이 생기면 'D 종가 대비 D+1 고가(%)'를 추가로 채운다.
-    D일이 아직 끝나지 않았으면(미국 동부 16:05 이전) 대기."""
+    """기록한 후보의 결과를 일봉으로 채운다. 반환: (갱신 건수, 대기 건수)
+    · 평가일(D): 프리마켓 스캔(또는 세션 정보가 없는 예전 기록)은 스캔한 그날, 정규장·마감 후 스캔은 기준 거래일(ref_date)의 '다음 거래일'
+    · 시가→고가(%)·시가→종가(%)·양봉 여부, 시가→고가 +5%/+10% 적중
+    · 갭(전일 종가→시가 %)과 전일 종가 대비 고가(%) — 정규장·마감 후 스캔은 이 갭을 못 먹고 들어가므로 같이 본다
+    · 평가일 다음 거래일 일봉이 생기면 '평가일 종가 대비 다음날 고가(%)'
+    평가일이 아직 끝나지 않았으면(미국 동부 16:05 이전) 대기."""
     with _GAPGO_LOCK:
         df = _read_gapgo_log()
     if df.empty:
@@ -6930,7 +6931,13 @@ def update_gapgo_outcomes(max_rows: int = 80) -> tuple:
     for i, row in need.head(max_rows).iterrows():
         try:
             logged = pd.to_datetime(row["logged_at_utc"], utc=True).tz_convert("America/New_York")
-            d0 = logged.date() if (logged.hour * 60 + logged.minute) < 16 * 60 else (logged + pd.Timedelta(days=1)).date()
+            sess = str(row.get("session") or "")
+            ref = row.get("ref_date")
+            if sess in ("regular", "after"):
+                base_day = pd.Timestamp(ref) if (isinstance(ref, str) and ref) else pd.Timestamp(logged.date())
+                d0 = (base_day + pd.Timedelta(days=1)).date()
+            else:
+                d0 = logged.date() if (logged.hour * 60 + logged.minute) < 16 * 60 else (logged + pd.Timedelta(days=1)).date()
             raw = yf.Ticker(str(row["ticker"])).history(period="1mo")
             if raw is None or raw.empty:
                 continue
@@ -6954,6 +6961,11 @@ def update_gapgo_outcomes(max_rows: int = 80) -> tuple:
                 df.at[i, "out_open_to_high"], df.at[i, "out_open_to_close"] = round(oh, 2), round(oc, 2)
                 df.at[i, "out_hit5"], df.at[i, "out_hit10"] = float(oh >= 5), float(oh >= 10)
                 df.at[i, "out_green"] = float(c > o)
+                before = raw[dates < d0]
+                if not before.empty and float(before["Close"].iloc[-1]) > 0:
+                    pc = float(before["Close"].iloc[-1])
+                    df.at[i, "out_gap_open"] = round((o / pc - 1) * 100, 2)
+                    df.at[i, "out_high_vs_prev_close"] = round((h / pc - 1) * 100, 2)
                 updated += 1
             if len(day_rows) >= 2:
                 nb = day_rows.iloc[1]
@@ -6971,17 +6983,20 @@ def update_gapgo_outcomes(max_rows: int = 80) -> tuple:
 
 
 def _summarize_gapgo(df: pd.DataFrame, by: str = "grade", dedupe: bool = True) -> pd.DataFrame:
-    """결과가 확정된 기록을 by 열(grade/scan_bucket/mode)별로 요약. dedupe=True면 같은 날 같은 종목은 마지막 스캔만 센다."""
+    """결과가 확정된 기록을 by 열(grade/scan_bucket/mode/session)별로 요약. dedupe=True면 같은 날 같은 종목·같은 세션은 마지막 스캔만 센다."""
     d = df[df["out_status"] == "done"].copy()
     if d.empty or by not in d.columns:
         return pd.DataFrame()
     if dedupe:
         d["_day"] = d["logged_at_utc"].astype(str).str[:10]
-        d = d.sort_values("logged_at_utc").drop_duplicates(["_day", "ticker"], keep="last")
+        d["_sess"] = d["session"].astype(str) if "session" in d.columns else ""
+        d = d.sort_values("logged_at_utc").drop_duplicates(["_day", "ticker", "_sess"], keep="last")
     d = d[d[by].notna() & (d[by].astype(str) != "")]
     if d.empty:
         return pd.DataFrame()
-    for c in ("out_open_to_high", "out_open_to_close", "out_hit5", "out_hit10", "out_green", "out_next_high_vs_close"):
+    num = ["out_open_to_high", "out_open_to_close", "out_hit5", "out_hit10", "out_green", "out_next_high_vs_close",
+           "out_gap_open", "out_high_vs_prev_close"]
+    for c in num:
         d[c] = pd.to_numeric(d[c], errors="coerce")
 
     def _agg(g):
@@ -6990,10 +7005,13 @@ def _summarize_gapgo(df: pd.DataFrame, by: str = "grade", dedupe: bool = True) -
                           "평균 시가→고가(%)": g["out_open_to_high"].mean(),
                           "평균 시가→종가(%)": g["out_open_to_close"].mean(),
                           "종가 양봉 비율(%)": g["out_green"].mean() * 100,
-                          "평균 익일고가(종가대비 %)": g["out_next_high_vs_close"].mean()})
+                          "평균 갭(전일종가→시가 %)": g["out_gap_open"].mean(),
+                          "평균 고가(전일종가 대비 %)": g["out_high_vs_prev_close"].mean(),
+                          "평균 다음날고가(종가대비 %)": g["out_next_high_vs_close"].mean()})
     out = d.groupby(by).apply(_agg)
     out.loc["전체(기준선)"] = _agg(d)
-    order_list = {"grade": GAPGO_GRADE_ORDER, "scan_bucket": list(GAPGO_BUCKETS), "mode": ["small", "large"]}.get(by, [])
+    order_list = {"grade": GAPGO_GRADE_ORDER, "scan_bucket": list(GAPGO_BUCKETS), "mode": ["small", "large"],
+                  "session": ["pre", "regular", "after"]}.get(by, [])
     rank = lambda i: 100 if i == "전체(기준선)" else (order_list.index(i) if i in order_list else 50)
     return out.sort_index(key=lambda ix: [rank(i) for i in ix]).round(1)
 
@@ -7002,9 +7020,9 @@ def render_gapgo_log_panel():
     with st.expander("📊 예측 검증 (점수 기록 · 당일/익일 결과 추적)", expanded=False):
         df = _read_gapgo_log()
         done = int((df["out_status"] == "done").sum()) if not df.empty else 0
-        st.caption(f"기록 {len(df)}건 · 결과 확정 {done}건. 프리마켓 시간에 스캔하면 상위 후보가 시간대별로 자동 기록되고, "
-                   "그날 미국 장이 끝나면 '결과 업데이트'로 시가→고가·종가가, 다음 거래일이 지나면 익일 고가가 채워집니다. "
-                   "프리마켓이 아닌 시간의 스캔은 기록하지 않습니다.")
+        st.caption(f"기록 {len(df)}건 · 결과 확정 {done}건. 각 시간대(프리마켓·정규장·마감 후) 시간에 스캔하면 상위 후보가 자동 기록됩니다. "
+                   "프리마켓 스캔은 그날, 정규장·마감 후 스캔은 다음 거래일의 시가→고가·종가·갭이 장 마감 후 '결과 업데이트'로 채워집니다. "
+                   "해당 시간대가 아닌 시각의 스캔(예: 주말에 프리마켓 선택)은 기록하지 않습니다.")
         c1, c2 = st.columns(2)
         with c1:
             if st.button("🔄 결과 업데이트", key="update_gapgo", use_container_width=True):
@@ -7036,6 +7054,10 @@ def render_gapgo_log_panel():
             return
         st.markdown("**등급별** (같은 날 같은 종목은 마지막 스캔 기준)")
         st.dataframe(summ, use_container_width=True)
+        by_sess = _summarize_gapgo(df, "session")
+        if not by_sess.empty and len(by_sess) > 2:
+            st.markdown("**시간대(세션)별**")
+            st.dataframe(by_sess.rename(index={"pre": "프리마켓", "regular": "정규장", "after": "마감 후"}), use_container_width=True)
         by_bucket = _summarize_gapgo(df, "scan_bucket", dedupe=False)
         if not by_bucket.empty:
             st.markdown("**스캔 시간대별** (ET 기준, 시간 보정이 맞는지 확인용)")
@@ -7160,6 +7182,669 @@ def render_prebreakout_screener():
         })
     st.caption("행을 클릭하면 정밀 분석 화면으로 이동합니다. 가중치·시간 보정 곡선은 초안이므로 아래 '예측 검증'으로 등급·시간대별 적중률을 확인하며 보정하세요. "
                "진입 확인: 개장 후 프리마켓 고점 돌파 + VWAP 유지 / 프리마켓 고점 재이탈은 실패 신호입니다.")
+    sel = []
+    if event is not None:
+        try:
+            sel = event.selection["rows"]
+        except Exception:
+            sel = []
+    if sel:
+        picked = filtered[sel[0]]["ticker"]
+        st.session_state["selected_ticker"] = picked
+        st.session_state["active_ticker"] = picked
+        st.session_state["has_searched"] = True
+        st.rerun()
+    render_gapgo_log_panel()
+
+
+# ════════════════════════════════════════════════════════════════
+# 통합 스캐너 v1.0 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 '종목별 점수 하나'로 합친 스캐너
+#
+# 후보 풀(합집합·중복 제거, 어디서 잡혔는지 태그):
+#   프리마켓: 프리마켓 갭 종목                          🌅갭
+#   정규장  : 정규장 급등 종목(등락률 상위)              🚀급등
+#   마감 후 : 당일 급등 종목 + 거래량 급증 상위 종목     🚀급등 · 📈거래량급증  (내일 후보)
+#   모든 시간대 공통 태그: 📈거래량급증(3일/3개월 평균 ≥3배) · 🧱수축(일봉 돌파임박 점수 ≥50) · 📰촉매
+#
+# 점수 100 = 촉매 + 거래 활동 + 강도 + 움직임 크기 + 매집 흔적 + 수급 구조 (시간대별 가중치가 다름)
+#   · 거래 활동: 프리마켓·정규장은 '시간 보정'한 예상 마감 거래량 ÷ 평균 (이른 시각의 적은 거래량을 불리하게 보지 않음)
+#   · 강도    : 프리마켓·정규장은 VWAP 위 위치 + 고점 유지 + 최근 30분 거래 가속, 마감 후는 종가 위치(고가 근처 마감) + VWAP + 시간외 등락
+#   · 매집 흔적: 거래량 급증 배율(3일/3개월)과 일봉 수축·돌파임박 점수 — 마감 후(내일 준비)에서 비중이 가장 큼
+#   · 수급 구조: 소형=플로트·회전율, 대형·중형(시총 20억$↑ 또는 플로트 상한 초과)=시장(QQQ) 동조
+# 제외·등급 상한·시장 보정은 v0.4와 같은 규칙(증자·역분할·인수확정·상장폐지 제외, 1달러 미만·고점 꺾임 등은 최대 B).
+# ⚠️ 가중치·곡선·임계값은 모두 초안입니다. 하단 '예측 검증'(세션·시간대·등급별 적중률)로 보정하세요.
+# ════════════════════════════════════════════════════════════════
+UNI_SESSION_LABEL = {"pre": "프리마켓", "regular": "정규장", "after": "마감 후(내일 준비)"}
+UNI_WEIGHTS = {
+    "pre": {"small": {"catalyst": 25, "activity": 25, "strength": 15, "move": 10, "accum": 15, "struct": 10},
+            "large": {"catalyst": 25, "activity": 20, "strength": 15, "move": 10, "accum": 15, "struct": 15}},
+    "regular": {"small": {"catalyst": 20, "activity": 25, "strength": 20, "move": 10, "accum": 10, "struct": 15},
+                "large": {"catalyst": 20, "activity": 20, "strength": 20, "move": 10, "accum": 10, "struct": 20}},
+    "after": {"small": {"catalyst": 25, "activity": 15, "strength": 10, "move": 5, "accum": 30, "struct": 15},
+              "large": {"catalyst": 25, "activity": 10, "strength": 10, "move": 5, "accum": 30, "struct": 20}},
+}
+# 정규장 시작(09:30 ET=570분)부터 해당 시각(ET 하루 중 분)까지 거래량이 하루 전체의 몇 %쯤 쌓이는지 '가정' 곡선(U자형)
+UNI_REG_CURVE = ((570, 0.00), (600, 0.13), (630, 0.22), (690, 0.35), (750, 0.46), (810, 0.57),
+                 (870, 0.70), (900, 0.78), (930, 0.88), (960, 1.00))
+UNI_MIN_VSURGE_TAG = 3.0     # 이 배율 이상이면 📈거래량급증 태그
+UNI_VSURGE_FULL = 5.0        # 이 배율에서 매집 점수 만점
+
+
+def detect_session(now_et=None) -> str:
+    """미국 동부 시각으로 지금이 pre(프리마켓 04:00~09:30) / regular(09:30~16:00) / after(그 외: 마감 후·휴장·새벽·주말)인지."""
+    t = now_et if now_et is not None else _et_now()
+    if t.weekday() >= 5:
+        return "after"
+    m = t.hour * 60 + t.minute
+    if 240 <= m < 570:
+        return "pre"
+    if 570 <= m < 960:
+        return "regular"
+    return "after"
+
+
+def _uni_interp(points, m: float) -> float:
+    if m >= points[-1][0]:
+        return 1.0
+    if m <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x0 <= m <= x1:
+            return y0 + (y1 - y0) * (m - x0) / (x1 - x0)
+    return 1.0
+
+
+def uni_expected_fraction(session: str, minute) -> float:
+    """해당 시각까지 거래량이 '그 세션 전체'의 몇 %쯤 쌓이는 게 보통인지(0~1, 가정 곡선). 마감 후는 1.0."""
+    if minute is None:
+        return 1.0
+    if session == "pre":
+        return gapgo_expected_fraction(minute)
+    if session == "regular":
+        return _uni_interp(UNI_REG_CURVE, float(minute))
+    return 1.0
+
+
+def uni_project_volume(session: str, volume: float, minute) -> float:
+    """지금까지 거래량을 세션 마감 시점 예상 거래량으로 환산 (이른 시각 과대 환산 방지: 프리마켓 하한 0.15, 정규장 0.10)."""
+    if session not in ("pre", "regular"):
+        return float(volume)
+    return float(volume) / max(uni_expected_fraction(session, minute), 0.15 if session == "pre" else 0.10)
+
+
+def uni_activity_factor(session: str, projected: float, avg_volume, large: bool = False) -> float:
+    """거래 활동(0~1). 프리마켓: 예상 프리마켓 거래량÷평균(5%→0, 50%→1). 정규장·마감 후: 예상 하루 거래량÷평균(1배→0, 5배→1, 대형 3배)."""
+    if session == "pre":
+        return gapgo_pmvol_factor(projected, avg_volume, large)
+    if not avg_volume or float(avg_volume) <= 0:
+        return 0.3
+    hi = 3.0 if large else 5.0
+    return _gg_clamp((float(projected) / float(avg_volume) - 1.0) / (hi - 1.0))
+
+
+def uni_move_factor(session: str, pct: float, large: bool = False) -> float:
+    """움직임 크기(0~1). 프리마켓은 갭(소형 5~15%·대형 3~10% 만점), 정규장·마감 후는 당일 등락률(소형 5~20%·대형 3~10% 만점, 50%/20% 넘으면 0.3)."""
+    if session == "pre":
+        return gapgo_gap_factor(pct, large)
+    g = float(pct)
+    if g <= 0:
+        return 0.0
+    lo, hi, top = (3.0, 10.0, 20.0) if large else (5.0, 20.0, 50.0)
+    if g < lo:
+        return g / lo
+    if g <= hi:
+        return 1.0
+    if g <= top:
+        return 1.0 - (g - hi) / (top - hi) * 0.5
+    return 0.3
+
+
+def uni_strength_factor(session: str, s: dict) -> float:
+    """강도(0~1). 프리마켓·정규장: VWAP 위 위치·고점 유지·최근 30분 거래 가속(gapgo_strength_factor).
+    마감 후: 0.5×종가 위치(고가 근처 마감일수록 높음) + 0.3×종가의 VWAP 위 위치 + 0.2×시간외 등락(-2%→0, +3%→1)."""
+    if session in ("pre", "regular"):
+        return gapgo_strength_factor(s.get("price"), s.get("vwap"), s.get("high"), s.get("vol30"), s.get("volume"), s.get("elapsed"))
+    cp = s.get("close_pos")
+    cp = 0.5 if cp is None else _gg_clamp(cp)
+    px, vw = s.get("price"), s.get("vwap")
+    vwap_part = _gg_clamp(((float(px) / float(vw) - 1) * 100 + 3.0) / 5.0) if (px and vw) else 0.5
+    ah = s.get("ah_pct")
+    ah_part = 0.5 if ah is None else _gg_clamp((float(ah) + 2.0) / 5.0)
+    return 0.5 * cp + 0.3 * vwap_part + 0.2 * ah_part
+
+
+def uni_accum_factor(vol_surge_ratio, daily_factor: float) -> float:
+    """매집 흔적(0~1) = 0.5×거래량 급증 배율(1배→0, 5배→1) + 0.5×일봉 위치(수축·돌파임박). 배율을 모르면 일봉 위치만."""
+    if vol_surge_ratio is None:
+        return float(daily_factor)
+    vs = _gg_clamp((float(vol_surge_ratio) - 1.0) / (UNI_VSURGE_FULL - 1.0))
+    return 0.5 * vs + 0.5 * float(daily_factor)
+
+
+def uni_tags(session: str, move, vol_surge_ratio, daily_score, catalyst_score, last_pct=None) -> list:
+    """어떤 신호에서 잡혔는지 보여주는 태그."""
+    tags = []
+    if session == "pre" and move is not None and move >= 3:
+        tags.append("🌅갭")
+    if session in ("regular", "after") and move is not None and move >= 5:
+        tags.append("🚀급등")
+    if session == "pre" and last_pct is not None and last_pct >= 10:
+        tags.append("🚀전일급등")
+    if vol_surge_ratio is not None and vol_surge_ratio >= UNI_MIN_VSURGE_TAG:
+        tags.append("📈거래량급증")
+    if daily_score is not None and daily_score >= 50:
+        tags.append("🧱수축")
+    if catalyst_score and catalyst_score > 0:
+        tags.append("📰촉매")
+    return tags
+
+
+def calc_unified_score(r: dict) -> dict:
+    """통합 점수. 입력 r 키(없으면 None 취급):
+      session('pre'/'regular'/'after'), mode('small'/'large'), move_pct, volume(세션 누적 거래량), price, high, vwap, last_min,
+      vol_30, active60, close_pos, ah_pct, avg_volume, float_shares, vol_surge_ratio, catalyst_score, catalyst_hours,
+      offering_days, offering_news, reverse_split, daily_score, daily_cap_reason, hi20, regime, iwm_chg, mkt_chg(QQQ 등락),
+      min_avg_vol, max_float
+    반환: {excluded, score, grade, session, mode, proj_ratio, parts{항목:0~1}, why, warn}"""
+    sess = r.get("session") or "pre"
+    large = (r.get("mode") == "large")
+    move = float(r.get("move_pct") or 0)
+    vol = float(r.get("volume") or 0)
+    px = float(r.get("price") or 0)
+    avg_vol, fl = r.get("avg_volume"), r.get("float_shares")
+    off_days = r.get("offering_days")
+    last_min = r.get("last_min")
+    why, warn = [], []
+
+    # ── 제외 필터 (v0.4와 동일) ────────────────────────────
+    min_avg = r.get("min_avg_vol", GAPGO_LARGE_MIN_AVG_VOL if large else GAPGO_MIN_AVG_VOL)
+    max_fl = float("inf") if large else r.get("max_float", GAPGO_MAX_FLOAT)
+    ex = gapgo_cheap_exclusion(avg_vol, fl, min_avg, max_fl)
+    if not ex and r.get("offering_news"):
+        ex = "증자·오퍼링 뉴스(72시간 이내)"
+    if not ex and off_days is not None and off_days <= GAPGO_OFFER_EXCLUDE_DAYS:
+        ex = f"증자 관련 공시 {off_days}일 전"
+    if not ex and r.get("reverse_split"):
+        ex = f"역분할 뉴스({GAPGO_REVERSE_SPLIT_DAYS}일 이내)"
+    mode_name = "large" if large else "small"
+    if ex:
+        return {"excluded": ex, "score": 0.0, "grade": "—", "session": sess, "mode": mode_name,
+                "proj_ratio": None, "parts": {}, "why": "", "warn": ""}
+
+    # ── 점수 ──────────────────────────────────────────
+    proj = uni_project_volume(sess, vol, last_min)
+    proj_ratio = (proj / float(avg_vol)) if avg_vol else None
+    start_min = 240.0 if sess == "pre" else 570.0
+    elapsed = (float(last_min) - start_min) if (last_min is not None and sess in ("pre", "regular")) else None
+    cat_s = _gg_clamp(r.get("catalyst_score") or 0.0)
+    cat_h = r.get("catalyst_hours")
+    stale = cat_s > 0 and cat_h is not None and cat_h > 24
+    day2 = (r.get("daily_cap_reason") == "이미 급등")
+    daily_f = gapgo_daily_factor(r.get("daily_score"), px, r.get("hi20"), day2)
+    parts = {
+        "catalyst": cat_s * (0.7 if stale else 1.0),
+        "activity": uni_activity_factor(sess, proj, avg_vol, large),
+        "strength": uni_strength_factor(sess, {"price": px, "vwap": r.get("vwap"), "high": r.get("high"),
+                                               "vol30": r.get("vol_30"), "volume": vol, "elapsed": elapsed,
+                                               "close_pos": r.get("close_pos"), "ah_pct": r.get("ah_pct")}),
+        "move": uni_move_factor(sess, move, large),
+        "accum": uni_accum_factor(r.get("vol_surge_ratio"), daily_f),
+        "struct": (gapgo_market_factor(r.get("mkt_chg")) if large
+                   else gapgo_float_factor(fl, proj, 0.25 if sess == "pre" else 1.0)),
+    }
+    W = UNI_WEIGHTS[sess]["large" if large else "small"]
+    score = sum(W[k] * parts[k] for k in W)
+    grade = gapgo_grade(score)
+
+    # ── 근거·경고, 등급 상한 ───────────────────────────
+    why.append(f"{'갭' if sess == 'pre' else '등락'} {move:+.1f}%")
+    if proj_ratio is not None:
+        label = "프리마켓" if sess == "pre" else ("하루" if sess == "regular" else "당일")
+        why.append(f"예상 {label} 거래량 평균의 {proj_ratio * 100:.0f}%")
+    vsr = r.get("vol_surge_ratio")
+    if vsr is not None and vsr >= UNI_MIN_VSURGE_TAG:
+        why.append(f"3일/3개월 거래량 {vsr:.1f}배")
+    if large:
+        why.append("대형·중형주 모드")
+    if cat_s > 0:
+        why.append("촉매 있음")
+    else:
+        warn.append("촉매 미확인(뉴스 지연 가능)")
+        grade = _gg_cap_grade(grade, "B" if sess == "after" else "C")
+    if stale:
+        warn.append(f"촉매가 {cat_h:.0f}시간 전 뉴스(재료가 이미 반영됐을 수 있음)")
+        grade = _gg_cap_grade(grade, "B")
+    if sess == "pre" and last_min is not None and last_min < GAPGO_EARLY_MIN:
+        warn.append("07:00 ET 이전: 거래가 얇아 잠정 점수")
+        grade = _gg_cap_grade(grade, "B")
+    if sess in ("pre", "regular") and last_min is not None and r.get("active60") is not None:
+        den = max(1.0, min(60.0, float(last_min) - start_min + 1.0))
+        if float(r["active60"]) / den < 0.20:
+            warn.append("최근 1시간 체결이 듬성듬성(가격 신뢰↓)")
+            grade = _gg_cap_grade(grade, "B")
+    if (fl is None or not fl) and not large:
+        warn.append("플로트 확인 필요")
+    if day2 and sess == "pre":
+        warn.append("전일 급등(2일차 갭)")
+    if px and px < NASDAQ_MIN_BID:
+        warn.append("1달러 미만: 나스닥 최저가 요건·역분할 위험")
+        grade = _gg_cap_grade(grade, "B")
+    if off_days is not None and off_days <= GAPGO_OFFER_CAP_DAYS:
+        warn.append(f"증자 관련 공시 {off_days}일 전(희석 위험)")
+        grade = _gg_cap_grade(grade, "B")
+    hi_px = r.get("high")
+    if sess in ("pre", "regular") and hi_px and px and float(hi_px) > 0 and px < float(hi_px) * 0.90:
+        warn.append(f"{'프리마켓' if sess == 'pre' else '당일'} 고점 대비 {(px / float(hi_px) - 1) * 100:.0f}% (꺾이는 중)")
+        grade = _gg_cap_grade(grade, "B")
+    top = (20 if large else 30) if sess == "pre" else (20 if large else 50)
+    if move > top:
+        warn.append(f"{'갭' if sess == 'pre' else '등락'} {top}% 초과(소진 위험)")
+        grade = _gg_cap_grade(grade, "B")
+    ah = r.get("ah_pct")
+    if sess == "after" and ah is not None and ah <= -3.0:
+        warn.append(f"시간외 {ah:+.1f}% (내일 약세 출발 가능)")
+        grade = _gg_cap_grade(grade, "B")
+    if large:
+        q = r.get("mkt_chg")
+        weak, wtxt = (q is not None and q <= -1.0), "나스닥(QQQ) -1%↓: 등급 한 단계 하향"
+    else:
+        i = r.get("iwm_chg")
+        weak = (r.get("regime") == "약세") or (i is not None and i <= -1.0)
+        wtxt = "소형주 약세장: 등급 한 단계 하향"
+    if weak:
+        warn.append(wtxt)
+        grade = _gg_demote(grade)
+    return {"excluded": "", "score": round(score, 1), "grade": grade, "session": sess, "mode": mode_name,
+            "proj_ratio": proj_ratio, "parts": {k: round(v, 2) for k, v in parts.items()},
+            "why": " · ".join(why), "warn": " · ".join(warn)}
+
+
+def compute_day_stats(raw):
+    """1분봉(prepost 포함, 인덱스는 미국 동부 시간)에서 가장 최근 '정규장 거래일'의 정규장(09:30~16:00 ET) 통계와
+    같은 날 시간외(16:00 이후) 등락을 계산한다. 정규장 체결이 이틀 치 미만이면 None. 반환 키:
+      date(거래일), price(마지막 정규장 체결가=종가), change_pct(전일 종가 대비 %), open, gap_open_pct, high, low,
+      volume(정규장 누적), vwap, last_min(마지막 정규장 분봉의 ET 하루 중 분), vol_30, active60,
+      close_pos((종가-저가)/(고가-저가), 0~1), ah_pct(정규장 종가 대비 시간외 %, 없으면 None), ah_volume, prev_close"""
+    if raw is None or raw.empty:
+        return None
+    raw = raw.copy()
+    raw.index = pd.to_datetime(raw.index)
+    mins = np.asarray(raw.index.hour * 60 + raw.index.minute)
+    dates = np.array(raw.index.date)
+    reg = (mins >= 570) & (mins < 960)
+    reg_dates = sorted(set(dates[reg]))
+    if len(reg_dates) < 2:
+        return None
+    d, dprev = reg_dates[-1], reg_dates[-2]
+    day_mask = (dates == d) & reg
+    day = raw[day_mask]
+    prev = raw[(dates == dprev) & reg]
+    if day.empty or prev.empty:
+        return None
+    prev_close = float(prev["Close"].iloc[-1])
+    if prev_close <= 0:
+        return None
+    day_mins = mins[day_mask]
+    vol = day["Volume"].astype(float).to_numpy()
+    vsum = float(vol.sum())
+    tp = ((day["High"] + day["Low"] + day["Close"]) / 3.0).to_numpy()
+    high, low = float(day["High"].max()), float(day["Low"].min())
+    open_, close = float(day["Open"].iloc[0]), float(day["Close"].iloc[-1])
+    last_min = int(day_mins.max())
+    post = raw[(dates == d) & (mins >= 960)]
+    ah_pct, ah_vol = None, 0.0
+    if not post.empty and float(post["Volume"].sum()) > 0 and close > 0:
+        ah_pct = (float(post["Close"].iloc[-1]) / close - 1) * 100
+        ah_vol = float(post["Volume"].sum())
+    return {
+        "date": d, "price": close, "change_pct": (close / prev_close - 1) * 100,
+        "open": open_, "gap_open_pct": (open_ / prev_close - 1) * 100, "high": high, "low": low,
+        "volume": int(vsum), "vwap": (float((tp * vol).sum() / vsum) if vsum > 0 else None),
+        "last_min": last_min, "vol_30": float(vol[day_mins >= last_min - 29].sum()),
+        "active60": int((vol[day_mins >= last_min - 59] > 0).sum()),
+        "close_pos": ((close - low) / (high - low)) if high > low else 0.5,
+        "ah_pct": ah_pct, "ah_volume": ah_vol, "prev_close": prev_close,
+    }
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_index_session(session: str) -> dict:
+    """QQQ·IWM의 세션별 등락률(%). 프리마켓: 전일 종가 대비 프리마켓, 정규장·마감 후: 최근 정규장 거래일의 전일 대비. 없으면 None."""
+    if session == "pre":
+        return fetch_index_premarket()
+    out = {"QQQ": None, "IWM": None}
+    for sym in list(out):
+        try:
+            s_ = compute_day_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
+            if s_:
+                out[sym] = s_["change_pct"]
+        except Exception as _e:
+            _log_err("fetch_index_session:" + sym, _e)
+    return out
+
+
+def _uni_day_stats_fetch(sym: str):
+    try:
+        return compute_day_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
+    except Exception as _e:
+        _log_err("_uni_day_stats_fetch:" + sym, _e)
+        return None
+
+
+def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: float, price_hi: float, min_volume: int,
+                     max_cap_m: int, min_avg_vol: int, max_float: int, include_large: bool = False,
+                     min_vsurge: float = UNI_MIN_VSURGE_TAG) -> dict:
+    """통합 스캔. session: 'pre'(프리마켓 갭) / 'regular'(정규장 급등) / 'after'(마감 후: 당일 급등 + 거래량 급증 상위 = 내일 후보).
+    후보 풀 합치기 → 평균거래량·플로트로 소형/대형 모드 결정 + 싼 제외 → 상장폐지/피인수 제외 → 일봉 지표(거래량 급증 배율·돌파임박)
+    → 촉매·증자·역분할 → 점수. 반환: {rows(점수순), excluded, delist_excluded, regime, idx, n_base, session, data_min}"""
+    regime = fetch_market_regime()
+    idx = fetch_index_session(session)
+    cap_arg = 0 if include_large else int(max_cap_m)
+    pool = {}                       # 티커 → 행 (중복 제거)
+
+    def _add(r, src):
+        t = r.get("ticker")
+        if not t:
+            return
+        if t in pool:
+            pool[t]["_src"].add(src)
+        else:
+            pool[t] = {**r, "_src": {src}}
+
+    # ── ① 후보 수집 ─────────────────────────────────────
+    if session == "pre":
+        for r in fetch_premarket_gappers(move_lo, price_lo, price_hi, int(min_volume), cap_arg):
+            if r.get("pm_gap", 0) <= move_hi:
+                _add({**r, "u_move": r["pm_gap"], "u_volume": r["pm_volume"], "u_high": r.get("pm_high"),
+                      "u_vwap": r.get("pm_vwap"), "u_last_min": r.get("pm_last_min"), "u_vol30": r.get("pm_vol_30"),
+                      "u_active60": r.get("pm_active60"), "u_price": r["price"]}, "gap")
+    else:
+        gainers = fetch_top_gainers(move_lo, price_lo, price_hi, int(min_volume), limit=60) or []
+        for r in gainers:
+            if r.get("pct_change", 0) > move_hi:
+                continue
+            if cap_arg and r.get("market_cap") and r["market_cap"] > cap_arg * 1_000_000:
+                continue
+            _add(r, "gainer")
+        if session == "after":
+            vs_base = fetch_volume_surge_candidates(price_lo, price_hi, int(min_volume)) or []
+            tick = tuple(x["ticker"] for x in vs_base if x.get("ticker"))
+            enr0 = enrich_screener_results(tick) if tick else {}
+            vs_hits = [x for x in vs_base if (enr0.get(x["ticker"]) or {}).get("vol_surge_ratio", 0) >= min_vsurge]
+            vs_hits.sort(key=lambda x: enr0[x["ticker"]]["vol_surge_ratio"], reverse=True)
+            for x in vs_hits[:40]:
+                if cap_arg and x.get("market_cap") and x["market_cap"] > cap_arg * 1_000_000:
+                    continue
+                _add(x, "vsurge")
+    base = list(pool.values())
+    result = {"rows": [], "excluded": [], "delist_excluded": [], "regime": regime, "idx": idx,
+              "n_base": len(base), "session": session, "data_min": None}
+    if not base:
+        return result
+
+    # ── ② 세션 1분봉 통계 (정규장·마감 후) ──────────────────
+    if session != "pre":
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            stats = list(ex.map(lambda r: _uni_day_stats_fetch(r["ticker"]), base))
+        for r, ds in zip(base, stats):
+            if ds:
+                r.update({"u_move": ds["change_pct"], "u_volume": ds["volume"], "u_high": ds["high"], "u_vwap": ds["vwap"],
+                          "u_last_min": ds["last_min"], "u_vol30": ds["vol_30"], "u_active60": ds["active60"],
+                          "u_price": ds["price"], "u_close_pos": ds["close_pos"], "u_ah_pct": ds["ah_pct"],
+                          "u_ref_date": str(ds["date"])})
+            else:
+                r.update({"u_move": r.get("pct_change", 0), "u_volume": r.get("volume", 0), "u_price": r.get("price", 0)})
+    mins_seen = [r["u_last_min"] for r in base if r.get("u_last_min") is not None]
+    result["data_min"] = max(mins_seen) if mins_seen else None
+
+    # ── ③ 평균거래량·플로트 → 소형/대형 모드, 싼 제외 필터 ────
+    def _info(r):
+        info = fetch_ticker_info(r["ticker"]) or {}
+        avg = info.get("averageVolume") or info.get("averageDailyVolume3Month") or info.get("averageVolume10days")
+        return r, (float(avg) if avg else None), (float(info["floatShares"]) if info.get("floatShares") else None)
+
+    kept = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for r, avg, fl in ex.map(_info, base):
+            r["avg_volume"], r["float_shares"] = avg, fl
+            mcap = float(r.get("market_cap") or 0)
+            large = bool(include_large and (mcap >= GAPGO_LARGE_MCAP or (fl and fl > max_float)))
+            r["mode"] = "large" if large else "small"
+            why_ex = gapgo_cheap_exclusion(avg, fl, GAPGO_LARGE_MIN_AVG_VOL if large else min_avg_vol,
+                                           float("inf") if large else max_float)
+            if why_ex:
+                result["excluded"].append({"티커": r["ticker"], "종목명": (r.get("name") or "")[:24], "사유": why_ex})
+            else:
+                kept.append(r)
+
+    # ── ④ 상장폐지·피인수 확정·OTC 제외 ────────────────────
+    kept.sort(key=lambda r: abs(r.get("u_move") or 0), reverse=True)
+    kept, delist_ex = filter_delisted(kept, limit=60)
+    result["delist_excluded"] = delist_ex
+    kept = kept[:60]
+    if not kept:
+        return result
+
+    # ── ⑤ 일봉 지표(거래량 급증 배율)·돌파임박·촉매·증자·역분할 ──
+    tickers = tuple(r["ticker"] for r in kept)
+    enriched = enrich_screener_results(tickers) or {}
+    daily = prebreakout_enrich(tickers) or {}
+    attach_catalysts(kept, limit=len(kept))
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        splits = list(ex.map(lambda r: _recent_reverse_split(r["ticker"]), kept))
+
+    rows = []
+    for r, rs in zip(kept, splits):
+        en = enriched.get(r["ticker"]) or {}
+        d = daily.get(r["ticker"]) or {}
+        m = d.get("metrics") or {}
+        hi20 = (m["price"] * (1 + m["to_hi20"] / 100)) if m.get("price") and m.get("to_hi20") is not None else None
+        vsr = en.get("vol_surge_ratio") if not en.get("error") else None
+        inp = {"session": session, "mode": r["mode"], "move_pct": r.get("u_move"), "volume": r.get("u_volume"),
+               "price": r.get("u_price"), "high": r.get("u_high"), "vwap": r.get("u_vwap"), "last_min": r.get("u_last_min"),
+               "vol_30": r.get("u_vol30"), "active60": r.get("u_active60"), "close_pos": r.get("u_close_pos"),
+               "ah_pct": r.get("u_ah_pct"), "avg_volume": r.get("avg_volume"), "float_shares": r.get("float_shares"),
+               "vol_surge_ratio": vsr, "catalyst_score": r.get("catalyst_score"), "catalyst_hours": r.get("catalyst_hours"),
+               "offering_days": r.get("offering_days"), "offering_news": r.get("catalyst_offering_news"),
+               "reverse_split": rs, "daily_score": d.get("score"), "daily_cap_reason": d.get("cap_reason"), "hi20": hi20,
+               "regime": regime.get("label"), "iwm_chg": idx.get("IWM"), "mkt_chg": idx.get("QQQ"),
+               "min_avg_vol": (GAPGO_LARGE_MIN_AVG_VOL if r["mode"] == "large" else min_avg_vol), "max_float": max_float}
+        res = calc_unified_score(inp)
+        if res["excluded"]:
+            result["excluded"].append({"티커": r["ticker"], "종목명": (r.get("name") or "")[:24], "사유": res["excluded"]})
+            continue
+        px = r.get("u_price") or 0
+        if px and px < NASDAQ_MIN_BID:      # 1달러 미만: 나스닥 결핍통지 추정치를 경고에 덧붙인다
+            try:
+                comp = calc_nasdaq_compliance(fetch_history(r["ticker"]), px)
+                if comp.get("applicable"):
+                    txt = (f"결핍통지 추정 후 {comp['days_left']}일 남음" if comp.get("phase") == "notice_issued_est"
+                           else f"1달러 미만 {comp['streak_days']}일째(30일이면 결핍통지)")
+                    res["warn"] = (res["warn"] + " · " if res["warn"] else "") + txt
+            except Exception as _e:
+                _log_err("run_unified_scan:compliance:" + r["ticker"], _e)
+        tags = uni_tags(session, r.get("u_move"), vsr, d.get("score"), r.get("catalyst_score"),
+                        en.get("last_pct") if session == "pre" else None)
+        rows.append({**r, "u_score": res["score"], "u_grade": res["grade"], "u_parts": res["parts"], "u_why": res["why"],
+                     "u_warn": res["warn"], "u_tags": " ".join(tags), "u_mode": res["mode"], "u_proj": res["proj_ratio"],
+                     "u_vsr": vsr, "u_daily": d.get("score"), "u_hi20": hi20, "u_regime": regime.get("label")})
+    rows.sort(key=lambda x: x["u_score"], reverse=True)
+    result["rows"] = rows
+    return result
+
+
+def _uni_bucket(session: str, now_et=None):
+    """스캔 세션·시각에 따른 기록 구간 이름. 해당 세션 시간이 아니면 None(기록 안 함)."""
+    t = now_et if now_et is not None else _et_now()
+    if session == "pre":
+        return _gapgo_bucket(t)
+    m = t.hour * 60 + t.minute
+    if session == "regular":
+        if t.weekday() >= 5 or not (570 <= m < 960):
+            return None
+        return "정규장 09:30~11:00" if m < 660 else ("정규장 11:00~14:00" if m < 840 else "정규장 14:00~16:00")
+    return "마감 후·휴장" if (t.weekday() >= 5 or m >= 960 or m < 240) else None
+
+
+def log_unified_results(rows: list, session: str, top_n: int = 30, now_et=None) -> int:
+    """통합 스캐너 상위 후보를 기록. 세션 시간에 맞게 스캔했을 때만 기록하고, 같은 날·같은 종목·같은 구간은 중복 기록하지 않는다.
+    결과 추적: 프리마켓 스캔은 그날(D)의 시가→고가·종가, 정규장·마감 후 스캔은 '다음 거래일'의 갭·시가→고가·종가를 본다."""
+    try:
+        t = now_et if now_et is not None else _et_now()
+        bucket = _uni_bucket(session, t)
+        if bucket is None:
+            return 0
+        now = t.tz_convert("UTC")
+        today_key = now.strftime("%Y-%m-%d")
+        with _GAPGO_LOCK:
+            cur = _read_gapgo_log()
+            done_keys = set(zip(cur["logged_at_utc"].astype(str).str[:10], cur["ticker"], cur["scan_bucket"].astype(str)))
+            new = []
+            for r in rows[:top_n]:
+                if (today_key, r["ticker"], bucket) in done_keys:
+                    continue
+                p = r.get("u_parts") or {}
+                proj = r.get("u_proj")
+                new.append({
+                    "run_id": now.strftime("%Y%m%d%H%M%S"), "logged_at_utc": now.isoformat(), "ticker": r["ticker"],
+                    "mode": r.get("u_mode"), "session": session, "scan_bucket": bucket, "scan_et": t.strftime("%H:%M"),
+                    "ref_date": r.get("u_ref_date"), "tags": r.get("u_tags"),
+                    "pm_price": r.get("u_price"), "gap_pct": round(float(r.get("u_move") or 0), 2),
+                    "pm_volume": r.get("u_volume"), "proj_ratio": (round(float(proj), 3) if proj is not None else None),
+                    "score": r.get("u_score"), "grade": r.get("u_grade"), "why": r.get("u_why"), "warn": r.get("u_warn"),
+                    "regime": r.get("u_regime"),
+                    "f_catalyst": p.get("catalyst"), "f_activity": p.get("activity"), "f_strength": p.get("strength"),
+                    "f_move": p.get("move"), "f_accum": p.get("accum"), "f_struct": p.get("struct"), "out_status": "",
+                })
+            if new:
+                _write_gapgo_log(pd.concat([cur, pd.DataFrame(new)], ignore_index=True)[GAPGO_LOG_COLUMNS])
+            return len(new)
+    except Exception as _e:
+        _log_err("log_unified_results", _e)
+        return 0
+
+
+def render_unified_scanner():
+    """통합 스캐너 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 종목별 점수 하나로 합친 화면.
+    시간대(프리마켓/정규장/마감 후)를 자동으로 감지하고, 직접 바꿀 수도 있다."""
+    ui_section_header(mono_icon_badge("target", color="var(--c-violet)"), "통합 스캐너", "icon-violet", "title-violet")
+    st.caption("급등 신호(갭·등락률), 거래량 급증, 매집 흔적(일봉 수축·돌파 임박)을 종목별 점수 하나로 합쳤습니다. "
+               "프리마켓·정규장·마감 후(내일 준비)에 따라 점수 가중치가 달라지고, 증자·역분할·인수확정·상장폐지 종목은 먼저 제외합니다. "
+               "점수는 후보 선별용이며, 진입은 프리마켓 고점·VWAP 같은 가격 반응을 확인한 뒤에 판단하세요.")
+    choice = st.radio("시간대", ["자동", "프리마켓", "정규장", "마감 후(내일 준비)"], horizontal=True, key="uni_session_choice",
+                      help="자동: 지금 미국 동부 시각으로 판단. 프리마켓 04:00~09:30, 정규장 09:30~16:00, 그 외(마감 후·주말)는 내일 준비 모드입니다.")
+    auto = detect_session()
+    session = {"자동": auto, "프리마켓": "pre", "정규장": "regular", "마감 후(내일 준비)": "after"}[choice]
+    _t = _et_now()
+    st.caption(f"미국 동부 {_t.strftime('%a %H:%M')} · 감지된 시간대: **{UNI_SESSION_LABEL[auto]}**"
+               + (f" · 선택한 시간대: **{UNI_SESSION_LABEL[session]}**" if session != auto else ""))
+    if session != auto:
+        st.info("지금 시각과 다른 시간대를 선택했습니다. 해당 시간대의 가장 최근 데이터 기준으로 계산되고, 예측 검증 기록은 남지 않을 수 있습니다.")
+
+    pre = (session == "pre")
+    c1, c2 = st.columns(2)
+    with c1:
+        move_rng = st.slider("프리마켓 갭 범위 (%)" if pre else "당일 등락률 범위 (%)", 0.0, 100.0,
+                             (5.0, 15.0) if pre else (5.0, 60.0), 0.5, key=f"uni_move_{session}",
+                             help="프리마켓은 5~15%, 정규장·마감 후는 5~20%가 점수 만점 구간입니다. 마감 후에는 거래량 급증 종목이 등락률과 무관하게 추가됩니다.")
+    with c2:
+        price_rng = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="uni_price",
+                              help="1달러 미만 종목은 경고가 붙고 등급이 최대 B로 제한됩니다.")
+    c3, c4, c5, c6 = st.columns(4)
+    with c3:
+        min_vol = st.number_input("최소 프리마켓 거래량(주)" if pre else "최소 당일 거래량(주)", min_value=10_000,
+                                  value=300_000 if pre else 500_000, step=50_000, key=f"uni_minvol_{session}")
+    with c4:
+        min_avg = st.number_input("최소 평균거래량(주)", min_value=50_000, value=GAPGO_MIN_AVG_VOL, step=50_000, key="uni_avgvol",
+                                  help="대형·중형 모드 종목은 이 값과 관계없이 100만 주 이상이 필요합니다.")
+    with c5:
+        max_fl = st.number_input("플로트 상한(백만 주)", min_value=1, value=GAPGO_MAX_FLOAT // 1_000_000, step=5, key="uni_float")
+    with c6:
+        max_cap = st.number_input("시총 상한($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="uni_cap",
+                                  help="'대형·중형주 포함'을 켜면 이 값은 무시됩니다.")
+    d1, d2 = st.columns(2)
+    with d1:
+        incl_large = st.checkbox("대형·중형주도 포함 (시총 제한 해제 · 별도 점수)", value=False, key="uni_large",
+                                 help="시총 20억$ 이상 또는 플로트 상한 초과 종목은 플로트 대신 QQQ 동조를 보고 거래량·움직임 기준을 낮춰 평가합니다. 스캔이 느려질 수 있습니다.")
+    with d2:
+        min_vs = st.number_input("거래량 급증 최소 배율 (3일÷3개월, 마감 후 풀 추가용)", min_value=1.0, max_value=50.0,
+                                 value=UNI_MIN_VSURGE_TAG, step=0.5, key="uni_vsurge", disabled=(session != "after"))
+    min_score = st.slider("최소 점수", 0, 90, 45, 5, key="uni_min_score", help="45 = C등급 이상. 높일수록 후보가 줄어듭니다.")
+
+    if st.button("🔮 스캔 실행", key="run_unified", use_container_width=True):
+        with st.spinner("후보 수집 → 제외 필터 → 일봉·촉매·증자 점수 계산 중... (1~3분 걸릴 수 있습니다)"):
+            out = run_unified_scan(session, move_rng[0], move_rng[1], price_rng[0], price_rng[1], int(min_vol), int(max_cap),
+                                   int(min_avg), int(max_fl) * 1_000_000, include_large=bool(incl_large), min_vsurge=float(min_vs))
+            st.session_state["uni_out"] = out
+            st.session_state["uni_scan_et"] = _et_now().strftime("%H:%M")
+            st.session_state["uni_logged"] = log_unified_results([x for x in out["rows"] if x["u_score"] >= 45], session)
+
+    out = st.session_state.get("uni_out")
+    if out is None:
+        st.info("조건을 설정하고 '🔮 스캔 실행'을 눌러 주세요.")
+        render_gapgo_log_panel()
+        return
+    sess = out["session"]
+    idx, reg = out.get("idx") or {}, out.get("regime") or {}
+    _dm = out.get("data_min")
+    _dt = f"{_dm // 60:02d}:{_dm % 60:02d} ET" if _dm is not None else "—"
+    _fmt = lambda v: "—" if v is None else f"{v:+.1f}%"
+    st.caption(f"[{UNI_SESSION_LABEL[sess]}] 스캔 {st.session_state.get('uni_scan_et', '—')} ET · 데이터 마지막 체결 {_dt} · "
+               f"QQQ {_fmt(idx.get('QQQ'))} · IWM {_fmt(idx.get('IWM'))}")
+    if reg.get("label") in ("강세", "중립", "약세"):
+        st.caption(f"일봉 시장 환경: **{reg['label']}** (IWM 20일선 대비 {reg['iwm_vs_ma20']:+.1f}% · 5일 {reg['iwm_ret5']:+.1f}% · SPY 5일 {reg['spy_ret5']:+.1f}%)"
+                   + (" — 소형주 약세라 소형 모드 등급을 한 단계 낮췄습니다." if reg["label"] == "약세" else ""))
+    rows = out["rows"]
+    filtered = [r for r in rows if r["u_score"] >= min_score]
+    st.markdown(f"**{len(filtered)}개 종목** (후보 {out['n_base']}개 → 점수 계산 {len(rows)}개 중 {min_score}점 이상)"
+                + (f" · 이번 스캔에서 {st.session_state.get('uni_logged', 0)}건 기록" if st.session_state.get("uni_logged") else ""))
+    st.session_state["gg_excluded_delist"] = out["delist_excluded"]
+    render_excluded_expander("gg_excluded_delist")
+    if out["excluded"]:
+        with st.expander(f"🚫 제외된 종목 {len(out['excluded'])}개 (거래량·플로트·증자·역분할)", expanded=False):
+            st.dataframe(pd.DataFrame(out["excluded"]), use_container_width=True, hide_index=True)
+            st.caption("뉴스·공시 키워드 기반이라 오탐이 있을 수 있습니다. 증자 공시는 야후가 제공하는 SEC 서식 목록 기준이며 8-K 5.03(정관 변경) 같은 항목은 감지하지 못합니다.")
+    if not filtered:
+        st.warning("조건에 맞는 종목이 없습니다. 하루 0~5개가 정상 범위입니다. 조건을 완화하거나 다른 시간대에 다시 실행해 보세요.")
+        render_gapgo_log_panel()
+        return
+
+    table = []
+    for r in filtered:
+        avg, fl = r.get("avg_volume"), r.get("float_shares")
+        hi_, vw_, px_ = r.get("u_high"), r.get("u_vwap"), r.get("u_price")
+        large = (r.get("u_mode") == "large")
+        row = {
+            "⭐": "★" if r["ticker"] in st.session_state.favorites else "",
+            "신호": r.get("u_tags", ""), "티커": r["ticker"], "종목명": (r.get("name") or "")[:24],
+            "모드": "대형·중형" if large else "소형", "등급": r["u_grade"], "점수": r["u_score"],
+            "가격": px_, "갭/등락(%)": r.get("u_move"),
+            "예상거래량(평균대비%)": (r["u_proj"] * 100) if r.get("u_proj") is not None else None,
+            "VWAP대비(%)": ((px_ / vw_ - 1) * 100) if (px_ and vw_) else None,
+            "고점대비(%)": ((px_ / hi_ - 1) * 100) if (px_ and hi_) else None,
+            "3일/3개월 거래량(배)": r.get("u_vsr"), "수축점수": r.get("u_daily"),
+            "플로트(M)": (fl / 1e6) if fl else None,
+            "촉매": r.get("catalyst", "—"), "근거": r["u_why"], "경고": r["u_warn"],
+        }
+        if sess == "after":
+            row["시간외(%)"] = r.get("u_ah_pct")
+        table.append(row)
+    cfg = {
+        "점수": st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
+                                              help="시간대별 가중치(촉매·거래활동·강도·움직임·매집흔적·수급구조). A≥75, B≥60, C≥45"),
+        "가격": st.column_config.NumberColumn(format="$%.2f"),
+        "갭/등락(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+        "예상거래량(평균대비%)": st.column_config.NumberColumn(format="%.0f%%", help="지금까지 거래량을 '그 시각까지 보통 쌓이는 비율'로 환산한 세션 마감 예상 거래량 ÷ 평균 일거래량"),
+        "VWAP대비(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+        "고점대비(%)": st.column_config.NumberColumn(format="%+.1f%%", help="세션 고점에서 얼마나 내려왔나 (프리마켓=프리마켓 고점, 정규장·마감 후=당일 고점)"),
+        "3일/3개월 거래량(배)": st.column_config.NumberColumn(format="%.1f"),
+        "수축점수": st.column_config.NumberColumn(format="%.0f", help="일봉 돌파 임박 점수(변동성 축소·거래량 선행·20일선 직전)"),
+        "플로트(M)": st.column_config.NumberColumn(format="%.1f"),
+        "시간외(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+    }
+    event = st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True, on_select="rerun",
+                         selection_mode="single-row", key="uni_df", column_config=cfg)
+    st.caption("행을 클릭하면 정밀 분석 화면으로 이동합니다. 가중치·시간 보정 곡선은 초안이므로 아래 '예측 검증'으로 세션·등급·시간대별 적중률을 확인하며 보정하세요.")
     sel = []
     if event is not None:
         try:
@@ -7418,6 +8103,9 @@ def render_news_section(ticker_input):
 if st.session_state.get("show_heatmap", False):
     render_sector_heatmap()
     st.markdown("---")
+
+if st.session_state.get("show_unified", False):
+    render_unified_scanner()
 
 if st.session_state.get("show_screener", False):
     render_surge_screener()
