@@ -8161,12 +8161,24 @@ if st.session_state.get("has_searched"):
 
     with st.spinner("야후 파이낸스 및 스톡타이탄에서 실시간 데이터를 분석 중입니다..."):
         # 서로 의존관계 없는 네트워크 호출을 동시에 실행
-        with ThreadPoolExecutor(max_workers=5) as _prefetch_ex:
+        def _warm(_fn, *_a):
+            """캐시 예열 전용: 결과는 버리고, 실패해도 화면 렌더 단계에서 평소처럼 다시 시도·처리된다."""
+            try:
+                _fn(*_a)
+            except Exception as _e:
+                _log_err("warm:" + getattr(_fn, "__name__", "fn"), _e)
+
+        with ThreadPoolExecutor(max_workers=11) as _prefetch_ex:
             _fut_hist     = _prefetch_ex.submit(fetch_history, active_ticker)
             _fut_spike    = _prefetch_ex.submit(fetch_spike_history, active_ticker)
             _fut_offering = _prefetch_ex.submit(fetch_offering_history, active_ticker)
             _fut_info     = _prefetch_ex.submit(fetch_ticker_info, active_ticker)
             _fut_fx       = _prefetch_ex.submit(fetch_usd_to_krw)
+            # 아래 조회들은 원래 화면을 그리는 도중 하나씩 순서대로 실행되던 것들이다.
+            # 위 5개와 동시에 미리 받아 두면(모두 st.cache_data) 이후 렌더 단계는 캐시에서 즉시 반환된다.
+            for _warm_fn in (fetch_intraday_5min, calc_time_adjusted_rvol, compute_setup_for_ticker,
+                             fetch_yahoo_news, fetch_sec_filings, detect_delisting):
+                _prefetch_ex.submit(_warm, _warm_fn, active_ticker)
 
             hist          = _fut_hist.result()
             spike_df      = _fut_spike.result()
