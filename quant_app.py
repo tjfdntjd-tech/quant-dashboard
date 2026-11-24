@@ -96,6 +96,12 @@ def fetch_usd_to_krw() -> float:
         _log_err("fetch_usd_to_krw", _e)
         return 1400.0  # 폴백: 조회 실패 시 고정값 사용
 
+@st.cache_data(ttl=60, show_spinner=False, max_entries=600)
+def fetch_1m_5d(sym: str) -> pd.DataFrame:
+    """최근 5거래일 1분봉(프리·애프터 포함). 프리마켓 갭 스캔·통합 스캐너·지수(QQQ/IWM) 조회가
+    같은 종목을 각자 다시 받던 것을 한 번만 받도록 공유한다. 실패 시 예외를 그대로 올려 호출부 처리를 유지."""
+    return yf.Ticker(sym).history(period="5d", interval="1m", prepost=True)
+
 # 거래대금 기준 (억 원)
 # 기존 500억(약 $3,700만)은 소형주 단타에는 문턱이 너무 높아서 70억(약 $500만)으로 낮춤.
 # (환율 1,400원 기준 $500만 ≈ 70억 원. 포지션이 크면 270억(≈$2천만) 이상을 권장)
@@ -498,7 +504,7 @@ def fetch_premarket_gappers(min_gap: float, min_price: float, max_price: float,
     def _pm_stats(sym: str):
         """한 종목의 프리마켓 통계(compute_pm_stats). 프리마켓 거래가 없으면 None."""
         try:
-            return compute_pm_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
+            return compute_pm_stats(fetch_1m_5d(sym))
         except Exception as _e:
             _log_err("fetch_premarket_gappers:" + sym, _e)
             return None
@@ -729,7 +735,7 @@ def fetch_spike_history(ticker: str) -> pd.DataFrame:
     겪으므로, 차트용 1년치 데이터(fetch_history)와는 별도로 전체 기간을 조회합니다.
     """
     try:
-        df = yf.Ticker(ticker).history(period="max")
+        df = yf.Ticker(ticker).history(period="max", actions=False)   # 배당·분할 열은 쓰지 않으므로 생략
         if df.empty or len(df) < 2:
             return pd.DataFrame()
         df = df.dropna(subset=["Close"])
@@ -6706,7 +6712,7 @@ def fetch_index_premarket() -> dict:
     out = {"QQQ": None, "IWM": None}
     for sym in list(out):
         try:
-            stats = compute_pm_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
+            stats = compute_pm_stats(fetch_1m_5d(sym))
             if stats:
                 out[sym] = stats["pm_gap"]
         except Exception as _e:
@@ -7515,7 +7521,7 @@ def fetch_index_session(session: str) -> dict:
     out = {"QQQ": None, "IWM": None}
     for sym in list(out):
         try:
-            s_ = compute_day_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
+            s_ = compute_day_stats(fetch_1m_5d(sym))
             if s_:
                 out[sym] = s_["change_pct"]
         except Exception as _e:
@@ -7525,7 +7531,7 @@ def fetch_index_session(session: str) -> dict:
 
 def _uni_day_stats_fetch(sym: str):
     try:
-        return compute_day_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
+        return compute_day_stats(fetch_1m_5d(sym))
     except Exception as _e:
         _log_err("_uni_day_stats_fetch:" + sym, _e)
         return None
@@ -8098,6 +8104,28 @@ def render_news_section(ticker_input):
 # ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
+# 정보 보기(뉴스·소셜·차트 해석) — fragment
+# 탭을 바꿀 때 위쪽 기술적 분석 전체를 다시 그리지 않고 이 영역만 다시 실행한다.
+# ════════════════════════════════════════════════════════════════
+@st.fragment
+def render_info_view(active_ticker, hist, close_price):
+    info_view = st.segmented_control(
+        "정보 보기",
+        ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
+        default="📰 뉴스 & 호재",
+        required=True,
+        key="info_view",
+        label_visibility="collapsed",
+    )
+    if info_view == "📰 뉴스 & 호재":
+        render_news_section(active_ticker)
+    elif info_view == "💬 소셜 미디어":
+        render_social_section(active_ticker)
+    else:
+        render_chart_interpretation(active_ticker, hist, close_price)
+
+
+# ════════════════════════════════════════════════════════════════
 # 섹터 히트맵 · 검색기 (토글)
 # ════════════════════════════════════════════════════════════════
 if st.session_state.get("show_heatmap", False):
@@ -8197,17 +8225,4 @@ if st.session_state.get("has_searched"):
                 top_cards_front=top_cards_front, top_cards_end=top_cards_end,
             )
             st.markdown("---")
-            info_view = st.segmented_control(
-                "정보 보기",
-                ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
-                default="📰 뉴스 & 호재",
-                required=True,
-                key="info_view",
-                label_visibility="collapsed",
-            )
-            if info_view == "📰 뉴스 & 호재":
-                render_news_section(active_ticker)
-            elif info_view == "💬 소셜 미디어":
-                render_social_section(active_ticker)
-            else:
-                render_chart_interpretation(active_ticker, hist, float(today['Close']))
+            render_info_view(active_ticker, hist, float(today['Close']))
