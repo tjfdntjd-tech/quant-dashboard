@@ -3793,6 +3793,84 @@ input::placeholder,textarea::placeholder{color:#9ca3af!important;-webkit-text-fi
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
 """
 
+V4_THEME_CSS = r"""
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+/* ════════════════════════════════════════════════════════════════
+   V4 테마 오버라이드 — MINIMAL_CSS 위에 덮어쓰는 마지막 레이어
+   · 색: 쿨 그레이 바탕 + 흰 면 + 네이비 강조 (한국 관례: 상승=빨강, 하락=파랑)
+   · 글꼴: IBM Plex Sans KR 하나로 통일, 숫자는 표 정렬용 tabular-nums
+   · 모서리: 카드 6px, 타일 4px, 그림자 없음
+   ════════════════════════════════════════════════════════════════ */
+:root{
+  --m-bg:#F2F4F7; --m-card:#FFFFFF; --m-line:#E3E7ED; --m-line-2:#EEF1F5;
+  --m-ink:#141A22; --m-sub:#4A5361; --m-mute:#7B8492;
+  --m-accent:#1F3A5F;
+  --m-up:#C62828;   --m-up-bg:#FDECEC;   --m-up-line:#F5C2C2;
+  --m-down:#1565C0; --m-down-bg:#E8F1FB; --m-down-line:#B9D3F0;
+  --m-warn:#B26A00; --m-warn-bg:#FFF6E5; --m-warn-line:#F5D9A0;
+  --m-info:#1F3A5F; --m-info-bg:#EDF1F7; --m-info-line:#C5D1E2;
+  --font-body:"IBM Plex Sans KR","IBM Plex Sans","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  --font-display:var(--font-body);
+  --font-mono:"IBM Plex Sans",var(--font-body);
+  --radius-card:6px; --radius-card-sm:4px; --radius-pill:6px;
+}
+
+/* 바탕 · 글꼴 */
+html,body,.stApp,[data-testid="stAppViewContainer"]{background:var(--m-bg)!important;font-family:var(--font-body)!important;}
+h1,h2,h3,h4{letter-spacing:-0.015em!important;}
+.metric-value,.delta-up,.delta-down,.delta-neu{font-variant-numeric:tabular-nums;}
+
+/* 카드 · 면: 그림자 제거, 모서리 6px */
+.glass-card,.metric-card,.news-card,.social-card,.status-item,.sentiment-bar-wrap,.scan-header,
+.app-header,[data-testid="stForm"],[data-testid="stExpander"] details{
+  box-shadow:none!important;border-radius:var(--radius-card)!important;}
+.glass-card:hover,.news-card:hover,.social-card:hover,.metric-card:hover{box-shadow:none!important;border-color:#CBD2DC!important;}
+.sector-cell{border-radius:var(--radius-card-sm)!important;box-shadow:none!important;}
+
+/* 상승·하락 방향: 한국 관례 (상승=빨강, 하락=파랑) */
+.pos-card,.social-bull{border-left:3px solid var(--m-up)!important;}
+.neg-card,.social-bear{border-left:3px solid var(--m-down)!important;}
+.neu-card{border-left:3px solid var(--m-line)!important;}
+.delta-up{color:var(--m-up)!important;}
+.delta-down{color:var(--m-down)!important;}
+.sent-pos,.bull-badge{background:var(--m-up-bg)!important;color:var(--m-up)!important;border-color:var(--m-up-line)!important;}
+.sent-neg,.bear-badge{background:var(--m-down-bg)!important;color:var(--m-down)!important;border-color:var(--m-down-line)!important;}
+.sent-neu{background:var(--m-warn-bg)!important;color:var(--m-warn)!important;border-color:var(--m-warn-line)!important;}
+.sentiment-bar-fill{background:var(--m-up)!important;}
+
+/* 배지 · 배너 · 알림: 옅은 틴트, 얇은 테두리, 6px */
+.sentiment-badge,.impact-badge,.platform-badge,.signal-chip{border-radius:var(--radius-card-sm)!important;}
+.alert-banner,.china-banner,.split-banner,[data-testid="stAlert"]{border-radius:var(--radius-card)!important;box-shadow:none!important;}
+
+/* 세그먼트 컨트롤: 선택 = 네이비 면 + 흰 글씨 (시안과 동일) */
+[data-testid="stSegmentedControl"] button[aria-checked="true"],
+[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+[data-testid="stSegmentedControl"] button[aria-selected="true"],
+[data-testid^="stBaseButton-segmented"][aria-checked="true"],
+[data-testid^="stBaseButton-pills"][aria-checked="true"],
+button[kind$="Active"]{
+  background:var(--m-accent)!important;background-color:var(--m-accent)!important;border-color:var(--m-accent)!important;}
+[data-testid="stSegmentedControl"] button[aria-checked="true"] *,
+[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,
+[data-testid="stSegmentedControl"] button[aria-selected="true"] *,
+[data-testid^="stBaseButton-segmented"][aria-checked="true"] *,
+[data-testid^="stBaseButton-pills"][aria-checked="true"] *,
+button[kind$="Active"] *{color:#FFFFFF!important;-webkit-text-fill-color:#FFFFFF!important;fill:#FFFFFF!important;}
+
+/* 탭: 네이비 밑줄 */
+.stTabs [data-baseweb="tab-highlight"]{background:var(--m-accent)!important;}
+.stTabs [aria-selected="true"]{color:var(--m-ink)!important;}
+
+/* 버튼 기본 면은 유지하되 모서리만 통일 */
+.stButton button,.stFormSubmitButton button,[data-testid="stFormSubmitButton"] button{border-radius:var(--radius-card-sm)!important;}
+
+/* 사이드바: 흰 면 + 얇은 구분선 */
+[data-testid="stSidebar"]{background:#FFFFFF!important;border-right:1px solid var(--m-line)!important;}
+
+/* 캡션·보조 글씨 */
+[data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] *{color:var(--m-mute)!important;}
+"""
+
 def inject_css(dark: bool = True):
     if dark:
         bg_main      = "linear-gradient(180deg, #232326, #232326)"
@@ -3942,7 +4020,7 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n", unsafe_allow_html=True)
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n", unsafe_allow_html=True)
 
 inject_css(False)   # 미니멀 라이트 팔레트 고정
 
