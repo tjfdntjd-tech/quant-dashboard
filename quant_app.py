@@ -3886,6 +3886,31 @@ button[kind$="Active"] *{color:#FFFFFF!important;-webkit-text-fill-color:#FFFFFF
 .v4-hm-label{font-size:12px;color:var(--m-mute);}
 .v4-hm-name{font-size:15px;font-weight:600;margin-top:2px;}
 .v4-hm-val{font-size:20px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums;}
+/* ── 모바일 (폭 860px 이하 · 520px 이하) ── */
+@media (max-width:860px){
+  .v4-score-num{font-size:56px;}
+  .v4-score-unit{font-size:16px;}
+  .v4-scale{margin:20px 0 28px;}
+  .v4-check-row{grid-template-columns:40px 1fr auto;gap:10px;padding:10px 0;}
+  .v4-check-title{font-size:14px;}
+  .v4-check-val{font-size:13px;}
+  .v4-hm-val{font-size:18px;}
+}
+@media (max-width:520px){
+  [data-testid="stHorizontalBlock"]{gap:0.5rem!important;}
+  .v4-score-num{font-size:48px;}
+  .v4-line,.v4-caution,.v4-guide{font-size:14px;}
+  .v4-tick-label{font-size:11px;}
+  .v4-check-row{grid-template-columns:36px 1fr;}
+  .v4-check-val{grid-column:2;text-align:left;}
+  .v4-hm-card{padding:12px;}
+  .v4-hm-name{font-size:14px;}
+  .v4-hm-val{font-size:17px;}
+  .app-header h1{font-size:1.05rem!important;}
+  .stTabs [data-baseweb="tab"]{padding-left:.6rem!important;padding-right:.6rem!important;}
+  .screens-nav{font-size:14px;}
+}
+
 """
 
 def inject_css(dark: bool = True):
