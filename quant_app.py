@@ -3869,6 +3869,23 @@ button[kind$="Active"] *{color:#FFFFFF!important;-webkit-text-fill-color:#FFFFFF
 
 /* 캡션·보조 글씨 */
 [data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] *{color:var(--m-mute)!important;}
+
+/* 판단 요약 블록 (메인 화면) */
+.v4-score-num{font-size:72px;font-weight:600;line-height:1;letter-spacing:-0.04em;color:var(--m-ink);font-variant-numeric:tabular-nums;}
+.v4-score-unit{font-size:18px;color:var(--m-sub);margin-left:4px;}
+.v4-stage{font-size:16px;font-weight:600;color:var(--m-accent);margin-top:6px;}
+.v4-scale{position:relative;height:8px;background:var(--m-line);border-radius:4px;margin:24px 0 30px;}
+.v4-scale-fill{position:absolute;left:0;top:0;bottom:0;background:var(--m-accent);border-radius:4px;}
+.v4-tick{position:absolute;top:-5px;width:1px;height:18px;background:var(--m-mute);}
+.v4-tick-label{position:absolute;top:16px;transform:translateX(-50%);font-size:12px;color:var(--m-mute);white-space:nowrap;}
+.v4-line{font-size:16px;margin:0 0 12px;color:var(--m-ink);}
+.v4-caution{font-size:15px;color:var(--m-warn);margin:0 0 12px;padding-left:12px;border-left:3px solid var(--m-warn);}
+.v4-guide{font-size:14px;color:var(--m-mute);margin:0;}
+/* 섹터 히트맵 최강·최약 카드 */
+.v4-hm-card{padding:14px 16px;border-radius:4px;border:1px solid;}
+.v4-hm-label{font-size:12px;color:var(--m-mute);}
+.v4-hm-name{font-size:15px;font-weight:600;margin-top:2px;}
+.v4-hm-val{font-size:20px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums;}
 """
 
 def inject_css(dark: bool = True):
@@ -5264,7 +5281,6 @@ def render_sector_heatmap():
         st.warning("섹터 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.")
         return
 
-    view_tab1, view_tab2, view_tab3 = st.tabs(["📅 당일", "📆 1주", "🗓️ 1개월"])
 
     def _render_grid(key: str, label: str):
         sorted_data = sorted(sector_data, key=lambda x: x[key], reverse=True)
@@ -5295,28 +5311,27 @@ def render_sector_heatmap():
         bot = sorted_data[-1]
         top_bg, top_c = _sector_color(top[key])
         bot_bg, bot_c = _sector_color(bot[key])
-        summary_html = f"""
-        <div style="display:flex;gap:0.6rem;margin-bottom:0.9rem;flex-wrap:wrap;">
-            <div style="flex:1;min-width:120px;background:{top_bg};border:1px solid {top_c}44;border-radius:10px;padding:0.6rem 0.8rem;">
-                <div style="font-size:0.65rem;color:rgba(255,255,255,0.5);font-weight:700;text-transform:uppercase;margin-bottom:0.2rem;">🏆 최강 섹터</div>
-                <div style="font-size:0.9rem;font-weight:800;color:{top_c};">{_safe_html(top['sector'])} ({_safe_html(top['ticker'])})</div>
-                <div style="font-size:0.8rem;color:{top_c};">▲ {top[key]:.2f}%</div>
-            </div>
-            <div style="flex:1;min-width:120px;background:{bot_bg};border:1px solid {bot_c}44;border-radius:10px;padding:0.6rem 0.8rem;">
-                <div style="font-size:0.65rem;color:rgba(255,255,255,0.5);font-weight:700;text-transform:uppercase;margin-bottom:0.2rem;">📉 최약 섹터</div>
-                <div style="font-size:0.9rem;font-weight:800;color:{bot_c};">{_safe_html(bot['sector'])} ({_safe_html(bot['ticker'])})</div>
-                <div style="font-size:0.8rem;color:{bot_c};">▼ {abs(bot[key]):.2f}%</div>
-            </div>
-        </div>"""
+        def _hm_card(title, s, bg_c, txt_c, arrow):
+            return (
+                f'<div class="v4-hm-card" style="background:{bg_c};border-color:{txt_c}55;">'
+                f'<div class="v4-hm-label">{title}</div>'
+                f'<div class="v4-hm-name" style="color:{txt_c};">{_safe_html(s["sector"])} ({_safe_html(s["ticker"])})</div>'
+                f'<div class="v4-hm-val" style="color:{txt_c};">{arrow} {abs(s[key]):.2f}%</div>'
+                '</div>'
+            )
+        _hc1, _hc2 = st.columns(2, gap="medium")
+        with _hc1:
+            st.markdown(_hm_card("최강 섹터", top, top_bg, top_c, "▲"), unsafe_allow_html=True)
+        with _hc2:
+            st.markdown(_hm_card("최약 섹터", bot, bot_bg, bot_c, "▼"), unsafe_allow_html=True)
+        st.markdown(legend_html + f'<div class="sector-grid">{cells_html}</div>', unsafe_allow_html=True)
 
-        st.markdown(summary_html + legend_html + f'<div class="sector-grid">{cells_html}</div>', unsafe_allow_html=True)
-
-    with view_tab1:
-        _render_grid("d1", "당일")
-    with view_tab2:
-        _render_grid("w1", "1주")
-    with view_tab3:
-        _render_grid("m1", "1개월")
+    _period_map = {"당일": "d1", "1주": "w1", "1개월": "m1"}
+    _period = st.segmented_control(
+        "기간", list(_period_map), default="당일", key="heatmap_period",
+        required=True, label_visibility="collapsed",
+    ) or "당일"
+    _render_grid(_period_map[_period], _period)
 
 
 # ════════════════════════════════════════════════════════════════
@@ -7641,15 +7656,38 @@ if st.session_state.get("has_searched"):
             if detect_delisting(active_ticker):      # 상장폐지·청산·피인수 확정 종목은 점수가 무의미하므로 카드에서 숨긴다
                 ticker_score = None
 
-            _sum = [f"오늘 {pct_change_now:+.1f}%", f"거래량 20일 평균 대비 {vol_ma20_ratio:.0f}%"]
-            if ticker_score is not None:
-                _sum.insert(0, f"예측 점수 {ticker_score:.0f}점 ({(_pbres or {}).get('stage', '—')})")
-            else:
-                _sum.insert(0, "예측 점수 없음")
             _warn_txt = (_pbres or {}).get("warn", "")
-            if _warn_txt:
-                _sum.append("⚠️ " + _warn_txt.split(" · ")[0])
-            st.info(("📌 한눈에 보기: " + " · ".join(_sum) + "\n\n판단 보조용 요약입니다. 진입 여부는 아래 상세 분석과 함께 보고 결정하세요.").replace("$", "\\$"))
+            _stage = (_pbres or {}).get("stage", "")
+            _stage_ok = ticker_score is not None and _stage in ("임박", "준비", "관찰")
+            _score_txt = f"{ticker_score:.0f}" if ticker_score is not None else "—"
+            _fill = max(0, min(100, ticker_score or 0))
+            _ticks = "".join(
+                f'<div class="v4-tick" style="left:{p}%"></div>'
+                f'<div class="v4-tick-label" style="left:{p}%">{lbl} {p}</div>'
+                for p, lbl in ((45, "관찰"), (60, "준비"), (75, "임박"))
+            )
+            _score_html = (
+                '<div class="v4-score">'
+                f'<div class="v4-score-num">{_score_txt}<span class="v4-score-unit">점</span></div>'
+                f'<div class="v4-stage">{(_stage + " 단계") if _stage_ok else "점수 없음"}</div>'
+                f'<div class="v4-scale"><div class="v4-scale-fill" style="width:{_fill}%"></div>{_ticks}</div>'
+                '</div>'
+            )
+            _caution_html = (
+                f'<p class="v4-caution">주의: {_safe_html(_warn_txt.split(" · ")[0])}</p>' if _warn_txt else ""
+            )
+            _sum_html = (
+                '<div class="v4-summary">'
+                f'<p class="v4-line"><strong>오늘 {pct_change_now:+.1f}%</strong> · 거래량 20일 평균 대비 <span class="num">{vol_ma20_ratio:.0f}%</span></p>'
+                + _caution_html
+                + '<p class="v4-guide">점수는 후보를 고르기 위한 참고값입니다. 아래 상세 분석과 함께 보고 판단하세요.</p>'
+                '</div>'
+            )
+            _vc1, _vc2 = st.columns([1, 2], gap="large")
+            with _vc1:
+                st.markdown(_score_html, unsafe_allow_html=True)
+            with _vc2:
+                st.markdown(_sum_html, unsafe_allow_html=True)
             top_cards_front, top_cards_end = build_top_summary_cards_html(
                 today, yesterday, hist, vol_ma20_ratio, score=ticker_score
             )
