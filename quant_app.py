@@ -3911,6 +3911,20 @@ button[kind$="Active"] *{color:#FFFFFF!important;-webkit-text-fill-color:#FFFFFF
   .screens-nav{font-size:14px;}
 }
 
+/* ── 모바일 3: 진입 조건을 정보 영역 위로 올리기 (폭 860px 이하) ── */
+@media (max-width:860px){
+  [data-testid="stColumn"]:has(> div .v4-checks),
+  [data-testid="stColumn"]:has(.v4-checks){order:-1;}
+}
+/* ── 모바일 5: 터치 영역 44px, 보조 글씨 13px 이상 ── */
+@media (max-width:860px){
+  [data-testid="stSegmentedControl"] button,
+  [data-testid="stPills"] button,
+  .stFormSubmitButton button,
+  [data-testid="stFormSubmitButton"] button{min-height:44px!important;}
+  .v4-check-sub,.v4-hm-label,.v4-tick-label,[data-testid="stCaptionContainer"]{font-size:13px!important;}
+}
+
 """
 
 def inject_css(dark: bool = True):
@@ -4344,45 +4358,6 @@ render_excel_scan_results()
 # 사이드바 — 티커 입력 및 파라미터
 # ════════════════════════════════════════════════════════════════
 st.sidebar.header("🔍 주식 분석 설정")
-
-# ── 화면 선택: 한 번에 한 화면만 표시 ──
-_SCREEN_MAIN = "📈 종목 분석"
-
-def _goto_main():
-    st.session_state["active_screen"] = _SCREEN_MAIN
-
-st.sidebar.radio(
-    "화면 선택",
-    [_SCREEN_MAIN, "🎯 통합 스캐너", "🌡️ 섹터 히트맵"],
-    key="active_screen",
-    help="한 번에 한 화면만 보여줍니다. 종목 검색 버튼을 누르면 📈 종목 분석 화면으로 돌아갑니다.",
-)
-st.sidebar.markdown("---")
-
-# ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
-with st.sidebar.form(key="ticker_search_form"):
-    ticker_input = st.text_input(
-        "티커명을 입력하세요 (예: NVDA, AAPL)",
-        value=st.session_state.selected_ticker
-    ).upper()
-
-    col_btn, col_star = st.columns([3, 1])
-    with col_btn:
-        search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
-    with col_star:
-        is_fav = ticker_input in st.session_state.favorites
-        fav_button_clicked = st.form_submit_button(
-            "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
-        )
-
-if fav_button_clicked:
-    if is_fav:
-        st.session_state.favorites.remove(ticker_input)
-    else:
-        if ticker_input and ticker_input not in st.session_state.favorites:
-            st.session_state.favorites.append(ticker_input)
-    save_favorites(st.session_state.favorites)
-    st.rerun()
 
 # ── 즐겨찾기 목록 ────────────────────────────────────────────────
 if st.session_state.favorites:
@@ -7603,6 +7578,59 @@ def render_news_section(ticker_input):
             # ════════════════════════════════════════════════════════════════
 # Part 11 / 메인 실행부 (토글 화면 · 티커 검색 · 탭 전환)
 # ════════════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════════════
+# 본문 상단 — 화면 선택 · 종목 검색 · 즐겨찾기 칩
+# 사이드바는 모바일에서 햄버거 메뉴 뒤로 숨으므로, 핵심 조작은 본문에 둔다.
+# ════════════════════════════════════════════════════════════════
+_SCREEN_MAIN = "📈 종목 분석"
+
+def _goto_main():
+    st.session_state["active_screen"] = _SCREEN_MAIN
+
+def _pick_fav():
+    _p = st.session_state.get("fav_pills")
+    if _p:
+        st.session_state["selected_ticker"] = _p
+        st.session_state["active_ticker"] = _p
+        st.session_state["has_searched"] = True
+        st.session_state["active_screen"] = _SCREEN_MAIN
+
+st.segmented_control(
+    "화면", [_SCREEN_MAIN, "🎯 통합 스캐너", "🌡️ 섹터 히트맵"],
+    key="active_screen", required=True, label_visibility="collapsed",
+)
+
+# ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
+with st.form(key="ticker_search_form"):
+    ticker_input = st.text_input(
+        "티커명을 입력하세요 (예: NVDA, AAPL)",
+        value=st.session_state.selected_ticker
+    ).upper()
+
+    col_btn, col_star = st.columns([3, 1])
+    with col_btn:
+        search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
+    with col_star:
+        is_fav = ticker_input in st.session_state.favorites
+        fav_button_clicked = st.form_submit_button(
+            "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
+        )
+
+if fav_button_clicked:
+    if is_fav:
+        st.session_state.favorites.remove(ticker_input)
+    else:
+        if ticker_input and ticker_input not in st.session_state.favorites:
+            st.session_state.favorites.append(ticker_input)
+    save_favorites(st.session_state.favorites)
+    st.rerun()
+
+if st.session_state.favorites:
+    st.pills(
+        "즐겨찾기", st.session_state.favorites, selection_mode="single",
+        key="fav_pills", on_change=_pick_fav, label_visibility="collapsed",
+    )
 
 # ════════════════════════════════════════════════════════════════
 # 화면 전환 — 한 번에 한 화면만 렌더링 (통합 스캐너 · 섹터 히트맵 · 종목 분석)
