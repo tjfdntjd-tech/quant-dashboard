@@ -96,12 +96,6 @@ def fetch_usd_to_krw() -> float:
         _log_err("fetch_usd_to_krw", _e)
         return 1400.0  # 폴백: 조회 실패 시 고정값 사용
 
-@st.cache_data(ttl=60, show_spinner=False, max_entries=600)
-def fetch_1m_5d(sym: str) -> pd.DataFrame:
-    """최근 5거래일 1분봉(프리·애프터 포함). 프리마켓 갭 스캔·통합 스캐너·지수(QQQ/IWM) 조회가
-    같은 종목을 각자 다시 받던 것을 한 번만 받도록 공유한다. 실패 시 예외를 그대로 올려 호출부 처리를 유지."""
-    return yf.Ticker(sym).history(period="5d", interval="1m", prepost=True)
-
 # 거래대금 기준 (억 원)
 # 기존 500억(약 $3,700만)은 소형주 단타에는 문턱이 너무 높아서 70억(약 $500만)으로 낮춤.
 # (환율 1,400원 기준 $500만 ≈ 70억 원. 포지션이 크면 270억(≈$2천만) 이상을 권장)
@@ -355,7 +349,7 @@ def save_favorites(favorites: list) -> None:
 # ════════════════════════════════════════════════════════════════
 # 1. 페이지 설정 — set_page_config는 반드시 가장 먼저
 # ════════════════════════════════════════════════════════════════
-st.set_page_config(page_title="급등주 실시간 검증기 V3", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="급등주 실시간 검증기 V4", layout="wide", initial_sidebar_state="auto")
 
 # ════════════════════════════════════════════════════════════════
 # #1 session_state 초기화 — 단일 위치, 중복 제거
@@ -364,11 +358,7 @@ _defaults = {
     "favorites":        load_favorites(),   # 파일에서 복원
     "selected_ticker":  "",
     "scan_results":     [],
-    "show_heatmap":     False,          # 섹터 히트맵 토글 (사이드바 버튼보다 먼저 초기화)
-    "show_screener":    False,          # 급등주 검색기 토글
-    "show_vol_surge":   False,          # 거래량 급증 스크리너 토글
-    "show_prebreak":    False,          # 급등 전 매집 스캐너 토글 (구버전)
-    "show_unified":     False,          # 통합 스캐너 토글
+    "active_screen":    "📈 종목 분석",   # 화면 선택 (한 번에 한 화면만 표시)
     "excl_delisted":    True,           # 상장폐지 확정·청산·OTC 이전 종목 제외
     "excl_acquired":    True,           # 피인수(합병 확정) 종목 제외
     "excel_scan":       None,           # 엑셀 종목 일괄 분석 결과
@@ -504,7 +494,7 @@ def fetch_premarket_gappers(min_gap: float, min_price: float, max_price: float,
     def _pm_stats(sym: str):
         """한 종목의 프리마켓 통계(compute_pm_stats). 프리마켓 거래가 없으면 None."""
         try:
-            return compute_pm_stats(fetch_1m_5d(sym))
+            return compute_pm_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
         except Exception as _e:
             _log_err("fetch_premarket_gappers:" + sym, _e)
             return None
@@ -735,7 +725,7 @@ def fetch_spike_history(ticker: str) -> pd.DataFrame:
     겪으므로, 차트용 1년치 데이터(fetch_history)와는 별도로 전체 기간을 조회합니다.
     """
     try:
-        df = yf.Ticker(ticker).history(period="max", actions=False)   # 배당·분할 열은 쓰지 않으므로 생략
+        df = yf.Ticker(ticker).history(period="max")
         if df.empty or len(df) < 2:
             return pd.DataFrame()
         df = df.dropna(subset=["Close"])
@@ -3961,7 +3951,7 @@ inject_css(False)   # 미니멀 라이트 팔레트 고정
 # ════════════════════════════════════════════════════════════════
 st.markdown(f"""
 <div class="app-header">
-    <h1>🚀 급등주 실시간 검증기 V3</h1>
+    <h1>🚀 급등주 실시간 검증기 V4</h1>
     <p>야후 파이낸스 · 스톡타이탄 Rhea-AI · 기술적 지표 통합 분석 &nbsp;|&nbsp; 환율 ₩{fetch_usd_to_krw():,.0f} (실시간)</p>
 </div>
 """, unsafe_allow_html=True)
@@ -4235,60 +4225,19 @@ render_excel_scan_results()
 # ════════════════════════════════════════════════════════════════
 st.sidebar.header("🔍 주식 분석 설정")
 
-# ── 섹터 히트맵 / 급등주 검색기 / 거래량 급증 스크리너 토글 (스크롤 없이 바로 보이도록 상단 배치) ──
-tcol1, tcol2 = st.sidebar.columns(2)
-with tcol1:
-    st.checkbox(
-        "섹터 히트맵", key="show_heatmap",
-        help="11개 섹터 ETF의 당일/1주/1개월 성과를 히트맵으로 표시합니다"
-    )
-with tcol2:
-    st.checkbox(
-        "통합 스캐너", key="show_unified",
-        help="급등주 검색기 + 거래량 급증 + 급등 전 매집을 종목별 점수 하나로 합친 스캐너입니다. 프리마켓·정규장·마감 후(내일 준비)를 자동 감지합니다"
-    )
-st.sidebar.checkbox(
-    "🚫 상장폐지 확정 종목 제외", key="excl_delisted",
-    help="Form 25·15 공시, 상장폐지 확정 뉴스, 청산, OTC 이전 종목을 검색기·스캐너 순위에서 뺍니다 (뉴스·공시 키워드 기반)")
-st.sidebar.checkbox(
-    "🚫 피인수(합병 확정) 종목 제외", key="excl_acquired",
-    help="'to be acquired / all-cash deal' 등 인수가 확정돼 가격이 고정된 종목을 순위에서 뺍니다 (변동성이 낮고 거래량이 몰려 '급등 전' 패턴처럼 보이는 오탐 방지)")
-with st.sidebar.expander("기존 스캐너 (구버전)", expanded=False):
-    st.caption("통합 스캐너로 합치기 전의 개별 스캐너입니다. 상세 필터·점수 검증 패널이 필요할 때만 사용하세요.")
-    st.checkbox("급등주 검색기", key="show_screener",
-                help="Yahoo Finance 실시간 스크리너로 조건에 맞는 급등 종목을 찾습니다")
-    st.checkbox("거래량 급증", key="show_vol_surge",
-                help="최근 3일 평균 거래량이 최근 3개월 평균 대비 N배 이상인 나스닥 종목을 찾습니다")
-    st.checkbox("급등 전 매집 (v0.4)", key="show_prebreak",
-                help="프리마켓 갭 종목을 촉매·프리마켓 거래량·강도·플로트·일봉 위치로 평가하는 구버전 갭 이어가기 스캐너입니다")
-st.sidebar.markdown("---")
+# ── 화면 선택: 한 번에 한 화면만 표시 ──
+_SCREEN_MAIN = "📈 종목 분석"
 
-with st.sidebar.expander("엑셀 종목 일괄 분석", expanded=False):
-    st.caption("섹터·티커가 들어 있는 엑셀(.xlsx)을 올리면 전 종목을 한 번에 분석해 섹터별로 정리합니다. "
-               "('종목' 시트의 섹터/티커 열을 사용, 티커가 빈 줄은 건너뜀)")
-    _xl_file = st.file_uploader("엑셀 파일", type=["xlsx"], key="excel_watchlist_upload")
-    _xl_events = st.checkbox("📰 합병·인수·파산 이벤트 포함 (느림)", value=False, key="excel_scan_events",
-                             help="종목마다 뉴스·SEC 공시를 추가로 조회합니다. 종목이 많으면 시간이 오래 걸리고 요청 제한에 걸릴 수 있습니다.")
-    if _xl_file is not None and st.button("엑셀 종목 전체 분석", key="run_excel_scan", use_container_width=True):
-        try:
-            _items, _skipped = parse_watchlist_excel(_xl_file)
-        except Exception as _e:
-            st.error(f"엑셀을 읽지 못했습니다: {_e}")
-            _items, _skipped = [], []
-        if _items:
-            _items = _items[:400]
-            _prog = st.progress(0, text="분석 중...")
-            _usd = fetch_usd_to_krw()
-            _rows, _done = [], 0
-            with ThreadPoolExecutor(max_workers=8) as _ex:
-                _futs = [_ex.submit(scan_ticker_for_excel, it, _usd, _xl_events) for it in _items]
-                for _f in as_completed(_futs):
-                    _rows.append(_f.result())
-                    _done += 1
-                    _prog.progress(_done / len(_items), text=f"분석 중... {_done}/{len(_items)}")
-            _prog.empty()
-            st.session_state["excel_scan"] = {"rows": _rows, "skipped": _skipped}
-            st.rerun()
+def _goto_main():
+    st.session_state["active_screen"] = _SCREEN_MAIN
+
+st.sidebar.radio(
+    "화면 선택",
+    [_SCREEN_MAIN, "🎯 통합 스캐너", "🌡️ 섹터 히트맵"],
+    key="active_screen",
+    help="한 번에 한 화면만 보여줍니다. 종목 검색 버튼을 누르면 📈 종목 분석 화면으로 돌아갑니다.",
+)
+st.sidebar.markdown("---")
 
 # ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
 with st.sidebar.form(key="ticker_search_form"):
@@ -4299,7 +4248,7 @@ with st.sidebar.form(key="ticker_search_form"):
 
     col_btn, col_star = st.columns([3, 1])
     with col_btn:
-        search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True)
+        search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
     with col_star:
         is_fav = ticker_input in st.session_state.favorites
         fav_button_clicked = st.form_submit_button(
@@ -4453,7 +4402,57 @@ else:
 # 키는 st.secrets 또는 세션 입력으로만 사용하며 서버 파일에 저장하지 않는다.
 # ════════════════════════════════════════════════════════════════
 st.sidebar.markdown("---")
-with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
+_settings = st.sidebar.expander("⚙️ 설정 · 제외 필터 · 엑셀 · AI 키 · 매물대", expanded=False)
+with _settings:
+    st.markdown("**📖 용어 설명**")
+    st.markdown(
+        "- **플로트**: 실제로 거래될 수 있는 유통 주식 수. 적을수록 작은 호재에도 가격이 크게 움직입니다.\n"
+        "- **프리마켓 갭**: 전일 종가 대비 프리마켓(오전 4시~9시 30분) 가격의 변동률.\n"
+        "- **VWAP**: 거래량을 가중치로 한 평균 거래 가격. 보통 매매 단가의 기준선으로 참고합니다.\n"
+        "- **거래량 급증 배율**: 최근 3일 평균 거래량 ÷ 최근 3개월 평균 거래량.\n"
+        "- **예측 점수 (임박·준비·관찰)**: 급등 전 매집·돌파 가능성을 0~100점으로 매긴 점수. 75점 이상 임박, 60점 이상 준비, 45점 이상 관찰.\n"
+        "- **등급 A·B·C**: 스캐너 셋업 점수 기준 A 75점 이상, B 60점 이상, C 45점 이상.\n"
+        "- **역분할(리버스 스플릿)**: 주식 수를 줄여 주당 가격을 올리는 조치.\n"
+        "- **매물대**: 과거에 거래가 많이 몰렸던 가격대. 가격이 다시 오를 때 매도 물량이 나올 수 있는 구간으로 참고합니다."
+    )
+with _settings:
+    st.markdown("**🚫 제외 필터**")
+    st.checkbox(
+        "🚫 상장폐지 확정 종목 제외", key="excl_delisted",
+        help="Form 25·15 공시, 상장폐지 확정 뉴스, 청산, OTC 이전 종목을 검색기·스캐너 순위에서 뺍니다 (뉴스·공시 키워드 기반)")
+    st.checkbox(
+        "🚫 피인수(합병 확정) 종목 제외", key="excl_acquired",
+        help="'to be acquired / all-cash deal' 등 인수가 확정돼 가격이 고정된 종목을 순위에서 뺍니다 (변동성이 낮고 거래량이 몰려 '급등 전' 패턴처럼 보이는 오탐 방지)")
+with _settings:
+    st.markdown("**📂 엑셀 종목 일괄 분석**")
+    st.caption("섹터·티커가 들어 있는 엑셀(.xlsx)을 올리면 전 종목을 한 번에 분석해 섹터별로 정리합니다. "
+               "('종목' 시트의 섹터/티커 열을 사용, 티커가 빈 줄은 건너뜀)")
+    _xl_file = st.file_uploader("엑셀 파일", type=["xlsx"], key="excel_watchlist_upload")
+    _xl_events = st.checkbox("📰 합병·인수·파산 이벤트 포함 (느림)", value=False, key="excel_scan_events",
+                             help="종목마다 뉴스·SEC 공시를 추가로 조회합니다. 종목이 많으면 시간이 오래 걸리고 요청 제한에 걸릴 수 있습니다.")
+    if _xl_file is not None and st.button("엑셀 종목 전체 분석", key="run_excel_scan", use_container_width=True):
+        try:
+            _items, _skipped = parse_watchlist_excel(_xl_file)
+        except Exception as _e:
+            st.error(f"엑셀을 읽지 못했습니다: {_e}")
+            _items, _skipped = [], []
+        if _items:
+            _items = _items[:400]
+            _prog = st.progress(0, text="분석 중...")
+            _usd = fetch_usd_to_krw()
+            _rows, _done = [], 0
+            with ThreadPoolExecutor(max_workers=8) as _ex:
+                _futs = [_ex.submit(scan_ticker_for_excel, it, _usd, _xl_events) for it in _items]
+                for _f in as_completed(_futs):
+                    _rows.append(_f.result())
+                    _done += 1
+                    _prog.progress(_done / len(_items), text=f"분석 중... {_done}/{len(_items)}")
+            _prog.empty()
+            st.session_state["excel_scan"] = {"rows": _rows, "skipped": _skipped}
+            st.rerun()
+
+with _settings:
+    st.markdown("**🤖 AI 차트 해석 설정**")
     _secret_key = ""
     try:
         _secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -4478,7 +4477,8 @@ with st.sidebar.expander("🤖 AI 차트 해석 설정", expanded=False):
 # 악성매물대(저항선) 분석 파라미터 — 사이드바에서 조절 가능
 # ════════════════════════════════════════════════════════════════
 st.sidebar.markdown("---")
-with st.sidebar.expander("⚙️ 매물대 분석 설정", expanded=False):
+with _settings:
+    st.markdown("**⚙️ 매물대 분석 설정**")
     supply_lookback_days = st.slider(
         "분석 기간 (거래일)", min_value=60, max_value=504, value=120, step=6,
         help="최근 몇 거래일의 거래량을 매물대 계산에 반영할지 설정합니다. "
@@ -5715,375 +5715,6 @@ def _summarize_log(df: pd.DataFrame, by: str) -> pd.DataFrame:
     return out
 
 
-def render_screen_log_panel():
-    """검색 결과 기록과 등급별 실제 성과 비교 패널."""
-    with st.expander("📊 점수 검증 (후보 기록 · 결과 추적)", expanded=False):
-        df = _read_screen_log()
-        done = int((df["out_status"] == "done").sum()) if not df.empty else 0
-        st.caption(f"기록 {len(df)}건 · 결과 확정 {done}건. 검색을 실행할 때마다 등급이 계산된 후보가 자동 기록되고, "
-                   "장 마감(16:10 ET) 후 '결과 업데이트'를 누르면 그날 성과가 채워집니다.")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("🔄 결과 업데이트", key="update_outcomes", use_container_width=True):
-                with st.spinner("5분봉으로 기록 이후 성과 계산 중..."):
-                    u, w = update_screen_outcomes()
-                st.success(f"{u}건 갱신 · 장 마감 전이라 대기 {w}건")
-                df = _read_screen_log()
-        with c2:
-            if not df.empty:
-                st.download_button("📥 기록 CSV 다운로드", df.to_csv(index=False).encode("utf-8-sig"),
-                                   file_name="screen_log.csv", mime="text/csv", use_container_width=True)
-        up = st.file_uploader("이전 기록 CSV 병합 (서버 재시작으로 기록이 사라졌을 때)", type=["csv"], key="log_upload")
-        if up is not None and st.button("업로드한 기록 병합", key="merge_log"):
-            try:
-                add = pd.read_csv(up)
-                for c in SCREEN_LOG_COLUMNS:
-                    if c not in add.columns:
-                        add[c] = np.nan
-                with _SCREEN_LOG_LOCK:
-                    merged = pd.concat([_read_screen_log(), add[SCREEN_LOG_COLUMNS]], ignore_index=True)
-                    merged = merged.drop_duplicates(subset=["run_id", "ticker"], keep="last")
-                    _write_screen_log(merged)
-                st.success("병합 완료")
-                df = _read_screen_log()
-            except Exception as _e:
-                st.error(f"병합 실패: {_e}")
-        if done == 0:
-            st.info("아직 결과가 확정된 기록이 없습니다. 검색 후 장 마감 뒤에 '결과 업데이트'를 눌러 주세요.")
-            return
-        order = {"A": 0, "B": 1, "C": 2, "D": 3}
-        by_grade = _summarize_log(df, "grade")
-        if not by_grade.empty:
-            by_grade = by_grade.sort_index(key=lambda ix: [order.get(i, 9) for i in ix])
-            st.markdown("**등급별 성과**")
-            st.dataframe(by_grade, use_container_width=True)
-        by_setup = _summarize_log(df, "setup")
-        if not by_setup.empty:
-            st.markdown("**셋업 유형별 성과**")
-            st.dataframe(by_setup, use_container_width=True)
-        st.caption("R 기준: 기록 시점 가격 − ATR 1배 = 손절(1R), +2R = 목표. 먼저 닿는 쪽이 결과(같은 봉이면 손절 우선), "
-                   "둘 다 안 닿으면 정규장 종가 기준. A등급이 B·C·D보다 실제로 낫게 나오는지 확인하세요. "
-                   "표본이 등급당 30건 미만이면 우연일 수 있어 참고만 하세요.")
-
-
-def render_surge_screener():
-    """급등주 검색기 + 점수 검증 패널 (화면 진입점)."""
-    _render_surge_screener_main()
-    render_screen_log_panel()
-
-
-def _render_surge_screener_main():
-    """
-    조건(상승률/주가/거래량/거래대금/기술지표/리스크)에 맞는 급등주를 검색합니다.
-    1차: Yahoo Finance 공식 스크리너로 후보 종목 수집
-    2차: ThreadPoolExecutor로 RSI·거래량비율·거래대금·국가·나스닥 컴플라이언스 병렬 병합
-    3차: 유저가 선택한 신호/리스크 필터 및 정렬 기준 적용
-    """
-    ui_section_header(mono_icon_badge("rocket", color="var(--c-rose)"), "급등주 검색기", "icon-rose", "title-rose")
-    st.caption("Yahoo Finance 실시간(지연 가능) 시세 + RSI·거래대금·리스크 지표를 결합한 정밀 검색기입니다.")
-
-    # ── 검색 모드: 정규장 등락률 / 프리마켓 갭 ───────────────────
-    scan_mode = st.radio(
-        "검색 기준", ["정규장 등락률", "프리마켓 갭 (장 시작 전)"],
-        horizontal=True, key="screener_scan_mode",
-        help="프리마켓 갭: 전일 종가 대비 프리마켓(04:00~09:30 ET) 현재가 상승률과 프리마켓 거래량으로 찾습니다. "
-             "미국 장 시작 전(한국 시간 저녁 5~10시대)에 쓰세요.")
-    is_pm_mode = scan_mode.startswith("프리마켓")
-
-    # ── 1차 검색 조건 ────────────────────────────────────────────
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        min_pct = st.slider(
-            "최소 갭 상승률 (%)" if is_pm_mode else "최소 상승률 (%)",
-            min_value=3, max_value=100, value=10, step=1,
-            key="screener_min_pct"
-        )
-    with c2:
-        price_range = st.slider(
-            "주가 범위 ($)", min_value=0.1, max_value=200.0, value=(0.1, 20.0), step=0.1,
-            key="screener_price_range"
-        )
-    with c3:
-        if is_pm_mode:
-            min_volume = st.number_input(
-                "최소 프리마켓 거래량", min_value=0, value=200_000, step=50_000,
-                key="screener_min_pm_vol"
-            )
-        else:
-            min_volume = st.number_input(
-                "최소 거래량", min_value=0, value=500_000, step=100_000,
-                key="screener_min_vol"
-            )
-
-    # ── 소형 저유통주 필터 (0 = 제한 없음) ────────────────────────
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        max_float_m = st.number_input(
-            "유통주식수 상한 (만 주, 0=제한없음)", min_value=0, value=2000, step=500,
-            key="screener_max_float",
-            help="2000 = 2천만 주 이하. 유통주식수 정보가 없는 종목은 이 필터가 켜져 있으면 제외됩니다.")
-    with f2:
-        max_cap_m = st.number_input(
-            "시가총액 상한 ($백만, 0=제한없음)", min_value=0, value=0, step=100,
-            key="screener_max_cap",
-            help="예: 500 = 시총 $5억 이하. 시총 정보가 없는 종목은 필터가 켜져 있으면 제외됩니다.")
-    with f3:
-        min_rvol = st.number_input(
-            "최소 상대거래량 (20일 평균 대비 %, 0=제한없음)", min_value=0, value=0, step=100,
-            key="screener_min_rvol",
-            help="500 = 5배. 장 초반에는 값이 낮게 나오므로 처음엔 0으로 두고 보세요.")
-
-    # ── 정렬 기준 & 기술 시그널 필터 ─────────────────────────────
-    d1, d2 = st.columns(2)
-    with d1:
-        sort_option = st.radio(
-            "정렬 기준", ["셋업점수 순", "사전점수 순", "등락률 순", "거래대금 순", "거래량 순", "플로트 회전율 순"],
-            horizontal=True, key="screener_sort"
-        )
-    with d2:
-        signal_filter = st.selectbox(
-            "기술 시그널 필터",
-            ["전체", "상대거래량 500%+ (5배)", "거래량 200%+ 돌파", "플로트 회전율 100%+"],
-            key="screener_signal_filter"
-        )
-
-    # ── 리스크 스크리닝 필터 ─────────────────────────────────────
-    e1, e2, e3 = st.columns(3)
-    with e1:
-        require_trading_value = st.checkbox(
-            f"💰 거래대금 {TRADING_THRESHOLD}억 이상만", value=False,
-            key="screener_min_trading_value"
-        )
-    with e2:
-        exclude_penny = st.checkbox(
-            "🪙 동전주($1 미만) 제외", value=False, key="screener_exclude_penny"
-        )
-    with e3:
-        exclude_china = st.checkbox(
-            "⚠️ 중국계 기업 제외", value=False, key="screener_exclude_china"
-        )
-    only_beam = st.checkbox("🧨 빔 신호 종목만", value=False, key="screener_only_beam")
-    only_grade_b = st.checkbox("🅰 셋업 B등급 이상만", value=False, key="screener_only_grade_b",
-                               help="상위 30개 종목만 등급을 계산합니다. 등급이 없는 종목은 제외됩니다.")
-    only_catalyst = st.checkbox(
-        "📰 재료(최근 48시간 호재성 뉴스) 있는 종목만", value=False, key="screener_only_catalyst",
-        help="FDA·계약·실적·애널리스트 뉴스가 48시간 안에 있는 종목만 남깁니다. 상위 30개 종목만 뉴스를 조회하므로 그 아래 종목은 제외됩니다.")
-
-    if st.button("🔍 검색 실행", key="run_screener", use_container_width=True):
-        with st.spinner("Yahoo Finance에서 급등주 검색 및 상세 지표 병렬 수집 중..."):
-            if is_pm_mode:
-                # 프리마켓 갭 검색 (시총 상한 필터가 있으면 1단계 후보 수집에도 적용)
-                base = fetch_premarket_gappers(min_pct, price_range[0], price_range[1],
-                                               int(min_volume), int(max_cap_m))
-            else:
-                base = fetch_top_gainers(min_pct, price_range[0], price_range[1], int(min_volume))
-            tickers = tuple(r["ticker"] for r in base if r.get("ticker"))
-            enriched_map = enrich_screener_results(tickers) if tickers else {}
-
-            merged = []
-            for r in base:
-                extra = enriched_map.get(r["ticker"], {})
-                if extra.get("error"):
-                    continue
-                combined = {**r, **extra}
-                combined["score"] = calc_screener_score(combined)
-                merged.append(combined)
-            # 1차 사전 순위(구 종합점수): 상위 30개에만 아래의 무거운 조회(뉴스·장중 데이터)를 수행한다
-            merged.sort(key=lambda r: r.get("score", 0), reverse=True)
-            # 상장폐지 확정·청산·피인수 확정·OTC 종목 제외 (상위 60개 조회) — 이후 상위 30개 평가가 정상 종목으로 채워진다
-            merged, _excl = filter_delisted(merged, limit=60)
-            st.session_state["screener_excluded"] = _excl
-            attach_beams(merged, "ticker", "beam", [True] * len(merged), limit=30)
-            attach_catalysts(merged, limit=30)          # 재료 종류·신선도·오퍼링 공시
-            attach_intraday_context(merged, limit=30)   # VWAP·당일 고가·저항·손익비·시간보정 RVOL
-            apply_setup_to_rows(merged)                 # 셋업 등급/점수/근거/경고 계산
-            # 정렬: 등급 평가가 된 종목을 셋업 점수 순으로 먼저, 평가 안 된 종목은 사전 순위대로 뒤에
-            merged.sort(key=lambda r: (r.get("setup_score") is not None, r.get("setup_score") or 0, r.get("score", 0)),
-                        reverse=True)
-            log_screen_results(merged, scan_mode)       # 후보·점수 구성요소 기록 (결과 추적용)
-            st.session_state["screener_results"] = merged
-
-    results = st.session_state.get("screener_results", [])
-    if not results:
-        st.info("조건을 설정하고 '🔍 검색 실행' 버튼을 눌러주세요.")
-        return
-
-    # ── 후속 필터 적용 (병합된 상세 지표 기반) ──────────────────
-    filtered = list(results)
-    if require_trading_value:
-        filtered = [r for r in filtered if r.get("trading_value_eok", 0) >= TRADING_THRESHOLD]
-    if exclude_penny:
-        filtered = [r for r in filtered if r.get("price", 0) >= NASDAQ_MIN_BID]
-    if exclude_china:
-        filtered = [r for r in filtered if not r.get("is_china")]
-    if only_beam:
-        filtered = [r for r in filtered if r.get("beam")]
-    if only_catalyst:
-        filtered = [r for r in filtered if r.get("catalyst_ok")]
-    if only_grade_b:
-        filtered = [r for r in filtered if r.get("grade") in ("A", "B")]
-    # 소형 저유통주 필터 — 정보가 없는(None) 종목은 필터가 켜져 있으면 제외
-    if max_float_m > 0:
-        filtered = [r for r in filtered
-                    if r.get("float_shares") and r["float_shares"] <= max_float_m * 10_000]
-    if max_cap_m > 0:
-        filtered = [r for r in filtered
-                    if (r.get("market_cap") or r.get("market_cap_info"))
-                    and (r.get("market_cap") or r.get("market_cap_info")) <= max_cap_m * 1_000_000]
-    if min_rvol > 0:
-        filtered = [r for r in filtered if r.get("vol_ma20_ratio", 0) >= min_rvol]
-    if signal_filter == "상대거래량 500%+ (5배)":
-        filtered = [r for r in filtered if r.get("vol_ma20_ratio", 0) >= 500]
-    elif signal_filter == "거래량 200%+ 돌파":
-        filtered = [r for r in filtered if r.get("vol_ma20_ratio", 0) >= 200]
-    elif signal_filter == "플로트 회전율 100%+":
-        filtered = [r for r in filtered if (r.get("float_turnover") or 0) >= 100]
-
-    # ── 정렬 ─────────────────────────────────────────────────────
-    sort_key_map = {
-        "셋업점수 순": lambda r: (r.get("setup_score") is not None, r.get("setup_score") or 0),
-        "사전점수 순": lambda r: r.get("score", 0) or 0,
-        "등락률 순":   lambda r: r.get("pct_change", 0) or 0,
-        "거래대금 순": lambda r: r.get("trading_value_eok", 0) or 0,
-        "거래량 순":   lambda r: r.get("volume", 0) or 0,
-        "플로트 회전율 순": lambda r: r.get("float_turnover") or 0,
-    }
-    filtered.sort(key=sort_key_map[sort_option], reverse=True)
-
-    if not filtered:
-        st.warning("조건에 맞는 종목이 없습니다. 필터를 완화해 보세요.")
-        return
-
-    st.markdown(f"**{len(filtered)}개 종목** (1차 후보 {len(results)}개 중 필터링 결과)")
-    render_excluded_expander("screener_excluded")
-
-    # ── 상장 리스크 요약 텍스트 (calc_nasdaq_compliance 응용) ───
-    def _risk_text(r: dict) -> str:
-        risk = r.get("nasdaq_risk") or {}
-        if not risk.get("applicable"):
-            return "—"
-        if risk.get("phase") == "notice_issued_est":
-            return f"⛔ 유예 D-{risk.get('days_left', '?')}"
-        return f"🟡 미달 {risk.get('streak_days', 0)}일째"
-
-    rows = []
-    for r in filtered:
-        is_fav = r["ticker"] in st.session_state.favorites
-        rows.append({
-            "⭐":            "★" if is_fav else "",
-            "티커":          ("⚠️ " if r.get("is_china") else "") + r["ticker"],
-            "종목명":        (r.get("name") or "")[:26],
-            "등급":          r.get("grade", "—"),
-            "셋업점수":      r.get("setup_score"),
-            "셋업":          r.get("setup", ""),
-            "근거":          r.get("why", ""),
-            "경고":          r.get("warn", ""),
-            "현재가":        r.get("price", 0),
-            "등락률(%)":     r.get("pct_change", 0),     # 프리마켓 모드에서는 프리마켓 갭(%)
-            "프리고가":      r.get("pm_high"),
-            "사전점수":      r.get("score", 0),
-            "거래량":        r.get("volume", 0),
-            "거래대금(억)":  r.get("trading_value_eok", 0),
-            "RSI":           r.get("rsi"),
-            "유통주식(만)":   round(r["float_shares"] / 10_000) if r.get("float_shares") else None,
-            "플로트회전(%)":  r.get("float_turnover"),
-            "시총($M)":      round((r.get("market_cap") or r.get("market_cap_info") or 0) / 1_000_000) or None,
-            "공매도(%)":     r.get("short_pct"),
-            "거래량비율(%)":  r.get("vol_ratio", 0),
-            "20일MA비율(%)": r.get("vol_ma20_ratio", 0),
-            "상장리스크":     _risk_text(r),
-            "빔신호":         r.get("beam", "") or "—",
-            "재료":           r.get("catalyst") or "—",
-            "오퍼링(일전)":   r.get("offering_days"),
-        })
-
-    df_display = pd.DataFrame(rows)
-
-    event = st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        column_config={
-            "현재가":        st.column_config.NumberColumn(format="$%.2f"),
-            "프리고가":      st.column_config.NumberColumn(format="$%.2f"),
-            "등락률(%)":     st.column_config.NumberColumn(format="%+.2f%%"),
-            "셋업점수":      st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
-                                                         help="재료×수급×진입위치×손익비×거래가능성 (게이트 적용 후). A≥75, B≥60, C≥45"),
-            "사전점수":      st.column_config.NumberColumn(format="%.1f", help="1차 사전 순위용(구 종합점수). 매매 판단에는 셋업점수·등급을 보세요."),
-            "거래량":        st.column_config.NumberColumn(format="%d"),
-            "거래대금(억)":  st.column_config.NumberColumn(format="%.1f억"),
-            "RSI":           st.column_config.NumberColumn(format="%.1f"),
-            "유통주식(만)":   st.column_config.NumberColumn(format="%d"),
-            "플로트회전(%)":  st.column_config.NumberColumn(format="%.0f%%"),
-            "시총($M)":      st.column_config.NumberColumn(format="%d"),
-            "공매도(%)":     st.column_config.NumberColumn(format="%.1f%%"),
-            "오퍼링(일전)":   st.column_config.NumberColumn(format="%d일", help="가장 최근 오퍼링 관련 SEC 공시가 며칠 전인지 (7일 이내 -10점, 30일 이내 -5점)"),
-            "거래량비율(%)":  st.column_config.NumberColumn(format="%.0f%%"),
-            "20일MA비율(%)": st.column_config.NumberColumn(format="%.0f%%"),
-        },
-        key="screener_df",
-    )
-
-    if is_pm_mode:
-        st.caption("프리마켓 모드: 등락률 = 전일 종가 대비 프리마켓 갭, 거래량 = 프리마켓 누적 거래량입니다. "
-                   "거래대금·RSI·20일MA비율은 전일 일봉 기준이라 참고용입니다.")
-    st.caption("⚠️ = 중국/홍콩 소재 기업 · ⭐ = 즐겨찾기 등록 종목 · 상장리스크는 나스닥 최소호가($1) 규정 기준 추정치입니다. "
-               "행을 클릭하면 해당 종목의 정밀 분석 화면으로 이동합니다. 등급·셋업점수는 상위 30개 종목만 계산하며, "
-               "가중치는 경험칙이라 아래 '점수 검증' 기록으로 실제 성과를 확인하며 보정하세요. 매매 신호가 아닌 참고 지표입니다.")
-
-    # ── 검색 결과에서 바로 즐겨찾기 추가/제거 ───────────────────
-    fav_candidates = [r["ticker"] for r in filtered]
-    current_fav_in_results = [t for t in fav_candidates if t in st.session_state.favorites]
-
-    def _on_screener_fav_change():
-        selected = st.session_state.get("screener_fav_multiselect", [])
-        changed = False
-        for t in fav_candidates:
-            if t in selected and t not in st.session_state.favorites:
-                st.session_state.favorites.append(t)
-                changed = True
-            elif t not in selected and t in st.session_state.favorites:
-                st.session_state.favorites.remove(t)
-                changed = True
-        if changed:
-            save_favorites(st.session_state.favorites)
-
-    st.multiselect(
-        "⭐ 검색 결과 중 즐겨찾기에 추가/제거할 종목",
-        options=fav_candidates,
-        default=current_fav_in_results,
-        key="screener_fav_multiselect",
-        on_change=_on_screener_fav_change,
-        help="선택하면 즐겨찾기에 추가되고, 선택 해제하면 즐겨찾기에서 제거됩니다.",
-    )
-
-    # ── 검색 결과 CSV 다운로드 ───────────────────────────────────
-    csv_bytes = df_display.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "📥 검색 결과 CSV 다운로드",
-        data=csv_bytes,
-        file_name=f"screener_results_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-
-    sel_rows = []
-    if event is not None:
-        try:
-            sel_rows = event.selection["rows"]
-        except Exception:
-            sel_rows = []
-
-    if sel_rows:
-        picked_ticker = filtered[sel_rows[0]]["ticker"]
-        st.session_state["selected_ticker"] = picked_ticker
-        st.session_state["active_ticker"]   = picked_ticker
-        st.session_state["has_searched"]    = True
-        st.rerun()
-
-
 # ════════════════════════════════════════════════════════════════
 # 🚫 상장폐지 확정 · 피인수(합병 확정) 종목 제외
 #   상장폐지가 확정됐거나 인수가 확정돼 가격이 고정된 종목은 변동성이 줄고 거래량이 몰려서
@@ -6712,7 +6343,7 @@ def fetch_index_premarket() -> dict:
     out = {"QQQ": None, "IWM": None}
     for sym in list(out):
         try:
-            stats = compute_pm_stats(fetch_1m_5d(sym))
+            stats = compute_pm_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
             if stats:
                 out[sym] = stats["pm_gap"]
         except Exception as _e:
@@ -7077,132 +6708,6 @@ def render_gapgo_log_panel():
                    "표본이 30건 미만이면 우연일 수 있으니 참고만 하세요.")
 
 
-def render_prebreakout_screener():
-    """'급등 전 매집' 스캐너 — 프리마켓 갭 종목 중 장 시작 후 이어갈 가능성이 높은 후보를 점수·등급으로 보여준다."""
-    ui_section_header(mono_icon_badge("target", color="var(--c-violet)"), "급등 전 매집 스캐너 (갭 이어가기)", "icon-violet", "title-violet")
-    st.caption("프리마켓 갭 종목을 촉매 · 프리마켓 거래량(시간 보정) · 강도(VWAP·고점 유지·거래 가속) · 갭 크기 · 플로트 · 일봉 위치로 평가합니다. "
-               "증자·역분할·인수확정·상장폐지 종목은 먼저 제외합니다. 대부분의 갭은 꺾이므로 점수는 후보 선별용이고, "
-               "진입은 개장 후 프리마켓 고점 돌파 + VWAP 유지를 확인한 뒤에 판단하세요.")
-    _pm_note = _premarket_status_text()
-    if _pm_note:
-        st.info(_pm_note)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        gg_gap = st.slider("프리마켓 갭 범위 (%)", 0.0, 100.0, (5.0, 15.0), 0.5, key="gg_gap",
-                           help="소형주는 5~15%, 대형·중형주는 3~10%가 점수 만점 구간입니다. 넓히면 후보가 늘지만 큰 갭은 감점됩니다.")
-    with c2:
-        gg_price = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="gg_price",
-                             help="1달러 미만 종목은 경고가 붙고 등급이 최대 B로 제한됩니다.")
-    c3, c4, c5, c6 = st.columns(4)
-    with c3:
-        gg_min_pm = st.number_input("최소 프리마켓 거래량(주)", min_value=10_000, value=300_000, step=50_000, key="gg_pmvol")
-    with c4:
-        gg_min_avg = st.number_input("최소 평균거래량(주)", min_value=50_000, value=GAPGO_MIN_AVG_VOL, step=50_000, key="gg_avgvol",
-                                     help="대형·중형 모드 종목은 이 값과 관계없이 100만 주 이상이 필요합니다.")
-    with c5:
-        gg_max_float = st.number_input("플로트 상한(백만 주)", min_value=1, value=GAPGO_MAX_FLOAT // 1_000_000, step=5, key="gg_float")
-    with c6:
-        gg_max_cap = st.number_input("시총 상한($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="gg_cap",
-                                     help="'대형·중형주 포함'을 켜면 이 값은 무시됩니다.")
-    gg_large = st.checkbox("대형·중형주도 포함 (시총 제한 해제 · 별도 점수)", value=False, key="gg_large",
-                           help="시총 20억$ 이상 또는 플로트 상한 초과 종목은 플로트 대신 QQQ 프리마켓 동조를 보고 거래량·갭 기준을 낮춰 평가합니다. "
-                                "후보가 늘어 스캔이 느려질 수 있습니다.")
-    gg_min_score = st.slider("최소 점수", 0, 90, 45, 5, key="gg_min_score", help="45 = C등급 이상. 높일수록 후보가 줄어듭니다.")
-
-    if st.button("🔮 스캔 실행", key="run_prebreak", use_container_width=True):
-        with st.spinner("프리마켓 갭 수집 → 제외 필터 → 촉매·증자·일봉 점수 계산 중... (1~2분 걸릴 수 있습니다)"):
-            out = run_gapgo_scan(gg_gap[0], gg_gap[1], gg_price[0], gg_price[1], int(gg_min_pm), int(gg_max_cap),
-                                 int(gg_min_avg), int(gg_max_float) * 1_000_000, include_large=bool(gg_large))
-            st.session_state["gg_results"] = out["rows"]
-            st.session_state["gg_excluded"] = out["excluded"]
-            st.session_state["gg_excluded_delist"] = out["delist_excluded"]
-            st.session_state["gg_regime"] = out["regime"]
-            st.session_state["gg_idx_pm"] = out["idx_pm"]
-            st.session_state["gg_data_min"] = out["data_min"]
-            st.session_state["gg_scan_et"] = _et_now().strftime("%H:%M")
-            st.session_state["gg_nbase"] = out["n_base"]
-            st.session_state["gg_logged"] = log_gapgo_results([x for x in out["rows"] if x["gg_score"] >= 45])
-
-    results = st.session_state.get("gg_results")
-    if results is None:
-        st.info("조건을 설정하고 '🔮 스캔 실행'을 눌러 주세요.")
-        render_gapgo_log_panel()
-        return
-    reg = st.session_state.get("gg_regime") or {}
-    idx = st.session_state.get("gg_idx_pm") or {}
-    _dm = st.session_state.get("gg_data_min")
-    _dt = f"{_dm // 60:02d}:{_dm % 60:02d}" if _dm is not None else "—"
-    _fmt = lambda v: "—" if v is None else f"{v:+.1f}%"
-    st.caption(f"스캔 {st.session_state.get('gg_scan_et', '—')} ET · 데이터 마지막 체결 {_dt} ET · 프리마켓 QQQ {_fmt(idx.get('QQQ'))} · IWM {_fmt(idx.get('IWM'))}"
-               " (스캔 시각과 마지막 체결이 많이 벌어지면 데이터 지연일 수 있습니다)")
-    if reg.get("label") in ("강세", "중립", "약세"):
-        st.caption(f"일봉 시장 환경: **{reg['label']}** (IWM 20일선 대비 {reg['iwm_vs_ma20']:+.1f}% · 5일 {reg['iwm_ret5']:+.1f}% · SPY 5일 {reg['spy_ret5']:+.1f}%)"
-                   + (" — 소형주 약세라 소형 모드 등급을 한 단계 낮췄습니다." if reg["label"] == "약세" else ""))
-    else:
-        st.caption("일봉 시장 환경을 확인하지 못해 등급 보정 없이 표시합니다.")
-    filtered = [r for r in results if r["gg_score"] >= gg_min_score]
-    st.markdown(f"**{len(filtered)}개 종목** (갭 후보 {st.session_state.get('gg_nbase', 0)}개 → 점수 계산 {len(results)}개 중 {gg_min_score}점 이상)"
-                + (f" · 이번 스캔에서 {st.session_state.get('gg_logged', 0)}건 기록" if st.session_state.get("gg_logged") else ""))
-    render_excluded_expander("gg_excluded_delist")
-    _ex = st.session_state.get("gg_excluded") or []
-    if _ex:
-        with st.expander(f"🚫 제외된 종목 {len(_ex)}개 (거래량·플로트·증자·역분할)", expanded=False):
-            st.dataframe(pd.DataFrame(_ex), use_container_width=True, hide_index=True)
-            st.caption("뉴스·공시 키워드 기반이라 오탐이 있을 수 있습니다. 증자 공시는 야후가 제공하는 SEC 서식 목록 기준이며 8-K 5.03(정관 변경) 같은 항목은 감지하지 못합니다.")
-    if not filtered:
-        st.warning("조건에 맞는 종목이 없습니다. 하루 0~5개가 정상 범위입니다. 갭·거래량 조건을 완화하거나 프리마켓 시간에 다시 실행해 보세요.")
-        render_gapgo_log_panel()
-        return
-
-    table = []
-    for r in filtered:
-        avg, fl = r.get("avg_volume"), r.get("float_shares")
-        pm_high, vwap = r.get("pm_high"), r.get("pm_vwap")
-        large = (r.get("gg_mode") == "large")
-        table.append({
-            "⭐": "★" if r["ticker"] in st.session_state.favorites else "",
-            "티커": r["ticker"], "종목명": (r.get("name") or "")[:24], "모드": "대형·중형" if large else "소형",
-            "등급": r["gg_grade"], "점수": r["gg_score"],
-            "프리마켓가": r["price"], "갭(%)": r["pm_gap"], "PM거래량": r["pm_volume"],
-            "예상평균대비(%)": (r["gg_proj"] * 100) if r.get("gg_proj") is not None else None,
-            "VWAP대비(%)": ((r["price"] / vwap - 1) * 100) if vwap else None,
-            "PM고점대비(%)": ((r["price"] / pm_high - 1) * 100) if pm_high else None,
-            "플로트(M)": (fl / 1e6) if fl else None,
-            "20일고점돌파": "O" if (r.get("gg_hi20") and r["price"] >= r["gg_hi20"] * 0.99) else "",
-            "촉매": r.get("catalyst", "—"), "근거": r["gg_why"], "경고": r["gg_warn"],
-        })
-    event = st.dataframe(
-        pd.DataFrame(table), use_container_width=True, hide_index=True,
-        on_select="rerun", selection_mode="single-row", key="gg_df",
-        column_config={
-            "점수": st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
-                                                  help="소형: 촉매25+PM거래량25+강도20+갭10+플로트10+일봉10 / 대형·중형: 촉매25+PM거래량20+강도20+갭10+시장동조15+일봉10. A≥75, B≥60, C≥45"),
-            "프리마켓가": st.column_config.NumberColumn(format="$%.2f"),
-            "갭(%)": st.column_config.NumberColumn(format="%+.1f%%"),
-            "PM거래량": st.column_config.NumberColumn(format="%d"),
-            "예상평균대비(%)": st.column_config.NumberColumn(format="%.0f%%", help="지금까지 프리마켓 거래량을 '그 시각까지 보통 쌓이는 비율'로 환산한 프리마켓 마감 예상 거래량 ÷ 평균 일거래량"),
-            "VWAP대비(%)": st.column_config.NumberColumn(format="%+.1f%%", help="프리마켓 현재가가 프리마켓 VWAP(거래량 가중 평균가) 위/아래 몇 %인가. 위에 있을수록 매수세가 우위"),
-            "PM고점대비(%)": st.column_config.NumberColumn(format="%+.1f%%", help="프리마켓 현재가가 프리마켓 고점에서 얼마나 내려왔나"),
-            "플로트(M)": st.column_config.NumberColumn(format="%.1f"),
-        })
-    st.caption("행을 클릭하면 정밀 분석 화면으로 이동합니다. 가중치·시간 보정 곡선은 초안이므로 아래 '예측 검증'으로 등급·시간대별 적중률을 확인하며 보정하세요. "
-               "진입 확인: 개장 후 프리마켓 고점 돌파 + VWAP 유지 / 프리마켓 고점 재이탈은 실패 신호입니다.")
-    sel = []
-    if event is not None:
-        try:
-            sel = event.selection["rows"]
-        except Exception:
-            sel = []
-    if sel:
-        picked = filtered[sel[0]]["ticker"]
-        st.session_state["selected_ticker"] = picked
-        st.session_state["active_ticker"] = picked
-        st.session_state["has_searched"] = True
-        st.rerun()
-    render_gapgo_log_panel()
-
-
 # ════════════════════════════════════════════════════════════════
 # 통합 스캐너 v1.0 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 '종목별 점수 하나'로 합친 스캐너
 #
@@ -7521,7 +7026,7 @@ def fetch_index_session(session: str) -> dict:
     out = {"QQQ": None, "IWM": None}
     for sym in list(out):
         try:
-            s_ = compute_day_stats(fetch_1m_5d(sym))
+            s_ = compute_day_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
             if s_:
                 out[sym] = s_["change_pct"]
         except Exception as _e:
@@ -7531,7 +7036,7 @@ def fetch_index_session(session: str) -> dict:
 
 def _uni_day_stats_fetch(sym: str):
     try:
-        return compute_day_stats(fetch_1m_5d(sym))
+        return compute_day_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
     except Exception as _e:
         _log_err("_uni_day_stats_fetch:" + sym, _e)
         return None
@@ -7748,33 +7253,36 @@ def render_unified_scanner():
         st.info("지금 시각과 다른 시간대를 선택했습니다. 해당 시간대의 가장 최근 데이터 기준으로 계산되고, 예측 검증 기록은 남지 않을 수 있습니다.")
 
     pre = (session == "pre")
-    c1, c2 = st.columns(2)
-    with c1:
-        move_rng = st.slider("프리마켓 갭 범위 (%)" if pre else "당일 등락률 범위 (%)", 0.0, 100.0,
-                             (5.0, 15.0) if pre else (5.0, 60.0), 0.5, key=f"uni_move_{session}",
-                             help="프리마켓은 5~15%, 정규장·마감 후는 5~20%가 점수 만점 구간입니다. 마감 후에는 거래량 급증 종목이 등락률과 무관하게 추가됩니다.")
-    with c2:
-        price_rng = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="uni_price",
-                              help="1달러 미만 종목은 경고가 붙고 등급이 최대 B로 제한됩니다.")
-    c3, c4, c5, c6 = st.columns(4)
-    with c3:
-        min_vol = st.number_input("최소 프리마켓 거래량(주)" if pre else "최소 당일 거래량(주)", min_value=10_000,
-                                  value=300_000 if pre else 500_000, step=50_000, key=f"uni_minvol_{session}")
-    with c4:
-        min_avg = st.number_input("최소 평균거래량(주)", min_value=50_000, value=GAPGO_MIN_AVG_VOL, step=50_000, key="uni_avgvol",
-                                  help="대형·중형 모드 종목은 이 값과 관계없이 100만 주 이상이 필요합니다.")
-    with c5:
-        max_fl = st.number_input("플로트 상한(백만 주)", min_value=1, value=GAPGO_MAX_FLOAT // 1_000_000, step=5, key="uni_float")
-    with c6:
-        max_cap = st.number_input("시총 상한($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="uni_cap",
-                                  help="'대형·중형주 포함'을 켜면 이 값은 무시됩니다.")
-    d1, d2 = st.columns(2)
-    with d1:
-        incl_large = st.checkbox("대형·중형주도 포함 (시총 제한 해제 · 별도 점수)", value=False, key="uni_large",
-                                 help="시총 20억$ 이상 또는 플로트 상한 초과 종목은 플로트 대신 QQQ 동조를 보고 거래량·움직임 기준을 낮춰 평가합니다. 스캔이 느려질 수 있습니다.")
-    with d2:
-        min_vs = st.number_input("거래량 급증 최소 배율 (3일÷3개월, 마감 후 풀 추가용)", min_value=1.0, max_value=50.0,
-                                 value=UNI_MIN_VSURGE_TAG, step=0.5, key="uni_vsurge", disabled=(session != "after"))
+    with st.expander("⚙️ 고급 필터 (기본값으로도 충분해요)", expanded=False):
+        st.caption("처음이라면 기본값 그대로 두고 스캔하세요. 조건을 바꾸면 후보 수가 달라집니다.")
+        c1, c2 = st.columns(2)
+        with c1:
+            move_rng = st.slider("프리마켓 갭 범위 (%)" if pre else "당일 등락률 범위 (%)", 0.0, 100.0,
+                                 (5.0, 15.0) if pre else (5.0, 60.0), 0.5, key=f"uni_move_{session}",
+                                 help="프리마켓은 5~15%, 정규장·마감 후는 5~20%가 점수 만점 구간입니다. 마감 후에는 거래량 급증 종목이 등락률과 무관하게 추가됩니다.")
+        with c2:
+            price_rng = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="uni_price",
+                                  help="1달러 미만 종목은 경고가 붙고 등급이 최대 B로 제한됩니다.")
+        c3, c4, c5, c6 = st.columns(4)
+        with c3:
+            min_vol = st.number_input("최소 프리마켓 거래량(주)" if pre else "최소 당일 거래량(주)", min_value=10_000,
+                                      value=300_000 if pre else 500_000, step=50_000, key=f"uni_minvol_{session}")
+        with c4:
+            min_avg = st.number_input("최소 평균거래량(주)", min_value=50_000, value=GAPGO_MIN_AVG_VOL, step=50_000, key="uni_avgvol",
+                                      help="대형·중형 모드 종목은 이 값과 관계없이 100만 주 이상이 필요합니다.")
+        with c5:
+            max_fl = st.number_input("플로트 상한(백만 주)", min_value=1, value=GAPGO_MAX_FLOAT // 1_000_000, step=5, key="uni_float",
+                             help="플로트 = 실제로 거래될 수 있는 유통 주식 수. 이 값보다 많으면 후보에서 제외합니다.")
+        with c6:
+            max_cap = st.number_input("시총 상한($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="uni_cap",
+                                      help="'대형·중형주 포함'을 켜면 이 값은 무시됩니다.")
+        d1, d2 = st.columns(2)
+        with d1:
+            incl_large = st.checkbox("대형·중형주도 포함 (시총 제한 해제 · 별도 점수)", value=False, key="uni_large",
+                                     help="시총 20억$ 이상 또는 플로트 상한 초과 종목은 플로트 대신 QQQ 동조를 보고 거래량·움직임 기준을 낮춰 평가합니다. 스캔이 느려질 수 있습니다.")
+        with d2:
+            min_vs = st.number_input("거래량 급증 최소 배율 (3일÷3개월, 마감 후 풀 추가용)", min_value=1.0, max_value=50.0,
+                                     value=UNI_MIN_VSURGE_TAG, step=0.5, key="uni_vsurge", disabled=(session != "after"))
     min_score = st.slider("최소 점수", 0, 90, 45, 5, key="uni_min_score", help="45 = C등급 이상. 높일수록 후보가 줄어듭니다.")
 
     if st.button("🔮 스캔 실행", key="run_unified", use_container_width=True):
@@ -7887,131 +7395,6 @@ def render_prebreakout_panel(hist: pd.DataFrame):
 
 
 
-def render_volume_surge_screener():
-    """
-    "최근 3일 평균 거래량이 최근 3개월 평균 거래량 대비 N배 이상"인
-    나스닥 종목을 찾는 스크리너.
-
-    1차: Yahoo 공식 스크리너로 나스닥(NMS/NGM/NCM) 상장 + 당일 거래량 상위
-         후보군을 넉넉히(기본 250개) 조회 — Yahoo 스크리너에는 "N개월 평균
-         대비 배율" 필드가 없어 거래량 자체로 넓게 후보를 추린다.
-    2차: 후보별 1년치 일봉을 병렬로 내려받아(enrich_screener_results 재사용)
-         실제 "최근 3일 평균 / 최근 63거래일(약 3개월) 평균" 비율을 계산.
-    3차: 비율 ≥ 배수 조건으로 필터링 후 비율 내림차순 정렬.
-    """
-    ui_section_header(mono_icon_badge("trend", color="var(--c-cyan)"), "거래량 급증 스크리너", "icon-cyan", "title-cyan")
-    st.caption("최근 3일 평균 거래량이 최근 3개월(약 63거래일) 평균 거래량 대비 N배 이상인 나스닥 종목을 찾습니다.")
-
-    v1, v2, v3 = st.columns(3)
-    with v1:
-        surge_multiple = st.number_input(
-            "최소 배율 (3일 평균 ÷ 3개월 평균)", min_value=1.0, max_value=50.0,
-            value=5.0, step=0.5, key="vol_surge_multiple"
-        )
-    with v2:
-        vs_price_range = st.slider(
-            "주가 범위 ($)", min_value=0.1, max_value=200.0, value=(0.1, 50.0), step=0.1,
-            key="vol_surge_price_range"
-        )
-    with v3:
-        vs_min_day_volume = st.number_input(
-            "1차 후보 최소 당일 거래량", min_value=0, value=200_000, step=100_000,
-            key="vol_surge_min_vol",
-            help="너무 낮으면 1차 후보가 너무 많아져 정밀 계산이 오래 걸릴 수 있습니다."
-        )
-
-    if st.button("🔍 검색 실행", key="run_vol_surge_screener", use_container_width=True):
-        with st.spinner("나스닥 후보 종목 조회 및 3일/3개월 거래량 비율 계산 중... (후보가 많을수록 오래 걸릴 수 있습니다)"):
-            base = fetch_volume_surge_candidates(
-                vs_price_range[0], vs_price_range[1], int(vs_min_day_volume)
-            )
-            tickers = tuple(r["ticker"] for r in base if r.get("ticker"))
-            enriched_map = enrich_screener_results(tickers) if tickers else {}
-
-            merged = []
-            for r in base:
-                extra = enriched_map.get(r["ticker"], {})
-                if extra.get("error"):
-                    continue
-                merged.append({**r, **extra})
-            _hits = [r for r in merged if r.get("vol_surge_ratio", 0) >= surge_multiple]
-            _hits.sort(key=lambda r: r.get("vol_surge_ratio", 0), reverse=True)
-            # 상장폐지 확정·청산·피인수 확정·OTC 종목 제외 (배율 상위 60개 조회)
-            _hits, _excl = filter_delisted(_hits, limit=60)
-            _ex_set = {e["티커"] for e in _excl}
-            merged = [r for r in merged if str(r.get("ticker", "")).replace("⚠️ ", "").strip() not in _ex_set]
-            st.session_state["vol_surge_excluded"] = _excl
-            attach_beams(_hits, "ticker", "beam", [True] * len(_hits), limit=30)
-            st.session_state["vol_surge_results"] = merged
-
-    results = st.session_state.get("vol_surge_results", [])
-    if not results:
-        st.info("조건을 설정하고 '🔍 검색 실행' 버튼을 눌러주세요.")
-        return
-
-    filtered = [r for r in results if r.get("vol_surge_ratio", 0) >= surge_multiple]
-    filtered.sort(key=lambda r: r.get("vol_surge_ratio", 0), reverse=True)
-
-    st.markdown(f"**{len(filtered)}개 종목** (1차 후보 {len(results)}개 중 {surge_multiple}배 이상 필터링 결과)")
-    render_excluded_expander("vol_surge_excluded")
-
-    if not filtered:
-        st.warning("조건에 맞는 종목이 없습니다. 배율을 낮추거나 1차 후보 최소 거래량을 낮춰 보세요.")
-        return
-
-    rows = []
-    for r in filtered:
-        is_fav = r["ticker"] in st.session_state.favorites
-        rows.append({
-            "⭐":              "★" if is_fav else "",
-            "티커":            ("⚠️ " if r.get("is_china") else "") + r["ticker"],
-            "종목명":          (r.get("name") or "")[:26],
-            "현재가":          r.get("price", 0),
-            "등락률(%)":       r.get("pct_change", 0),
-            "배율(3일/3개월)": r.get("vol_surge_ratio", 0),
-            "3일 평균 거래량":  r.get("vol_3d", 0),
-            "3개월 평균 거래량": r.get("vol_3m", 0),
-            "당일 거래량":      r.get("volume", 0),
-            "빔신호":          r.get("beam", "") or "—",
-        })
-
-    df_display = pd.DataFrame(rows)
-
-    event = st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        column_config={
-            "현재가":           st.column_config.NumberColumn(format="$%.2f"),
-            "등락률(%)":        st.column_config.NumberColumn(format="%+.2f%%"),
-            "배율(3일/3개월)":   st.column_config.NumberColumn(format="%.1f배"),
-            "3일 평균 거래량":   st.column_config.NumberColumn(format="%d"),
-            "3개월 평균 거래량": st.column_config.NumberColumn(format="%d"),
-            "당일 거래량":       st.column_config.NumberColumn(format="%d"),
-        },
-        key="vol_surge_df",
-    )
-
-    st.caption("⚠️ = 중국/홍콩 소재 기업 · ⭐ = 즐겨찾기 등록 종목 · 3개월 평균은 최근 약 63거래일 기준입니다. "
-               "행을 클릭하면 해당 종목의 정밀 분석 화면으로 이동합니다.")
-
-    sel_rows = []
-    if event is not None:
-        try:
-            sel_rows = event.selection["rows"]
-        except Exception:
-            sel_rows = []
-
-    if sel_rows:
-        picked_ticker = filtered[sel_rows[0]]["ticker"]
-        st.session_state["selected_ticker"] = picked_ticker
-        st.session_state["active_ticker"]   = picked_ticker
-        st.session_state["has_searched"]    = True
-        st.rerun()
-
-
 # ════════════════════════════════════════════════════════════════
 # 렌더링 함수 — 뉴스
 # ════════════════════════════════════════════════════════════════
@@ -8104,48 +7487,15 @@ def render_news_section(ticker_input):
 # ════════════════════════════════════════════════════════════════
 
 # ════════════════════════════════════════════════════════════════
-# 정보 보기(뉴스·소셜·차트 해석) — fragment
-# 탭을 바꿀 때 위쪽 기술적 분석 전체를 다시 그리지 않고 이 영역만 다시 실행한다.
+# 화면 전환 — 한 번에 한 화면만 렌더링 (통합 스캐너 · 섹터 히트맵 · 종목 분석)
 # ════════════════════════════════════════════════════════════════
-@st.fragment
-def render_info_view(active_ticker, hist, close_price):
-    info_view = st.segmented_control(
-        "정보 보기",
-        ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
-        default="📰 뉴스 & 호재",
-        required=True,
-        key="info_view",
-        label_visibility="collapsed",
-    )
-    if info_view == "📰 뉴스 & 호재":
-        render_news_section(active_ticker)
-    elif info_view == "💬 소셜 미디어":
-        render_social_section(active_ticker)
-    else:
-        render_chart_interpretation(active_ticker, hist, close_price)
-
-
-# ════════════════════════════════════════════════════════════════
-# 섹터 히트맵 · 검색기 (토글)
-# ════════════════════════════════════════════════════════════════
-if st.session_state.get("show_heatmap", False):
-    render_sector_heatmap()
-    st.markdown("---")
-
-if st.session_state.get("show_unified", False):
+_cur_screen = st.session_state.get("active_screen", _SCREEN_MAIN)
+if _cur_screen == "🎯 통합 스캐너":
     render_unified_scanner()
-
-if st.session_state.get("show_screener", False):
-    render_surge_screener()
-    st.markdown("---")
-
-if st.session_state.get("show_vol_surge", False):
-    render_volume_surge_screener()
-    st.markdown("---")
-
-if st.session_state.get("show_prebreak", False):
-    render_prebreakout_screener()
-    st.markdown("---")
+    st.stop()
+elif _cur_screen == "🌡️ 섹터 히트맵":
+    render_sector_heatmap()
+    st.stop()
 
 # ════════════════════════════════════════════════════════════════
 # 메인 대시보드 로직
@@ -8161,24 +7511,12 @@ if st.session_state.get("has_searched"):
 
     with st.spinner("야후 파이낸스 및 스톡타이탄에서 실시간 데이터를 분석 중입니다..."):
         # 서로 의존관계 없는 네트워크 호출을 동시에 실행
-        def _warm(_fn, *_a):
-            """캐시 예열 전용: 결과는 버리고, 실패해도 화면 렌더 단계에서 평소처럼 다시 시도·처리된다."""
-            try:
-                _fn(*_a)
-            except Exception as _e:
-                _log_err("warm:" + getattr(_fn, "__name__", "fn"), _e)
-
-        with ThreadPoolExecutor(max_workers=11) as _prefetch_ex:
+        with ThreadPoolExecutor(max_workers=5) as _prefetch_ex:
             _fut_hist     = _prefetch_ex.submit(fetch_history, active_ticker)
             _fut_spike    = _prefetch_ex.submit(fetch_spike_history, active_ticker)
             _fut_offering = _prefetch_ex.submit(fetch_offering_history, active_ticker)
             _fut_info     = _prefetch_ex.submit(fetch_ticker_info, active_ticker)
             _fut_fx       = _prefetch_ex.submit(fetch_usd_to_krw)
-            # 아래 조회들은 원래 화면을 그리는 도중 하나씩 순서대로 실행되던 것들이다.
-            # 위 5개와 동시에 미리 받아 두면(모두 st.cache_data) 이후 렌더 단계는 캐시에서 즉시 반환된다.
-            for _warm_fn in (fetch_intraday_5min, calc_time_adjusted_rvol, compute_setup_for_ticker,
-                             fetch_yahoo_news, fetch_sec_filings, detect_delisting):
-                _prefetch_ex.submit(_warm, _warm_fn, active_ticker)
 
             hist          = _fut_hist.result()
             spike_df      = _fut_spike.result()
@@ -8225,6 +7563,15 @@ if st.session_state.get("has_searched"):
             if detect_delisting(active_ticker):      # 상장폐지·청산·피인수 확정 종목은 점수가 무의미하므로 카드에서 숨긴다
                 ticker_score = None
 
+            _sum = [f"오늘 {pct_change_now:+.1f}%", f"거래량 20일 평균 대비 {vol_ma20_ratio:.0f}%"]
+            if ticker_score is not None:
+                _sum.insert(0, f"예측 점수 {ticker_score:.0f}점 ({(_pbres or {}).get('stage', '—')})")
+            else:
+                _sum.insert(0, "예측 점수 없음")
+            _warn_txt = (_pbres or {}).get("warn", "")
+            if _warn_txt:
+                _sum.append("⚠️ " + _warn_txt.split(" · ")[0])
+            st.info(("📌 한눈에 보기: " + " · ".join(_sum) + "\n\n판단 보조용 요약입니다. 진입 여부는 아래 상세 분석과 함께 보고 결정하세요.").replace("$", "\\$"))
             top_cards_front, top_cards_end = build_top_summary_cards_html(
                 today, yesterday, hist, vol_ma20_ratio, score=ticker_score
             )
@@ -8237,4 +7584,17 @@ if st.session_state.get("has_searched"):
                 top_cards_front=top_cards_front, top_cards_end=top_cards_end,
             )
             st.markdown("---")
-            render_info_view(active_ticker, hist, float(today['Close']))
+            info_view = st.segmented_control(
+                "정보 보기",
+                ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
+                default="📰 뉴스 & 호재",
+                required=True,
+                key="info_view",
+                label_visibility="collapsed",
+            )
+            if info_view == "📰 뉴스 & 호재":
+                render_news_section(active_ticker)
+            elif info_view == "💬 소셜 미디어":
+                render_social_section(active_ticker)
+            else:
+                render_chart_interpretation(active_ticker, hist, float(today['Close']))
