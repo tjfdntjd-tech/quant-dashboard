@@ -3927,6 +3927,139 @@ button[kind$="Active"] *{color:#FFFFFF!important;-webkit-text-fill-color:#FFFFFF
 
 """
 
+MOBILE_DENSE_CSS = r"""
+/* ════════════════════════════════════════════════════════════════
+   모바일 촘촘한 리스트 레이어 — V4_THEME_CSS 뒤에 얹는 마지막 레이어
+   · 통합 스캐너 결과를 표 대신 '한 줄 요약 + 펼침' 행(.ur)으로 보여준다 (모든 폭 공통)
+   · 폭 640px 이하: 여백·글자·간격을 줄여 한 화면에 더 많이 보이게, 화면 전환 탭은 상단 고정
+   ════════════════════════════════════════════════════════════════ */
+
+/* ── 통합 스캐너: 행 전체를 누르면 분석으로 이동(투명 버튼을 행 상단에 겹침), 아래 '상세'는 눌러서 펼침 ── */
+[class*="st-key-urow-"]{position:relative;background:var(--m-card);border:1px solid var(--m-line);border-radius:var(--radius-card);overflow:hidden;}
+[class*="st-key-urow-"] [data-testid="stVerticalBlock"]{gap:0!important;}
+[class*="st-key-urow-"] .stButton{position:absolute!important;top:0;left:0;right:0;height:3.2rem;z-index:3;margin:0!important;width:auto!important;}
+[class*="st-key-urow-"] .stButton button{width:100%!important;height:100%!important;min-height:0!important;opacity:0!important;padding:0!important;border:0!important;}
+.ur{padding:8px 10px 2px;font-size:13px;color:var(--m-ink);line-height:1.4;}
+.ur-top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;min-height:2.55rem;}
+.ur-l{min-width:0;flex:1;}
+.ur-h{display:flex;align-items:center;gap:6px;}
+.ur-tk{font-size:15px;font-weight:700;letter-spacing:-.01em;}
+.ur-g{font-size:11px;font-weight:700;padding:0 6px;border-radius:4px;border:1px solid var(--m-line);line-height:1.6;}
+.g-A{background:var(--m-accent);color:#fff;border-color:var(--m-accent);}
+.g-B{background:var(--m-info-bg);color:var(--m-info);border-color:var(--m-info-line);}
+.g-C{background:var(--m-warn-bg);color:var(--m-warn);border-color:var(--m-warn-line);}
+.g-N{background:#F3F4F6;color:var(--m-mute);}
+.ur-sc{font-size:12px;color:var(--m-sub);font-variant-numeric:tabular-nums;}
+.ur-lg{font-size:10.5px;color:var(--m-mute);border:1px solid var(--m-line);border-radius:4px;padding:0 4px;}
+.ur-n{font-size:12px;color:var(--m-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;}
+.ur-r{text-align:right;flex:none;}
+.ur-px{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;}
+.ur-mv{font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--m-sub);}
+.ur-mv.up{color:var(--m-up);} .ur-mv.dn{color:var(--m-down);}
+.ur-bar{height:3px;background:var(--m-line-2);border-radius:2px;margin:5px 0 5px;overflow:hidden;}
+.ur-bar i{display:block;height:100%;background:var(--m-accent);}
+.ur-bar.b-B i{background:#5B7BA8;} .ur-bar.b-C i{background:#C8923A;} .ur-bar.b-N i{background:#B7BEC9;}
+.ur-m{display:flex;flex-wrap:wrap;gap:1px 10px;font-size:11.5px;color:var(--m-sub);font-variant-numeric:tabular-nums;}
+.ur-m b{font-weight:600;color:var(--m-ink);}
+.ur-tags{font-size:12px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ur-wn{font-size:11px;color:var(--m-warn);background:var(--m-warn-bg);border:1px solid var(--m-warn-line);border-radius:4px;padding:0 5px;margin-left:6px;}
+.ur-d{border-top:1px solid var(--m-line-2);margin-top:5px;}
+.ur-d summary{font-size:11.5px;color:var(--m-mute);padding:7px 0;cursor:pointer;list-style:none;}
+.ur-d summary::-webkit-details-marker{display:none;}
+.ur-d[open] summary{color:var(--m-ink);}
+.ur-dd{font-size:12px;line-height:1.55;color:var(--m-sub);padding:0 0 8px;}
+.ur-parts{display:grid;grid-template-columns:repeat(3,1fr);gap:3px 8px;margin-bottom:6px;font-variant-numeric:tabular-nums;}
+.ur-parts b{color:var(--m-ink);font-weight:600;}
+.ur-wl{color:var(--m-warn);}
+.us-strip{display:flex;flex-wrap:wrap;gap:1px 10px;font-size:12px;color:var(--m-sub);padding:2px 2px 4px;font-variant-numeric:tabular-nums;}
+.us-strip b{color:var(--m-ink);font-weight:600;}
+.st-key-uni_ctrl [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;}
+.st-key-uni_ctrl [data-testid="stColumn"]{min-width:0!important;}
+
+/* ── 모바일(폭 640px 이하): 촘촘하게 ── */
+@media (max-width:640px){
+  [data-testid="stMainBlockContainer"],.main .block-container{padding:0.6rem 0.65rem calc(3.5rem + env(safe-area-inset-bottom))!important;max-width:100%!important;}
+  [data-testid="stHeader"]{height:2.4rem!important;min-height:0!important;}
+  [data-testid="stVerticalBlock"]{gap:0.5rem!important;}
+  [data-testid="stHorizontalBlock"]{gap:0.4rem!important;}
+  h1{font-size:1.2rem!important;} h2{font-size:1.08rem!important;} h3{font-size:1rem!important;}
+  [data-testid="stMarkdownContainer"] p,[data-testid="stMarkdownContainer"] li{font-size:14px;line-height:1.5;}
+  [data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] *{font-size:12.5px!important;line-height:1.4!important;}
+  .metric-card{padding:9px 11px!important;}
+  .metric-value{font-size:1.15rem!important;}
+  .glass-card,.news-card,.social-card{padding:10px 12px!important;}
+  [data-testid="stExpander"] summary{padding:0.45rem 0.7rem!important;min-height:2.6rem!important;}
+  [data-testid="stExpander"] summary p{font-size:14px!important;}
+  [data-testid="stDataFrame"]{font-size:12px;}
+  /* iOS 확대 방지: 입력 글자는 16px 이상 */
+  input,textarea,[data-baseweb="select"] input,[data-baseweb="select"] div[value]{font-size:16px!important;}
+  /* 탭은 줄바꿈 대신 가로 스크롤 */
+  .stTabs [role="tablist"]{overflow-x:auto;flex-wrap:nowrap!important;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+  .stTabs [role="tablist"]::-webkit-scrollbar{display:none;}
+  .stTabs [data-baseweb="tab"]{white-space:nowrap;padding:0.45rem 0.65rem!important;font-size:13.5px!important;}
+  .stButton button,.stFormSubmitButton button{min-height:2.75rem;}
+  /* 화면 전환 탭: 상단 고정 */
+  .st-key-topnav{position:sticky;top:2.4rem;z-index:40;background:var(--m-bg);padding:4px 0 6px;margin:0 -0.65rem;padding-left:0.65rem;padding-right:0.65rem;border-bottom:1px solid var(--m-line);}
+  /* 스캐너 필터: 입력 두 개씩 한 줄 */
+  .st-key-uni_filters [data-testid="stHorizontalBlock"]{flex-wrap:wrap!important;}
+  .st-key-uni_filters [data-testid="stColumn"]{min-width:calc(50% - 0.4rem)!important;flex:1 1 calc(50% - 0.4rem)!important;}
+  .ur{padding:7px 9px 2px;}
+}
+"""
+
+
+MOBILE_REDESIGN_CSS = r"""
+/* ════════════════════════════════════════════════════════════════
+   모바일 리디자인 레이어 (Figma '모바일 375' 시안 기준)
+   · MOBILE_DENSE_CSS 뒤에 얹는 마지막 레이어 — 토큰(--m-*)은 그대로 쓴다
+   · 폭 640px 이하에만 적용 (데스크톱 영향 없음)
+   ════════════════════════════════════════════════════════════════ */
+@media (max-width:640px){
+  /* 화면 전환: iOS 스타일 세그먼트 (트랙 + 선택 알약) */
+  .st-key-topnav{background:var(--m-bg)!important;}
+  .st-key-topnav [data-testid="stSegmentedControl"] > div{
+    background:var(--m-line-2)!important;border-radius:10px!important;padding:3px!important;}
+  .st-key-topnav [data-testid="stSegmentedControl"] button[aria-checked="true"],
+  .st-key-topnav [data-testid="stSegmentedControl"] button[aria-pressed="true"]{
+    background:var(--m-card)!important;border-radius:8px!important;
+    box-shadow:0 1px 2px rgba(15,23,42,.08)!important;font-weight:700!important;}
+
+  /* 점수 카드: 큰 숫자 + 단계 칩 느낌 */
+  .v4-score{background:var(--m-card);border:1px solid var(--m-line);border-radius:14px;padding:14px 16px 8px;}
+  .v4-score-num{font-size:48px!important;letter-spacing:-.02em;font-weight:700;color:var(--m-accent);}
+  .v4-score-unit{color:var(--m-mute);}
+  .v4-stage{display:inline-block;font-size:12px;font-weight:700;color:var(--m-accent);
+    background:var(--m-info-bg);border-radius:99px;padding:4px 10px;}
+  .v4-scale{height:8px;background:var(--m-line-2);border-radius:4px;}
+  .v4-scale-fill{height:8px;background:var(--m-accent);border-radius:4px;}
+  .v4-tick{background:var(--m-card);}
+
+  /* 주의 문구: 노란 알림 박스 */
+  .v4-caution{background:var(--m-warn-bg);border:1px solid var(--m-warn-line);
+    border-left:3px solid var(--m-warn);border-radius:10px;padding:10px 12px;margin:0 0 8px;}
+
+  /* 지표 카드: 2열 그리드, 라벨 · 값 · 보조 */
+  .metric-grid{gap:8px!important;}
+  .metric-card{background:var(--m-card)!important;border:1px solid var(--m-line)!important;
+    border-radius:12px!important;box-shadow:none!important;}
+  .metric-label{color:var(--m-mute)!important;}
+  .metric-value{font-variant-numeric:tabular-nums;font-weight:700;color:var(--m-ink)!important;}
+
+  /* 통합 스캐너 행: 등급 바 두께 3px, 얇은 구분 */
+  .ur{border-radius:0;}
+  .ur-tk{font-size:15px;}
+  .ur-g{border-radius:4px;padding:0 6px;}
+  .ur-bar{height:3px;}
+  .ur-tags{margin-top:4px;}
+  .us-strip{background:var(--m-card);border:1px solid var(--m-line);border-radius:10px;padding:8px 10px;}
+
+  /* 정보 영역 뉴스 카드: 호재 라벨 + 제목 */
+  .news-card{background:var(--m-card)!important;border:1px solid var(--m-line)!important;
+    border-radius:12px!important;}
+}
+"""
+
+
 def inject_css(dark: bool = True):
     if dark:
         bg_main      = "linear-gradient(180deg, #232326, #232326)"
@@ -4076,7 +4209,7 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n", unsafe_allow_html=True)
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n", unsafe_allow_html=True)
 
 inject_css(False)   # 미니멀 라이트 팔레트 고정
 
@@ -7328,63 +7461,135 @@ def log_unified_results(rows: list, session: str, top_n: int = 30, now_et=None) 
         return 0
 
 
+_UNI_PART_LABEL = {"catalyst": "촉매", "activity": "거래활동", "strength": "강도", "move": "움직임", "accum": "매집", "struct": "수급"}
+
+
+def _uni_row_html(r: dict, sess: str) -> str:
+    """통합 스캐너 결과 한 종목을 촘촘한 리스트 행(HTML)으로 만든다. 윗부분(티커·등급·점수·가격·등락)은 눌러서 분석으로 이동하고,
+    아랫부분 '점수 구성·경고'는 눌러서 펼친다. 마크다운이 들여쓰기를 코드블록으로 오인하지 않도록 한 줄로 이어 붙인다."""
+    esc = _safe_html
+    g = r.get("u_grade", "—")
+    gcls = {"A": "g-A", "B": "g-B", "C": "g-C"}.get(g, "g-N")
+    bcls = {"B": "b-B", "C": "b-C"}.get(g, "b-N" if g not in ("A",) else "")
+    sc = float(r.get("u_score") or 0)
+    px, mv = r.get("u_price"), r.get("u_move")
+    mvcls = "up" if (mv or 0) > 0 else ("dn" if (mv or 0) < 0 else "")
+    large = (r.get("u_mode") == "large")
+    chips = []
+    if r.get("u_proj") is not None:
+        chips.append(f"예상량 <b>{r['u_proj'] * 100:.0f}%</b>")
+    vw, hi = r.get("u_vwap"), r.get("u_high")
+    if px and vw:
+        chips.append(f"VWAP <b>{(px / vw - 1) * 100:+.1f}%</b>")
+    if px and hi:
+        chips.append(f"고점 <b>{(px / hi - 1) * 100:+.1f}%</b>")
+    if r.get("u_vsr") is not None:
+        chips.append(f"급증 <b>{r['u_vsr']:.1f}x</b>")
+    if r.get("float_shares"):
+        chips.append(f"플로트 <b>{r['float_shares'] / 1e6:.1f}M</b>")
+    if sess == "after" and r.get("u_ah_pct") is not None:
+        chips.append(f"시간외 <b>{r['u_ah_pct']:+.1f}%</b>")
+    if r.get("u_daily") is not None:
+        chips.append(f"수축 <b>{r['u_daily']:.0f}</b>")
+    warns = [w for w in (r.get("u_warn") or "").split(" · ") if w]
+    # 상세(펼침): 점수 구성 + 근거 + 촉매 + 경고
+    W = UNI_WEIGHTS[sess]["large" if large else "small"]
+    parts = r.get("u_parts") or {}
+    pgrid = "".join(f"<span>{_UNI_PART_LABEL.get(k, k)} <b>{parts.get(k, 0) * w:.0f}/{w}</b></span>" for k, w in W.items())
+    detail = f'<div class="ur-parts">{pgrid}</div>'
+    if r.get("u_why"):
+        detail += f'<div>{esc(r["u_why"])}</div>'
+    cat = r.get("catalyst")
+    if cat and cat != "—":
+        detail += f'<div>📰 {esc(cat)}</div>'
+    if warns:
+        detail += "".join(f'<div class="ur-wl">⚠ {esc(w)}</div>' for w in warns)
+    px_txt = f"${px:,.2f}" if px else "—"
+    mv_txt = f"{mv:+.1f}%" if mv is not None else "—"
+    return (
+        '<div class="ur"><div class="ur-top"><div class="ur-l">'
+        f'<div class="ur-h"><span class="ur-tk">{esc(r["ticker"])}</span><span class="ur-g {gcls}">{esc(g)}</span>'
+        f'<span class="ur-sc">{sc:.0f}</span>{"<span class=ur-lg>대형</span>" if large else ""}</div>'
+        f'<div class="ur-n">{esc((r.get("name") or "")[:28])}</div></div>'
+        f'<div class="ur-r"><div class="ur-px">{px_txt}</div><div class="ur-mv {mvcls}">{mv_txt}</div></div></div>'
+        f'<div class="ur-bar {bcls}"><i style="width:{max(2.0, min(100.0, sc)):.0f}%"></i></div>'
+        f'<div class="ur-m">{"".join(f"<span>{c}</span>" for c in chips)}</div>'
+        f'<div class="ur-tags">{esc(r.get("u_tags", ""))}'
+        f'{f"<span class=ur-wn>⚠ {len(warns)}</span>" if warns else ""}</div>'
+        f'<details class="ur-d"><summary>점수 구성 · 경고 ▾</summary><div class="ur-dd">{detail}</div></details></div>'
+    )
+
+
+def _uni_table_pick():
+    """표 보기에서 행을 고르면 정밀 분석 화면으로 이동 (on_select 콜백: 위젯이 만들어지기 전에 실행되므로 화면 상태를 바꿀 수 있다)."""
+    try:
+        rows_ = st.session_state["uni_df"].selection.rows
+    except Exception:
+        rows_ = []
+    tk = st.session_state.get("_uni_table_tickers") or []
+    if rows_ and rows_[0] < len(tk):
+        _open_ticker(tk[rows_[0]])
+
+
 def render_unified_scanner():
-    """통합 스캐너 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 종목별 점수 하나로 합친 화면.
+    """통합 스캐너 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 종목별 점수 하나로 합친 화면 (모바일: 촘촘한 리스트).
     시간대(프리마켓/정규장/마감 후)를 자동으로 감지하고, 직접 바꿀 수도 있다."""
     ui_section_header(mono_icon_badge("target", color="var(--c-violet)"), "통합 스캐너", "icon-violet", "title-violet")
-    st.caption("급등 신호(갭·등락률), 거래량 급증, 매집 흔적(일봉 수축·돌파 임박)을 종목별 점수 하나로 합쳤습니다. "
-               "프리마켓·정규장·마감 후(내일 준비)에 따라 점수 가중치가 달라지고, 증자·역분할·인수확정·상장폐지 종목은 먼저 제외합니다. "
-               "점수는 후보 선별용이며, 진입은 프리마켓 고점·VWAP 같은 가격 반응을 확인한 뒤에 판단하세요.")
-    choice = st.radio("시간대", ["자동", "프리마켓", "정규장", "마감 후(내일 준비)"], horizontal=True, key="uni_session_choice",
-                      help="자동: 지금 미국 동부 시각으로 판단. 프리마켓 04:00~09:30, 정규장 09:30~16:00, 그 외(마감 후·주말)는 내일 준비 모드입니다.")
+    with st.expander("ℹ️ 이 화면은 무엇인가요?", expanded=False):
+        st.caption("급등 신호(갭·등락률), 거래량 급증, 매집 흔적(일봉 수축·돌파 임박)을 종목별 점수 하나로 합쳤습니다. "
+                   "프리마켓·정규장·마감 후(내일 준비)에 따라 점수 가중치가 달라지고, 증자·역분할·인수확정·상장폐지 종목은 먼저 제외합니다. "
+                   "점수는 후보 선별용이며, 진입은 프리마켓 고점·VWAP 같은 가격 반응을 확인한 뒤에 판단하세요. "
+                   "행의 윗부분을 누르면 정밀 분석으로 이동하고, '점수 구성 · 경고'를 누르면 세부 내용이 펼쳐집니다.")
+    _sel = st.segmented_control("시간대", ["자동", "프리마켓", "정규장", "마감 후"], default="자동", required=True,
+                                key="uni_session_sel", label_visibility="collapsed",
+                                help="자동: 지금 미국 동부 시각으로 판단. 프리마켓 04:00~09:30, 정규장 09:30~16:00, 그 외(마감 후·주말)는 내일 준비 모드입니다.")
     auto = detect_session()
-    session = {"자동": auto, "프리마켓": "pre", "정규장": "regular", "마감 후(내일 준비)": "after"}[choice]
+    session = {"자동": auto, "프리마켓": "pre", "정규장": "regular", "마감 후": "after"}.get(_sel or "자동", auto)
     _t = _et_now()
-    st.caption(f"미국 동부 {_t.strftime('%a %H:%M')} · 감지된 시간대: **{UNI_SESSION_LABEL[auto]}**"
-               + (f" · 선택한 시간대: **{UNI_SESSION_LABEL[session]}**" if session != auto else ""))
+    st.caption(f"미국 {_t.strftime('%a %H:%M')} ET · 감지: **{UNI_SESSION_LABEL[auto]}**"
+               + (f" · 선택: **{UNI_SESSION_LABEL[session]}**" if session != auto else ""))
     if session != auto:
         st.info("지금 시각과 다른 시간대를 선택했습니다. 해당 시간대의 가장 최근 데이터 기준으로 계산되고, 예측 검증 기록은 남지 않을 수 있습니다.")
 
     pre = (session == "pre")
-    with st.expander("⚙️ 고급 필터 (기본값으로도 충분해요)", expanded=False):
-        st.caption("처음이라면 기본값 그대로 두고 스캔하세요. 조건을 바꾸면 후보 수가 달라집니다.")
-        c1, c2 = st.columns(2)
-        with c1:
-            move_rng = st.slider("프리마켓 갭 범위 (%)" if pre else "당일 등락률 범위 (%)", 0.0, 100.0,
-                                 (5.0, 15.0) if pre else (5.0, 60.0), 0.5, key=f"uni_move_{session}",
-                                 help="프리마켓은 5~15%, 정규장·마감 후는 5~20%가 점수 만점 구간입니다. 마감 후에는 거래량 급증 종목이 등락률과 무관하게 추가됩니다.")
-        with c2:
-            price_rng = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="uni_price",
-                                  help="1달러 미만 종목은 경고가 붙고 등급이 최대 B로 제한됩니다.")
-        c3, c4, c5, c6 = st.columns(4)
-        with c3:
-            min_vol = st.number_input("최소 프리마켓 거래량(주)" if pre else "최소 당일 거래량(주)", min_value=10_000,
-                                      value=300_000 if pre else 500_000, step=50_000, key=f"uni_minvol_{session}")
-        with c4:
-            min_avg = st.number_input("최소 평균거래량(주)", min_value=50_000, value=GAPGO_MIN_AVG_VOL, step=50_000, key="uni_avgvol",
-                                      help="대형·중형 모드 종목은 이 값과 관계없이 100만 주 이상이 필요합니다.")
-        with c5:
-            max_fl = st.number_input("플로트 상한(백만 주)", min_value=1, value=GAPGO_MAX_FLOAT // 1_000_000, step=5, key="uni_float",
-                             help="플로트 = 실제로 거래될 수 있는 유통 주식 수. 이 값보다 많으면 후보에서 제외합니다.")
-        with c6:
-            max_cap = st.number_input("시총 상한($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="uni_cap",
-                                      help="'대형·중형주 포함'을 켜면 이 값은 무시됩니다.")
-        d1, d2 = st.columns(2)
-        with d1:
+    with st.expander("⚙️ 필터 (기본값으로도 충분해요)", expanded=False):
+        with st.container(key="uni_filters"):
+            c1, c2 = st.columns(2)
+            with c1:
+                move_rng = st.slider("프리마켓 갭 범위 (%)" if pre else "당일 등락률 범위 (%)", 0.0, 100.0,
+                                     (5.0, 15.0) if pre else (5.0, 60.0), 0.5, key=f"uni_move_{session}",
+                                     help="프리마켓은 5~15%, 정규장·마감 후는 5~20%가 점수 만점 구간입니다. 마감 후에는 거래량 급증 종목이 등락률과 무관하게 추가됩니다.")
+            with c2:
+                price_rng = st.slider("주가 범위 ($)", 0.1, 100.0, (0.1, 20.0), 0.1, key="uni_price",
+                                      help="1달러 미만 종목은 경고가 붙고 등급이 최대 B로 제한됩니다.")
+            c3, c4 = st.columns(2)
+            with c3:
+                min_vol = st.number_input("최소 프리마켓 거래량(주)" if pre else "최소 당일 거래량(주)", min_value=10_000,
+                                          value=300_000 if pre else 500_000, step=50_000, key=f"uni_minvol_{session}")
+            with c4:
+                min_avg = st.number_input("최소 평균거래량(주)", min_value=50_000, value=GAPGO_MIN_AVG_VOL, step=50_000, key="uni_avgvol",
+                                          help="대형·중형 모드 종목은 이 값과 관계없이 100만 주 이상이 필요합니다.")
+            c5, c6 = st.columns(2)
+            with c5:
+                max_fl = st.number_input("플로트 상한(백만 주)", min_value=1, value=GAPGO_MAX_FLOAT // 1_000_000, step=5, key="uni_float",
+                                         help="플로트 = 실제로 거래될 수 있는 유통 주식 수. 이 값보다 많으면 후보에서 제외합니다.")
+            with c6:
+                max_cap = st.number_input("시총 상한($백만, 0=제한없음)", min_value=0, value=1000, step=100, key="uni_cap",
+                                          help="'대형·중형주 포함'을 켜면 이 값은 무시됩니다.")
             incl_large = st.checkbox("대형·중형주도 포함 (시총 제한 해제 · 별도 점수)", value=False, key="uni_large",
                                      help="시총 20억$ 이상 또는 플로트 상한 초과 종목은 플로트 대신 QQQ 동조를 보고 거래량·움직임 기준을 낮춰 평가합니다. 스캔이 느려질 수 있습니다.")
-        with d2:
             min_vs = st.number_input("거래량 급증 최소 배율 (3일÷3개월, 마감 후 풀 추가용)", min_value=1.0, max_value=50.0,
                                      value=UNI_MIN_VSURGE_TAG, step=0.5, key="uni_vsurge", disabled=(session != "after"))
-    min_score = st.slider("최소 점수", 0, 90, 45, 5, key="uni_min_score", help="45 = C등급 이상. 높일수록 후보가 줄어듭니다.")
+            min_score = st.slider("최소 점수", 0, 90, 45, 5, key="uni_min_score", help="45 = C등급 이상. 높일수록 후보가 줄어듭니다.")
 
-    if st.button("🔮 스캔 실행", key="run_unified", use_container_width=True):
+    if st.button("🔮 스캔 실행", key="run_unified", use_container_width=True, type="primary"):
         with st.spinner("후보 수집 → 제외 필터 → 일봉·촉매·증자 점수 계산 중... (1~3분 걸릴 수 있습니다)"):
             out = run_unified_scan(session, move_rng[0], move_rng[1], price_rng[0], price_rng[1], int(min_vol), int(max_cap),
                                    int(min_avg), int(max_fl) * 1_000_000, include_large=bool(incl_large), min_vsurge=float(min_vs))
             st.session_state["uni_out"] = out
             st.session_state["uni_scan_et"] = _et_now().strftime("%H:%M")
             st.session_state["uni_logged"] = log_unified_results([x for x in out["rows"] if x["u_score"] >= 45], session)
+            st.session_state["uni_limit"] = 30
 
     out = st.session_state.get("uni_out")
     if out is None:
@@ -7394,17 +7599,34 @@ def render_unified_scanner():
     sess = out["session"]
     idx, reg = out.get("idx") or {}, out.get("regime") or {}
     _dm = out.get("data_min")
-    _dt = f"{_dm // 60:02d}:{_dm % 60:02d} ET" if _dm is not None else "—"
+    _dt = f"{_dm // 60:02d}:{_dm % 60:02d}" if _dm is not None else "—"
     _fmt = lambda v: "—" if v is None else f"{v:+.1f}%"
-    st.caption(f"[{UNI_SESSION_LABEL[sess]}] 스캔 {st.session_state.get('uni_scan_et', '—')} ET · 데이터 마지막 체결 {_dt} · "
-               f"QQQ {_fmt(idx.get('QQQ'))} · IWM {_fmt(idx.get('IWM'))}")
-    if reg.get("label") in ("강세", "중립", "약세"):
-        st.caption(f"일봉 시장 환경: **{reg['label']}** (IWM 20일선 대비 {reg['iwm_vs_ma20']:+.1f}% · 5일 {reg['iwm_ret5']:+.1f}% · SPY 5일 {reg['spy_ret5']:+.1f}%)"
-                   + (" — 소형주 약세라 소형 모드 등급을 한 단계 낮췄습니다." if reg["label"] == "약세" else ""))
+    _env = f' · 환경 <b>{reg["label"]}</b>' if reg.get("label") in ("강세", "중립", "약세") else ""
+    st.markdown(
+        f'<div class="us-strip"><span><b>{UNI_SESSION_LABEL[sess]}</b> 스캔 {st.session_state.get("uni_scan_et", "—")} ET</span>'
+        f'<span>마지막 체결 {_dt}</span><span>QQQ <b>{_fmt(idx.get("QQQ"))}</b></span><span>IWM <b>{_fmt(idx.get("IWM"))}</b></span>'
+        f'<span>{_env.strip(" ·")}</span></div>', unsafe_allow_html=True)
+    if reg.get("label") == "약세":
+        st.caption("일봉 기준 소형주 약세라 소형 모드 등급을 한 단계 낮췄습니다.")
+
     rows = out["rows"]
-    filtered = [r for r in rows if r["u_score"] >= min_score]
-    st.markdown(f"**{len(filtered)}개 종목** (후보 {out['n_base']}개 → 점수 계산 {len(rows)}개 중 {min_score}점 이상)"
-                + (f" · 이번 스캔에서 {st.session_state.get('uni_logged', 0)}건 기록" if st.session_state.get("uni_logged") else ""))
+    # ── 보기 조절: 등급 · 정렬 · 보기 방식 ──
+    _grades = st.pills("등급", ["A", "B", "C", "—"], selection_mode="multi", default=["A", "B", "C"],
+                       key="uni_grade_pick", label_visibility="collapsed")
+    with st.container(key="uni_ctrl"):
+        k1, k2 = st.columns([3, 2])
+        with k1:
+            sort_by = st.segmented_control("정렬", ["점수", "등락", "거래량", "급증"], default="점수", required=True,
+                                           key="uni_sort", label_visibility="collapsed",
+                                           help="점수순 / 등락률순 / 예상 거래량순 / 3일÷3개월 거래량 급증 배율순")
+        with k2:
+            view = st.segmented_control("보기", ["리스트", "표"], default="리스트", required=True,
+                                        key="uni_view", label_visibility="collapsed")
+    _keyf = {"점수": lambda r: r["u_score"], "등락": lambda r: r.get("u_move") or -999,
+             "거래량": lambda r: r.get("u_proj") or 0, "급증": lambda r: r.get("u_vsr") or 0}[sort_by or "점수"]
+    filtered = sorted([r for r in rows if r["u_score"] >= min_score and r["u_grade"] in (_grades or [])], key=_keyf, reverse=True)
+    st.markdown(f"**{len(filtered)}개** · 후보 {out['n_base']}개 → 계산 {len(rows)}개"
+                + (f" · 이번 스캔 {st.session_state.get('uni_logged', 0)}건 기록" if st.session_state.get("uni_logged") else ""))
     st.session_state["gg_excluded_delist"] = out["delist_excluded"]
     render_excluded_expander("gg_excluded_delist")
     if out["excluded"]:
@@ -7412,58 +7634,57 @@ def render_unified_scanner():
             st.dataframe(pd.DataFrame(out["excluded"]), use_container_width=True, hide_index=True)
             st.caption("뉴스·공시 키워드 기반이라 오탐이 있을 수 있습니다. 증자 공시는 야후가 제공하는 SEC 서식 목록 기준이며 8-K 5.03(정관 변경) 같은 항목은 감지하지 못합니다.")
     if not filtered:
-        st.warning("조건에 맞는 종목이 없습니다. 하루 0~5개가 정상 범위입니다. 조건을 완화하거나 다른 시간대에 다시 실행해 보세요.")
+        st.warning("조건에 맞는 종목이 없습니다. 하루 0~5개가 정상 범위입니다. 등급 선택을 넓히거나 조건을 완화해 보세요.")
         render_gapgo_log_panel()
         return
 
-    table = []
-    for r in filtered:
-        avg, fl = r.get("avg_volume"), r.get("float_shares")
-        hi_, vw_, px_ = r.get("u_high"), r.get("u_vwap"), r.get("u_price")
-        large = (r.get("u_mode") == "large")
-        row = {
-            "⭐": "★" if r["ticker"] in st.session_state.favorites else "",
-            "신호": r.get("u_tags", ""), "티커": r["ticker"], "종목명": (r.get("name") or "")[:24],
-            "모드": "대형·중형" if large else "소형", "등급": r["u_grade"], "점수": r["u_score"],
-            "가격": px_, "갭/등락(%)": r.get("u_move"),
-            "예상거래량(평균대비%)": (r["u_proj"] * 100) if r.get("u_proj") is not None else None,
-            "VWAP대비(%)": ((px_ / vw_ - 1) * 100) if (px_ and vw_) else None,
-            "고점대비(%)": ((px_ / hi_ - 1) * 100) if (px_ and hi_) else None,
-            "3일/3개월 거래량(배)": r.get("u_vsr"), "수축점수": r.get("u_daily"),
-            "플로트(M)": (fl / 1e6) if fl else None,
-            "촉매": r.get("catalyst", "—"), "근거": r["u_why"], "경고": r["u_warn"],
+    if view == "표":
+        table = []
+        for r in filtered:
+            fl = r.get("float_shares")
+            hi_, vw_, px_ = r.get("u_high"), r.get("u_vwap"), r.get("u_price")
+            row = {
+                "⭐": "★" if r["ticker"] in st.session_state.favorites else "",
+                "신호": r.get("u_tags", ""), "티커": r["ticker"], "종목명": (r.get("name") or "")[:24],
+                "모드": "대형·중형" if r.get("u_mode") == "large" else "소형", "등급": r["u_grade"], "점수": r["u_score"],
+                "가격": px_, "갭/등락(%)": r.get("u_move"),
+                "예상거래량(평균대비%)": (r["u_proj"] * 100) if r.get("u_proj") is not None else None,
+                "VWAP대비(%)": ((px_ / vw_ - 1) * 100) if (px_ and vw_) else None,
+                "고점대비(%)": ((px_ / hi_ - 1) * 100) if (px_ and hi_) else None,
+                "3일/3개월 거래량(배)": r.get("u_vsr"), "수축점수": r.get("u_daily"),
+                "플로트(M)": (fl / 1e6) if fl else None,
+                "촉매": r.get("catalyst", "—"), "근거": r["u_why"], "경고": r["u_warn"],
+            }
+            if sess == "after":
+                row["시간외(%)"] = r.get("u_ah_pct")
+            table.append(row)
+        cfg = {
+            "점수": st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
+                                                  help="시간대별 가중치(촉매·거래활동·강도·움직임·매집흔적·수급구조). A≥75, B≥60, C≥45"),
+            "가격": st.column_config.NumberColumn(format="$%.2f"),
+            "갭/등락(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+            "예상거래량(평균대비%)": st.column_config.NumberColumn(format="%.0f%%", help="지금까지 거래량을 '그 시각까지 보통 쌓이는 비율'로 환산한 세션 마감 예상 거래량 ÷ 평균 일거래량"),
+            "VWAP대비(%)": st.column_config.NumberColumn(format="%+.1f%%"),
+            "고점대비(%)": st.column_config.NumberColumn(format="%+.1f%%", help="세션 고점에서 얼마나 내려왔나 (프리마켓=프리마켓 고점, 정규장·마감 후=당일 고점)"),
+            "3일/3개월 거래량(배)": st.column_config.NumberColumn(format="%.1f"),
+            "수축점수": st.column_config.NumberColumn(format="%.0f", help="일봉 돌파 임박 점수(변동성 축소·거래량 선행·20일선 직전)"),
+            "플로트(M)": st.column_config.NumberColumn(format="%.1f"),
+            "시간외(%)": st.column_config.NumberColumn(format="%+.1f%%"),
         }
-        if sess == "after":
-            row["시간외(%)"] = r.get("u_ah_pct")
-        table.append(row)
-    cfg = {
-        "점수": st.column_config.ProgressColumn(format="%.0f", min_value=0, max_value=100,
-                                              help="시간대별 가중치(촉매·거래활동·강도·움직임·매집흔적·수급구조). A≥75, B≥60, C≥45"),
-        "가격": st.column_config.NumberColumn(format="$%.2f"),
-        "갭/등락(%)": st.column_config.NumberColumn(format="%+.1f%%"),
-        "예상거래량(평균대비%)": st.column_config.NumberColumn(format="%.0f%%", help="지금까지 거래량을 '그 시각까지 보통 쌓이는 비율'로 환산한 세션 마감 예상 거래량 ÷ 평균 일거래량"),
-        "VWAP대비(%)": st.column_config.NumberColumn(format="%+.1f%%"),
-        "고점대비(%)": st.column_config.NumberColumn(format="%+.1f%%", help="세션 고점에서 얼마나 내려왔나 (프리마켓=프리마켓 고점, 정규장·마감 후=당일 고점)"),
-        "3일/3개월 거래량(배)": st.column_config.NumberColumn(format="%.1f"),
-        "수축점수": st.column_config.NumberColumn(format="%.0f", help="일봉 돌파 임박 점수(변동성 축소·거래량 선행·20일선 직전)"),
-        "플로트(M)": st.column_config.NumberColumn(format="%.1f"),
-        "시간외(%)": st.column_config.NumberColumn(format="%+.1f%%"),
-    }
-    event = st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True, on_select="rerun",
-                         selection_mode="single-row", key="uni_df", column_config=cfg)
-    st.caption("행을 클릭하면 정밀 분석 화면으로 이동합니다. 가중치·시간 보정 곡선은 초안이므로 아래 '예측 검증'으로 세션·등급·시간대별 적중률을 확인하며 보정하세요.")
-    sel = []
-    if event is not None:
-        try:
-            sel = event.selection["rows"]
-        except Exception:
-            sel = []
-    if sel:
-        picked = filtered[sel[0]]["ticker"]
-        st.session_state["selected_ticker"] = picked
-        st.session_state["active_ticker"] = picked
-        st.session_state["has_searched"] = True
-        st.rerun()
+        st.session_state["_uni_table_tickers"] = [r["ticker"] for r in filtered]
+        st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True, on_select=_uni_table_pick,
+                     selection_mode="single-row", key="uni_df", column_config=cfg)
+        st.caption("행을 누르면 정밀 분석 화면으로 이동합니다.")
+    else:
+        limit = int(st.session_state.get("uni_limit", 30))
+        for i, r in enumerate(filtered[:limit]):
+            with st.container(key=f"urow-{i}"):
+                st.markdown(_uni_row_html(r, sess), unsafe_allow_html=True)
+                st.button("분석 →", key=f"ubtn-{i}", on_click=_open_ticker, args=(r["ticker"],))
+        if len(filtered) > limit:
+            st.button(f"더 보기 (+30) · {len(filtered) - limit}개 남음", key="uni_more", use_container_width=True,
+                      on_click=lambda: st.session_state.update(uni_limit=limit + 30))
+        st.caption("윗부분을 누르면 정밀 분석으로 이동 · '점수 구성 · 경고 ▾'를 누르면 펼쳐집니다. 가중치는 초안이므로 아래 '예측 검증'으로 적중률을 확인하며 보정하세요.")
     render_gapgo_log_panel()
 
 
@@ -7588,6 +7809,13 @@ _SCREEN_MAIN = "📈 종목 분석"
 def _goto_main():
     st.session_state["active_screen"] = _SCREEN_MAIN
 
+def _open_ticker(t):
+    """스캐너 결과 등에서 종목을 눌렀을 때: 종목을 지정하고 '종목 분석' 화면으로 이동 (on_click/on_select 콜백용)."""
+    st.session_state["selected_ticker"] = t
+    st.session_state["active_ticker"] = t
+    st.session_state["has_searched"] = True
+    st.session_state["active_screen"] = _SCREEN_MAIN
+
 def _pick_fav():
     _p = st.session_state.get("fav_pills")
     if _p:
@@ -7596,10 +7824,11 @@ def _pick_fav():
         st.session_state["has_searched"] = True
         st.session_state["active_screen"] = _SCREEN_MAIN
 
-st.segmented_control(
-    "화면", [_SCREEN_MAIN, "🎯 통합 스캐너", "🌡️ 섹터 히트맵"],
-    key="active_screen", required=True, label_visibility="collapsed",
-)
+with st.container(key="topnav"):
+    st.segmented_control(
+        "화면", [_SCREEN_MAIN, "🎯 통합 스캐너", "🌡️ 섹터 히트맵"],
+        key="active_screen", required=True, label_visibility="collapsed",
+    )
 
 # ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
 with st.form(key="ticker_search_form"):
