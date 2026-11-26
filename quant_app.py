@@ -4113,10 +4113,10 @@ h1,h2,h3{font-weight:800 !important;letter-spacing:-0.01em;}
 .news-card{background:var(--r-purple) !important;border:none !important;color:#111318 !important;}
 
 /* 버튼: 검정 필 */
-.stButton > button,.stDownloadButton > button{
+[data-testid="stButton"] button,[data-testid="stDownloadButton"] button,.stButton > button,.stDownloadButton > button{
   background:var(--r-dark) !important;color:#FFFFFF !important;border:none !important;
   border-radius:99px !important;font-weight:700 !important;padding:0.55rem 1.1rem !important;}
-.stButton > button:hover{background:#2A2C33 !important;color:#FFFFFF !important;}
+[data-testid="stButton"] button:hover,.stButton > button:hover{background:#2A2C33 !important;color:#FFFFFF !important;}
 
 /* 화면 전환: 검정 트랙 + 노랑 선택 필 */
 .st-key-topnav [data-testid="stSegmentedControl"] > div{
