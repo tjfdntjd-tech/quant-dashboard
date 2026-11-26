@@ -4322,7 +4322,7 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n", unsafe_allow_html=True)
+    st.markdown(f"\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n{css}\n", unsafe_allow_html=True)
 
 inject_css(False)   # 미니멀 라이트 팔레트 고정
 
