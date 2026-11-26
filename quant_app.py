@@ -4173,6 +4173,135 @@ html body .stApp [data-testid="stBaseButton-primary"] p{color:#FFFFFF !important
 """
 
 
+PREMIUM_LAYER_CSS = r"""
+/* ════════════════════════════════════════════════════════════════
+   PREMIUM 레이어 — 디자인 토큰 + 깊이(Elevation) 시스템
+   · 가장 마지막에 주입 (테마 위에 덮어씀)
+   · 데이터·기능 영향 없음: 색/그림자/간격/반경/상호작용만 변경
+   · 가짜 수치 없음, backdrop-filter 미사용 (모바일 성능)
+   ════════════════════════════════════════════════════════════════ */
+:root{
+  --pm-bg:#F4F6F5; --pm-surface:#FFFFFF; --pm-surface-soft:#F8FAF9;
+  --pm-text:#111827; --pm-text-2:#667085; --pm-text-3:#98A2B3;
+  --pm-primary:#173B30; --pm-primary-ink:#FFFFFF;
+  --pm-up:#19A974; --pm-down:#E55353; --pm-warn:#F0A33A; --pm-accent:#6D63FF;
+  --pm-border:#E6E9E7;
+  --pm-r-sm:10px; --pm-r-md:16px; --pm-r-lg:22px; --pm-r-xl:28px;
+  --pm-e1:0 2px 8px rgba(16,37,31,.05);
+  --pm-e2:0 8px 24px rgba(16,37,31,.08);
+  --pm-e3:0 16px 40px rgba(16,37,31,.12);
+  --pm-e4:0 24px 60px rgba(16,37,31,.16);
+}
+
+/* LEVEL 0 · 배경: 아주 약한 ambient 빛 + 바닥 그림자 */
+html, body, [data-testid="stAppViewContainer"]{
+  background-image:
+    radial-gradient(900px 320px at 50% -80px, rgba(25,169,116,.07), transparent 70%),
+    linear-gradient(180deg, #F7F8F7 0%, #F3F5F4 60%, #EEF1EF 100%) !important;
+  background-attachment: scroll !important;
+  animation: none !important;
+}
+
+/* 텍스트 기본값 */
+body, .stApp{ color:var(--pm-text) !important; }
+h1,h2,h3{ color:var(--pm-text) !important; letter-spacing:-0.02em; font-weight:800 !important; }
+
+/* LEVEL 1–3 · 카드 깊이 */
+.glass-card,.metric-card,.news-card,.social-card,.v4-score,.v4-caution,.alert-banner{
+  background:var(--pm-surface) !important;
+  border:1px solid var(--pm-border) !important;
+  border-radius:var(--pm-r-lg) !important;
+  box-shadow:var(--pm-e1) !important;
+  backdrop-filter:none !important;
+  transition:transform .18s ease, box-shadow .18s ease;
+}
+.metric-card:hover,.news-card:hover,.glass-card:hover{
+  transform:translateY(-2px); box-shadow:var(--pm-e2) !important;
+}
+
+/* LEVEL 3 · Hero: 점수 카드를 메인 Hero Surface로 */
+.v4-score{
+  border-radius:var(--pm-r-xl) !important;
+  box-shadow:var(--pm-e3) !important;
+  padding:20px !important;
+}
+.v4-score-num{ font-size:44px !important; font-weight:800 !important; color:var(--pm-primary) !important; }
+.v4-stage{ background:var(--pm-primary) !important; color:var(--pm-primary-ink) !important; border-radius:10px !important; }
+
+/* 주의: 경고 톤 (코랄 대신 Warning 계열, 가독성 우선) */
+.v4-caution,.alert-banner{
+  background:#FFF7EC !important; border-color:#F5D9A0 !important;
+  box-shadow:var(--pm-e2) !important; border-radius:var(--pm-r-md) !important;
+}
+
+/* 지표 숫자: 가독성 + 자릿수 정렬 */
+.metric-value{ font-size:1.45rem !important; font-weight:800 !important; color:var(--pm-text) !important; }
+.metric-label{ color:var(--pm-text-2) !important; font-size:12px !important; font-weight:600 !important; }
+
+/* 색 의미 고정: 상승=Green, 하락=Red (장식 색 아님) */
+.metric-delta.up,.metric-value.up{ color:var(--pm-up) !important; }
+.metric-delta.down,.metric-value.down{ color:var(--pm-down) !important; }
+
+/* 버튼 (CTA): Deep Green, 14px, 터치 44px 이상 */
+.stButton button,
+[data-testid="stBaseButton-secondary"],
+[data-testid="stBaseButton-primary"],
+[data-testid="stBaseButton-secondaryFormSubmit"],
+[data-testid="stBaseButton-primaryFormSubmit"]{
+  background:linear-gradient(180deg,#1C4537 0%,#173B30 100%) !important;
+  color:var(--pm-primary-ink) !important; border:none !important;
+  border-radius:14px !important; min-height:44px !important;
+  font-weight:700 !important; box-shadow:0 6px 16px rgba(23,59,48,.22) !important;
+  transition:transform .12s ease, box-shadow .12s ease;
+}
+.stButton button:hover,
+[data-testid="stBaseButton-secondary"]:hover,
+[data-testid="stBaseButton-primary"]:hover{ transform:translateY(-1px); box-shadow:0 10px 22px rgba(23,59,48,.28) !important; }
+.stButton button:active,
+[data-testid="stBaseButton-secondary"]:active,
+[data-testid="stBaseButton-primary"]:active{ transform:translateY(1px); }
+.stButton button p,[data-testid="stBaseButton-secondary"] p,[data-testid="stBaseButton-primary"] p{ color:#FFFFFF !important; }
+
+/* 입력창: 떠 있는 검색 surface 느낌 */
+[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{
+  border-radius:14px !important; border:1px solid var(--pm-border) !important;
+  background:var(--pm-surface) !important; min-height:44px; box-shadow:var(--pm-e1);
+}
+[data-testid="stTextInput"] input:focus{ border-color:var(--pm-primary) !important; box-shadow:0 0 0 3px rgba(23,59,48,.12) !important; }
+
+/* 포커스 상태 (접근성) */
+button:focus-visible,a:focus-visible,input:focus-visible{ outline:2px solid var(--pm-accent); outline-offset:2px; }
+
+/* 상태/로딩/빈 상태 */
+.status-item{ color:var(--pm-text-2) !important; }
+
+/* 모바일 */
+@media (max-width:640px){
+  .block-container{ padding:0.9rem 0.9rem 2rem 0.9rem !important; }
+  .v4-score-num{ font-size:40px !important; }
+  .glass-card,.metric-card,.news-card,.v4-score{ border-radius:var(--pm-r-md) !important; }
+  .v4-score{ border-radius:var(--pm-r-lg) !important; }
+}
+
+/* HERO 검색 블록: 상단 메인 Hero Surface (LEVEL 3) */
+.st-key-hero_search{
+  background:var(--pm-surface) !important;
+  border:1px solid var(--pm-border) !important;
+  border-radius:var(--pm-r-xl) !important;
+  box-shadow:var(--pm-e3) !important;
+  padding:18px !important;
+  margin:6px 0 14px 0 !important;
+}
+.st-key-hero_search [data-testid="stForm"]{ border:none !important; padding:0 !important; background:transparent !important; }
+.st-key-hero_search [data-testid="stPills"]{ margin-top:10px; }
+
+/* 접근성: 움직임 감소 설정 존중 */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{ animation:none !important; transition:none !important; }
+}
+"""
+
+
 def inject_css(dark: bool = True):
     if dark:
         bg_main      = "linear-gradient(180deg, #232326, #232326)"
@@ -4322,7 +4451,7 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n{css}\n", unsafe_allow_html=True)
+    st.markdown(f"\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n{css}\n<style>{PREMIUM_LAYER_CSS}</style>\n", unsafe_allow_html=True)
 
 inject_css(False)   # 미니멀 라이트 팔레트 고정
 
@@ -7942,20 +8071,28 @@ with st.container(key="topnav"):
         key="active_screen", required=True, label_visibility="collapsed",
     )
 
-# ── 티커 입력 + 검색 (엔터키로도 실행 가능하도록 form으로 묶음) ──
-with st.form(key="ticker_search_form"):
-    ticker_input = st.text_input(
-        "티커명을 입력하세요 (예: NVDA, AAPL)",
-        value=st.session_state.selected_ticker
-    ).upper()
+# ── Hero 검색 블록: 입력 · 분석 CTA · 즐겨찾기를 하나의 상단 Hero surface로 묶음 ──
+# (위젯 키·콜백·세션 상태 로직은 그대로 유지, 배치만 변경)
+with st.container(key="hero_search"):
+    with st.form(key="ticker_search_form"):
+        ticker_input = st.text_input(
+            "티커명을 입력하세요 (예: NVDA, AAPL)",
+            value=st.session_state.selected_ticker
+        ).upper()
 
-    col_btn, col_star = st.columns([3, 1])
-    with col_btn:
-        search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
-    with col_star:
-        is_fav = ticker_input in st.session_state.favorites
-        fav_button_clicked = st.form_submit_button(
-            "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
+        col_btn, col_star = st.columns([3, 1])
+        with col_btn:
+            search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
+        with col_star:
+            is_fav = ticker_input in st.session_state.favorites
+            fav_button_clicked = st.form_submit_button(
+                "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
+            )
+
+    if st.session_state.favorites:
+        st.pills(
+            "즐겨찾기", st.session_state.favorites, selection_mode="single",
+            key="fav_pills", on_change=_pick_fav, label_visibility="collapsed",
         )
 
 if fav_button_clicked:
@@ -7966,12 +8103,6 @@ if fav_button_clicked:
             st.session_state.favorites.append(ticker_input)
     save_favorites(st.session_state.favorites)
     st.rerun()
-
-if st.session_state.favorites:
-    st.pills(
-        "즐겨찾기", st.session_state.favorites, selection_mode="single",
-        key="fav_pills", on_change=_pick_fav, label_visibility="collapsed",
-    )
 
 # ════════════════════════════════════════════════════════════════
 # 화면 전환 — 한 번에 한 화면만 렌더링 (통합 스캐너 · 섹터 히트맵 · 종목 분석)
