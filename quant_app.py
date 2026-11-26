@@ -2910,6 +2910,21 @@ CSS_TEMPLATE = r"""<style>
         --neon-cyan-ink: #072226;
         --neon-orange: #ff9a2e;
         --neon-orange-ink: #241300;
+
+        /* ── 카드 전용 고정 텍스트 컬러 (라이트/다크 토글과 무관) ──────
+           #버그수정: metric-card/glass-card/news-card/social-card 등은
+           --card-solid(#0c0c0e)로 배경이 항상 순검정 고정인데, 기존엔
+           그 안의 텍스트(${text_primary} 등)만 라이트 모드 값(짙은 남색)으로
+           바뀌어 "어두운 배경 + 어두운 글씨"가 되는 저대비 버그가 있었음.
+           → 카드 배경이 절대 안 바뀌므로 카드 안 텍스트도 항상 이 고정
+           밝은 색을 쓰도록 분리. (라이트 모드 전용 보정은 LIGHT_MODE_OVERRIDE_CSS
+           쪽에서 페이지 배경 위 텍스트에만 계속 적용됨) */
+        --card-ink-primary:   #f1f5f9;
+        --card-ink-secondary: #e2e8f0;
+        --card-ink-label:     #8fc4e8;
+        --card-ink-muted:     #8fc4e8;
+        --card-ink-dimmed:    #e0b374;
+        --card-ink-status:    #cbd5e1;
     }
 
     /* ── 전역 배경 & 폰트 ─────────────────────────────────────────── */
@@ -2978,7 +2993,7 @@ CSS_TEMPLATE = r"""<style>
     }
     .app-header p {
         margin: 0;
-        color: ${text_muted};
+        color: var(--card-ink-muted);
         font-size: 0.72rem;
         font-family: var(--font-mono);
         letter-spacing: 0.3px;
@@ -3010,7 +3025,7 @@ CSS_TEMPLATE = r"""<style>
         font-weight: 700;
         letter-spacing: 1.2px;
         text-transform: uppercase;
-        color: ${text_muted};
+        color: var(--card-ink-muted);
         margin-bottom: 0.6rem;
     }
 
@@ -3047,8 +3062,8 @@ CSS_TEMPLATE = r"""<style>
     .mc-cyan:hover   { border-color: var(--c-cyan)   !important; }
     .mc-indigo:hover { border-color: var(--c-indigo) !important; }
     .mc-teal:hover   { border-color: var(--c-teal)   !important; }
-    .metric-label { font-size: 0.7rem; color: ${metric_label}; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 0.35rem; }
-    .metric-value { font-size: 1.6rem; font-weight: 800; color: ${text_primary}; line-height: 1; font-family: var(--font-mono); }
+    .metric-label { font-size: 0.7rem; color: var(--card-ink-label); font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; margin-bottom: 0.35rem; }
+    .metric-value { font-size: 1.6rem; font-weight: 800; color: var(--card-ink-primary); line-height: 1; font-family: var(--font-mono); }
     .metric-delta { font-size: 0.78rem; font-weight: 700; margin-top: 0.3rem; }
     .delta-up   { color: var(--neon-green); }
     .delta-down { color: var(--neon-red); }
@@ -3229,8 +3244,8 @@ CSS_TEMPLATE = r"""<style>
     .dot-yellow { background: var(--neon-yellow); box-shadow: 0 0 6px rgba(234,255,61,0.6); }
     .dot-red    { background: var(--neon-red);    box-shadow: 0 0 6px rgba(255,45,85,0.6); }
     .dot-blue   { background: var(--neon-cyan);   box-shadow: 0 0 6px rgba(53,224,255,0.5); }
-    .status-text { font-size: 0.82rem; color: ${text_status}; flex: 1; line-height: 1.4; }
-    .status-text strong { color: ${text_primary}; }
+    .status-text { font-size: 0.82rem; color: var(--card-ink-status); flex: 1; line-height: 1.4; }
+    .status-text strong { color: var(--card-ink-primary); }
 
     /* ── 뉴스 카드 ─────────────────────────────────────────────────── */
     .news-card {
@@ -3245,9 +3260,9 @@ CSS_TEMPLATE = r"""<style>
     .pos-card { border-left: 4px solid var(--neon-green); }
     .neg-card { border-left: 4px solid var(--neon-red);   }
     .neu-card { border-left: 4px solid var(--neon-yellow); }
-    .news-meta { font-size: 0.7rem; color: ${text_muted}; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-    .news-title { font-size: 0.9rem; font-weight: 600; color: ${text_primary}; line-height: 1.45; margin-bottom: 0.35rem; }
-    .news-orig  { font-size: 0.72rem; color: ${text_dimmed}; margin-bottom: 0.5rem; font-style: italic; }
+    .news-meta { font-size: 0.7rem; color: var(--card-ink-muted); margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .news-title { font-size: 0.9rem; font-weight: 600; color: var(--card-ink-primary); line-height: 1.45; margin-bottom: 0.35rem; }
+    .news-orig  { font-size: 0.72rem; color: var(--card-ink-dimmed); margin-bottom: 0.5rem; font-style: italic; }
     .news-link  { font-size: 0.78rem; color: var(--neon-cyan); text-decoration: none; font-weight: 700; }
     .news-link:hover { opacity: 0.75; }
 
@@ -3265,12 +3280,12 @@ CSS_TEMPLATE = r"""<style>
     .social-bear { border-left: 4px solid var(--neon-red);   }
     .social-meta {
         display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
-        font-size: 0.7rem; color: ${text_muted}; margin-bottom: 0.4rem;
+        font-size: 0.7rem; color: var(--card-ink-muted); margin-bottom: 0.4rem;
     }
-    .social-body { font-size: 0.88rem; color: ${text_sec}; line-height: 1.5; margin-bottom: 0.4rem; }
-    .social-stats { display: flex; gap: 0.9rem; font-size: 0.72rem; color: ${text_dimmed}; }
+    .social-body { font-size: 0.88rem; color: var(--card-ink-secondary); line-height: 1.5; margin-bottom: 0.4rem; }
+    .social-stats { display: flex; gap: 0.9rem; font-size: 0.72rem; color: var(--card-ink-dimmed); }
     .social-selftext {
-        font-size: 0.82rem; color: ${social_selftext_clr};
+        font-size: 0.82rem; color: var(--card-ink-dimmed);
         line-height: 1.55; margin: 0.3rem 0 0.4rem 0;
         border-left: 2px solid ${social_selftext_bdr};
         padding-left: 0.7rem;
@@ -3287,6 +3302,11 @@ CSS_TEMPLATE = r"""<style>
     }
     .platform-badge {
         background: var(--neon-cyan); color: var(--neon-cyan-ink);
+        border: none;
+        padding: 0.14rem 0.55rem; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 800;
+    }
+    .reddit-badge {
+        background: var(--neon-orange); color: var(--neon-orange-ink);
         border: none;
         padding: 0.14rem 0.55rem; border-radius: var(--radius-pill); font-size: 0.68rem; font-weight: 800;
     }
@@ -3363,7 +3383,7 @@ CSS_TEMPLATE = r"""<style>
         border-radius: var(--radius-pill) !important;
         font-weight: 600 !important;
         font-size: 0.88rem !important;
-        color: ${text_muted} !important;
+        color: var(--card-ink-muted) !important;
         padding: 0.55rem 1.1rem !important;
     }
     .stTabs [aria-selected="true"] {
@@ -3466,7 +3486,7 @@ CSS_TEMPLATE = r"""<style>
     [class*="st-key-fav_ticker_"] button {
         background: var(--card-solid-2) !important;
         border: 1px solid var(--card-line) !important;
-        color: ${text_primary} !important;
+        color: var(--card-ink-primary) !important;
         font-weight: 700 !important;
         font-size: 0.85rem !important;
         border-radius: 16px !important;
@@ -3488,7 +3508,7 @@ CSS_TEMPLATE = r"""<style>
     [class*="st-key-fav_action_"] button {
         background: transparent !important;
         border: 1px solid var(--card-line) !important;
-        color: ${text_muted} !important;
+        color: var(--card-ink-muted) !important;
         font-weight: 600 !important;
         border-radius: 12px !important;
         min-height: 2.3rem !important;
@@ -4112,6 +4132,15 @@ h1,h2,h3{font-weight:800 !important;letter-spacing:-0.01em;}
 /* 뉴스 카드: 보라 */
 .news-card{background:var(--r-purple) !important;border:none !important;color:#111318 !important;}
 
+/* 버튼: 검정 필 (Streamlit 최신 testid까지 포함, 이전 규칙보다 명시도를 높임) */
+html body .stApp [data-testid="stBaseButton-secondary"],
+html body .stApp [data-testid="stBaseButton-primary"],
+html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"],
+html body .stApp [data-testid="stBaseButton-primaryFormSubmit"]{
+  background:var(--r-dark) !important;color:#FFFFFF !important;border:none !important;
+  border-radius:99px !important;font-weight:700 !important;box-shadow:none !important;}
+html body .stApp [data-testid="stBaseButton-secondary"] p,
+html body .stApp [data-testid="stBaseButton-primary"] p{color:#FFFFFF !important;}
 /* 버튼: 검정 필 */
 [data-testid="stButton"] button,[data-testid="stDownloadButton"] button,.stButton > button,.stDownloadButton > button{
   background:var(--r-dark) !important;color:#FFFFFF !important;border:none !important;
@@ -4293,7 +4322,7 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n<style>{REFERENCE_THEME_CSS}</style>\n", unsafe_allow_html=True)
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n", unsafe_allow_html=True)
 
 inject_css(False)   # 미니멀 라이트 팔레트 고정
 
