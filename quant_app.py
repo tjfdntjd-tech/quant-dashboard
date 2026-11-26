@@ -4053,10 +4053,94 @@ MOBILE_REDESIGN_CSS = r"""
   .ur-tags{margin-top:4px;}
   .us-strip{background:var(--m-card);border:1px solid var(--m-line);border-radius:10px;padding:8px 10px;}
 
+  /* 섹터 히트맵: 2열 타일, 기간 세그먼트, 강도 범례 */
+  .st-key-heatmap_period [data-testid="stSegmentedControl"] > div{
+    background:var(--m-line-2)!important;border-radius:10px!important;padding:3px!important;}
+  .st-key-heatmap_period [data-testid="stSegmentedControl"] button[aria-checked="true"],
+  .st-key-heatmap_period [data-testid="stSegmentedControl"] button[aria-pressed="true"]{
+    background:var(--m-card)!important;border-radius:8px!important;
+    box-shadow:0 1px 2px rgba(15,23,42,.08)!important;font-weight:700!important;}
+  .sector-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:.5rem!important;}
+  .sector-cell{padding:.7rem .75rem!important;border-radius:12px!important;text-align:left!important;
+    background-color:var(--m-card);}
+  .sector-name{font-size:12px!important;letter-spacing:0!important;text-transform:none!important;
+    color:var(--m-sub)!important;}
+  .sector-ticker{font-size:11px!important;color:var(--m-mute)!important;margin-bottom:.35rem!important;}
+  .sector-pct{font-size:1.3rem!important;font-weight:700!important;}
+  .sector-sub{font-size:11px!important;color:var(--m-mute)!important;}
+  .sector-legend{gap:.35rem .65rem!important;margin-bottom:.6rem!important;}
+  .legend-title{font-size:12px;font-weight:700;color:var(--m-mute);}
+  .legend-item{font-size:11px!important;color:var(--m-sub)!important;}
+  .v4-hm-card{border-radius:14px!important;background:var(--m-card)!important;}
+  .v4-hm-val{font-size:20px!important;font-weight:700!important;}
+
   /* 정보 영역 뉴스 카드: 호재 라벨 + 제목 */
   .news-card{background:var(--m-card)!important;border:1px solid var(--m-line)!important;
     border-radius:12px!important;}
 }
+"""
+
+
+REFERENCE_THEME_CSS = r"""
+/* ════════════════════════════════════════════════════════════════
+   레퍼런스 대시보드 스타일 레이어 (파스텔 원색 카드 + 검정 필 + 큰 숫자)
+   · 가장 마지막에 주입 — 앞선 레이어를 덮어쓴다
+   · 상승=빨강 / 하락=파랑 의미는 유지 (색 장식과 분리)
+   ════════════════════════════════════════════════════════════════ */
+:root{
+  --r-yellow:#FFF27A; --r-coral:#FF8F7E; --r-purple:#A99CFF;
+  --r-cyan:#8EE8F5;   --r-green:#8CF5A8; --r-dark:#17181C;
+}
+h1,h2,h3{font-weight:800 !important;letter-spacing:-0.01em;}
+
+/* 공통 카드: 큰 둥근 모서리, 그림자 없음 */
+.metric-card,.news-card,.v4-score,.v4-caution,.us-strip{border-radius:20px !important;box-shadow:none !important;}
+.metric-card{background:#FFFFFF !important;border:none !important;}
+.metric-value{font-size:1.5rem !important;font-weight:800 !important;}
+
+/* 점수 카드: 노랑 + 검정 단계 칩 */
+.v4-score{background:var(--r-yellow) !important;border:none !important;color:#111318;}
+.v4-score-num{color:#111318 !important;font-weight:800 !important;}
+.v4-score-unit{color:#4B5160 !important;}
+.v4-stage{background:var(--r-dark) !important;color:#FFFFFF !important;border-radius:99px !important;}
+.v4-scale{background:#FFFFFF !important;}
+.v4-scale-fill{background:var(--r-dark) !important;}
+
+/* 주의 카드: 코랄 */
+.v4-caution{background:var(--r-coral) !important;border:none !important;border-left:none !important;color:#111318 !important;}
+
+/* 뉴스 카드: 보라 */
+.news-card{background:var(--r-purple) !important;border:none !important;color:#111318 !important;}
+
+/* 버튼: 검정 필 */
+.stButton > button,.stDownloadButton > button{
+  background:var(--r-dark) !important;color:#FFFFFF !important;border:none !important;
+  border-radius:99px !important;font-weight:700 !important;padding:0.55rem 1.1rem !important;}
+.stButton > button:hover{background:#2A2C33 !important;color:#FFFFFF !important;}
+
+/* 화면 전환: 검정 트랙 + 노랑 선택 필 */
+.st-key-topnav [data-testid="stSegmentedControl"] > div{
+  background:var(--r-dark) !important;border-radius:99px !important;padding:4px !important;}
+.st-key-topnav [data-testid="stSegmentedControl"] button{border-radius:99px !important;color:#B8BCC6 !important;}
+.st-key-topnav [data-testid="stSegmentedControl"] button[aria-checked="true"],
+.st-key-topnav [data-testid="stSegmentedControl"] button[aria-pressed="true"]{
+  background:var(--r-yellow) !important;color:#111318 !important;box-shadow:none !important;}
+
+/* 기간 선택도 같은 스타일 */
+.st-key-heatmap_period [data-testid="stSegmentedControl"] > div{
+  background:var(--r-dark) !important;border-radius:99px !important;padding:4px !important;}
+.st-key-heatmap_period [data-testid="stSegmentedControl"] button{border-radius:99px !important;color:#B8BCC6 !important;}
+.st-key-heatmap_period [data-testid="stSegmentedControl"] button[aria-checked="true"],
+.st-key-heatmap_period [data-testid="stSegmentedControl"] button[aria-pressed="true"]{
+  background:var(--r-yellow) !important;color:#111318 !important;}
+
+/* 섹터 타일: 큰 모서리 */
+.sector-cell{border-radius:20px !important;border:none !important;}
+.sector-pct{font-weight:800 !important;}
+
+/* 스캐너 등급 배지: 검정 필 */
+.ur-g{border-radius:99px !important;background:var(--r-dark) !important;color:#FFFFFF !important;}
+.ur-bar{border-radius:99px !important;}
 """
 
 
@@ -4209,7 +4293,7 @@ def inject_css(dark: bool = True):
     }}
     """
 
-    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n", unsafe_allow_html=True)
+    st.markdown(f"\n{css}\n<style>{narrow_metric_cards_css}{unified_contrast_css}</style>\n<style>{MINIMAL_CSS}</style>\n<style>{V4_THEME_CSS}</style>\n<style>{MOBILE_DENSE_CSS}</style>\n<style>{MOBILE_REDESIGN_CSS}</style>\n<style>{REFERENCE_THEME_CSS}</style>\n", unsafe_allow_html=True)
 
 inject_css(False)   # 미니멀 라이트 팔레트 고정
 
@@ -5430,15 +5514,14 @@ def render_sector_heatmap():
                 <div class="sector-sub" style="color:{color};">${s['price']}</div>
             </div>"""
 
-        legend_html = """
-        <div class="sector-legend">
-            <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);font-weight:600;">강도:</span>
-            <div class="legend-item"><div class="legend-dot" style="background:rgba(52,211,153,0.30);border:1px solid #34d399;"></div>강세 (+3%↑)</div>
-            <div class="legend-item"><div class="legend-dot" style="background:rgba(52,211,153,0.12);border:1px solid #6ee7b7;"></div>약강세</div>
-            <div class="legend-item"><div class="legend-dot" style="background:rgba(148,163,184,0.10);border:1px solid #94a3b8;"></div>보합</div>
-            <div class="legend-item"><div class="legend-dot" style="background:rgba(248,113,113,0.12);border:1px solid #f87171;"></div>약약세</div>
-            <div class="legend-item"><div class="legend-dot" style="background:rgba(248,113,113,0.30);border:1px solid #ef4444;"></div>약세 (-3%↓)</div>
-        </div>"""
+        _LEG = [("≥ +3%", 3.5), ("+1.5~3%", 2.0), ("+0.3~1.5%", 0.8), ("±0.3%", 0.0),
+                ("-0.3~-1.5%", -0.8), ("-1.5~-3%", -2.0), ("≤ -3%", -3.5)]
+        _leg_items = ""
+        for _lb, _sv in _LEG:
+            _lbg, _lc = _sector_color(_sv)
+            _leg_items += (f'<div class="legend-item"><div class="legend-dot" '
+                           f'style="background:{_lbg};border:1px solid {_lc};"></div>{_lb}</div>')
+        legend_html = f'<div class="sector-legend"><span class="legend-title">강도</span>{_leg_items}</div>'
 
         top = sorted_data[0]
         bot = sorted_data[-1]
