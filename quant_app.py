@@ -4175,112 +4175,274 @@ html body .stApp [data-testid="stBaseButton-primary"] p{color:#FFFFFF !important
 
 PREMIUM_LAYER_CSS = r"""
 /* ════════════════════════════════════════════════════════════════
-   PREMIUM 레이어 — 디자인 토큰 + 깊이(Elevation) 시스템
-   · 가장 마지막에 주입 (테마 위에 덮어씀)
-   · 데이터·기능 영향 없음: 색/그림자/간격/반경/상호작용만 변경
-   · 가짜 수치 없음, backdrop-filter 미사용 (모바일 성능)
+   PREMIUM 레이어 — Biolinkrs Warm Cream × Deep Forest × Coral 테마
+   · 가장 마지막에 주입 (기존 모든 CSS 레이어 위에 덮어씀)
+   · 데이터·기능 영향 없음: 색/그림자/간격/반경/대비만 변경
    ════════════════════════════════════════════════════════════════ */
 :root{
-  --pm-bg:#F4F6F5; --pm-surface:#FFFFFF; --pm-surface-soft:#F8FAF9;
-  --pm-text:#111827; --pm-text-2:#667085; --pm-text-3:#98A2B3;
-  --pm-primary:#173B30; --pm-primary-ink:#FFFFFF;
-  --pm-up:#19A974; --pm-down:#E55353; --pm-warn:#F0A33A; --pm-accent:#6D63FF;
-  --pm-border:#E6E9E7;
-  --pm-r-sm:10px; --pm-r-md:16px; --pm-r-lg:22px; --pm-r-xl:28px;
-  --pm-e1:0 2px 8px rgba(16,37,31,.05);
-  --pm-e2:0 8px 24px rgba(16,37,31,.08);
-  --pm-e3:0 16px 40px rgba(16,37,31,.12);
-  --pm-e4:0 24px 60px rgba(16,37,31,.16);
+  --pm-bg:#F6F1EA;
+  --pm-surface:#FFFDF9;
+  --pm-surface-soft:#EFE9DF;
+  --pm-text:#141D19;
+  --pm-text-2:#5E6863;
+  --pm-text-3:#8C948F;
+  --pm-primary:#0D281E;
+  --pm-primary-2:#163E30;
+  --pm-primary-ink:#FFFDF9;
+  --pm-coral:#F06449;
+  --pm-coral-hover:#E25236;
+  --pm-coral-soft:#FFF0EC;
+  --pm-up:#E14B3C;
+  --pm-down:#2563EB;
+  --pm-warn:#D97706;
+  --pm-accent:#F06449;
+  --pm-border:rgba(20,29,25,.08);
+  --pm-r-sm:12px;
+  --pm-r-md:18px;
+  --pm-r-lg:22px;
+  --pm-r-xl:28px;
+  --pm-r-pill:9999px;
+  --pm-e1:0 4px 14px rgba(13,40,30,.05);
+  --pm-e2:0 10px 28px rgba(13,40,30,.08);
+  --pm-e3:0 18px 44px rgba(13,40,30,.12);
 }
 
-/* LEVEL 0 · 배경: 아주 약한 ambient 빛 + 바닥 그림자 */
-html, body, [data-testid="stAppViewContainer"]{
+/* LEVEL 0 · 배경: 따뜻한 크림 아이보리 + 은은한 포레스트/코랄 글로우 */
+html, body, [data-testid="stAppViewContainer"], .stApp{
+  background-color:var(--pm-bg) !important;
   background-image:
-    radial-gradient(900px 320px at 50% -80px, rgba(25,169,116,.07), transparent 70%),
-    linear-gradient(180deg, #F7F8F7 0%, #F3F5F4 60%, #EEF1EF 100%) !important;
-  background-attachment: scroll !important;
-  animation: none !important;
+    radial-gradient(640px 320px at 14% -40px, rgba(13,40,30,.08), transparent 72%),
+    radial-gradient(580px 300px at 88% 10px, rgba(240,100,73,.10), transparent 72%),
+    linear-gradient(180deg, #F8F4EE 0%, #F4EFE7 60%, #EFE8DE 100%) !important;
+  background-attachment:scroll !important;
+  animation:none !important;
+  color:var(--pm-text) !important;
+}
+[data-testid="stHeader"]{ background:transparent !important; }
+[data-testid="stSidebar"]{
+  background:#F4EFE7 !important;
+  border-right:1px solid var(--pm-border) !important;
 }
 
 /* 텍스트 기본값 */
 body, .stApp{ color:var(--pm-text) !important; }
-h1,h2,h3{ color:var(--pm-text) !important; letter-spacing:-0.02em; font-weight:800 !important; }
+h1,h2,h3,h4{ color:var(--pm-text) !important; letter-spacing:-0.02em !important; font-weight:800 !important; }
+[data-testid="stCaptionContainer"],[data-testid="stCaptionContainer"] *{ color:var(--pm-text-2) !important; }
 
-/* LEVEL 1–3 · 카드 깊이 */
-.glass-card,.metric-card,.news-card,.social-card,.v4-score,.v4-caution,.alert-banner{
+/* 상단 헤더: 미니멀 크림 배너 */
+.app-header{
+  background:rgba(255,253,249,.78) !important;
+  border:1px solid var(--pm-border) !important;
+  border-radius:var(--pm-r-xl) !important;
+  box-shadow:var(--pm-e1) !important;
+  padding:14px 20px !important;
+}
+.app-header h1{ color:var(--pm-primary) !important; font-size:1.25rem !important; margin-bottom:4px !important; }
+.app-header p{ color:var(--pm-text-2) !important; font-size:0.8rem !important; }
+
+/* LEVEL 1–2 · 공통 벤토 카드 (크림 화이트 + 웜 보더 + 부드러운 입체감) */
+.glass-card,.metric-card,.news-card,.social-card,.alert-banner,.scan-header,.v4-summary,.v4-hm-card,
+[data-testid="stExpander"] details{
   background:var(--pm-surface) !important;
   border:1px solid var(--pm-border) !important;
   border-radius:var(--pm-r-lg) !important;
   box-shadow:var(--pm-e1) !important;
   backdrop-filter:none !important;
+  color:var(--pm-text) !important;
   transition:transform .18s ease, box-shadow .18s ease;
 }
-.metric-card:hover,.news-card:hover,.glass-card:hover{
-  transform:translateY(-2px); box-shadow:var(--pm-e2) !important;
+.metric-card:hover,.news-card:hover,.glass-card:hover,.social-card:hover{
+  transform:translateY(-2px);
+  box-shadow:var(--pm-e2) !important;
 }
+.v4-summary{ padding:18px 20px !important; }
+.v4-line{ color:var(--pm-text) !important; font-weight:600; }
+.v4-guide{ color:var(--pm-text-2) !important; }
 
-/* LEVEL 3 · Hero: 점수 카드를 메인 Hero Surface로 */
+/* LEVEL 3 · 점수 Hero 카드: 딥 포레스트 그린 다크 대비 + 코랄 포인트 */
 .v4-score{
+  background:linear-gradient(145deg, #163E30 0%, #0D281E 62%, #081A13 100%) !important;
+  border:1px solid rgba(255,253,249,.12) !important;
   border-radius:var(--pm-r-xl) !important;
   box-shadow:var(--pm-e3) !important;
-  padding:20px !important;
+  padding:22px 20px 18px !important;
+  color:var(--pm-primary-ink) !important;
 }
-.v4-score-num{ font-size:44px !important; font-weight:800 !important; color:var(--pm-primary) !important; }
-.v4-stage{ background:var(--pm-primary) !important; color:var(--pm-primary-ink) !important; border-radius:10px !important; }
+.v4-score-num{
+  font-size:46px !important; font-weight:800 !important;
+  color:var(--pm-primary-ink) !important;
+  letter-spacing:-0.03em !important;
+}
+.v4-score-unit{ color:rgba(255,253,249,.65) !important; font-weight:600 !important; }
+.v4-stage{
+  display:inline-block !important;
+  background:var(--pm-coral) !important;
+  color:#FFFFFF !important;
+  border-radius:var(--pm-r-pill) !important;
+  padding:4px 12px !important;
+  font-size:12px !important; font-weight:700 !important;
+  margin-top:8px !important;
+}
+.v4-scale{ background:rgba(255,253,249,.16) !important; border-radius:var(--pm-r-pill) !important; height:8px !important; }
+.v4-scale-fill{
+  background:linear-gradient(90deg, #F06449 0%, #FF8A6B 100%) !important;
+  border-radius:var(--pm-r-pill) !important;
+}
+.v4-tick{ background:rgba(255,253,249,.35) !important; }
+.v4-tick-label{ color:rgba(255,253,249,.72) !important; font-weight:600 !important; }
 
-/* 주의: 경고 톤 (코랄 대신 Warning 계열, 가독성 우선) */
+/* 주의 배너: 소프트 코랄 틴트 */
 .v4-caution,.alert-banner{
-  background:#FFF7EC !important; border-color:#F5D9A0 !important;
-  box-shadow:var(--pm-e2) !important; border-radius:var(--pm-r-md) !important;
+  background:var(--pm-coral-soft) !important;
+  border:1px solid rgba(240,100,73,.28) !important;
+  border-left:4px solid var(--pm-coral) !important;
+  color:#8C2D19 !important;
+  border-radius:var(--pm-r-md) !important;
+  padding:10px 14px !important;
+  box-shadow:none !important;
 }
 
-/* 지표 숫자: 가독성 + 자릿수 정렬 */
-.metric-value{ font-size:1.45rem !important; font-weight:800 !important; color:var(--pm-text) !important; }
+/* 지표 숫자 */
+.metric-value{ font-size:1.4rem !important; font-weight:800 !important; color:var(--pm-text) !important; }
 .metric-label{ color:var(--pm-text-2) !important; font-size:12px !important; font-weight:600 !important; }
 
-/* 색 의미 고정: 상승=Green, 하락=Red (장식 색 아님) */
-.metric-delta.up,.metric-value.up{ color:var(--pm-up) !important; }
-.metric-delta.down,.metric-value.down{ color:var(--pm-down) !important; }
+/* 상승/하락 색 (한국 주식 관례: 상승=빨강, 하락=파랑) */
+.metric-delta.up,.metric-value.up,.delta-up{ color:var(--pm-up) !important; }
+.metric-delta.down,.metric-value.down,.delta-down{ color:var(--pm-down) !important; }
+.pos-card,.social-bull{ border-left:4px solid var(--pm-up) !important; }
+.neg-card,.social-bear{ border-left:4px solid var(--pm-down) !important; }
+.sent-pos,.bull-badge{ background:#FEECEB !important; color:var(--pm-up) !important; border-color:rgba(225,75,60,.25) !important; }
+.sent-neg,.bear-badge{ background:#EBF2FE !important; color:var(--pm-down) !important; border-color:rgba(37,99,235,.25) !important; }
 
-/* 버튼 (CTA): Deep Green, 14px, 터치 44px 이상 */
-.stButton button,
-[data-testid="stBaseButton-secondary"],
-[data-testid="stBaseButton-primary"],
-[data-testid="stBaseButton-secondaryFormSubmit"],
-[data-testid="stBaseButton-primaryFormSubmit"]{
-  background:linear-gradient(180deg,#1C4537 0%,#173B30 100%) !important;
-  color:var(--pm-primary-ink) !important; border:none !important;
-  border-radius:14px !important; min-height:44px !important;
-  font-weight:700 !important; box-shadow:0 6px 16px rgba(23,59,48,.22) !important;
-  transition:transform .12s ease, box-shadow .12s ease;
+/* 화면 전환 & 기간 선택 세그먼트: 웜 샌드 트랙 + 딥 포레스트 그린 선택 필 */
+[data-testid="stSegmentedControl"] > div,
+.st-key-topnav [data-testid="stSegmentedControl"] > div,
+.st-key-heatmap_period [data-testid="stSegmentedControl"] > div{
+  background:var(--pm-surface-soft) !important;
+  border:1px solid var(--pm-border) !important;
+  border-radius:var(--pm-r-pill) !important;
+  padding:4px !important;
 }
-.stButton button:hover,
-[data-testid="stBaseButton-secondary"]:hover,
-[data-testid="stBaseButton-primary"]:hover{ transform:translateY(-1px); box-shadow:0 10px 22px rgba(23,59,48,.28) !important; }
-.stButton button:active,
-[data-testid="stBaseButton-secondary"]:active,
-[data-testid="stBaseButton-primary"]:active{ transform:translateY(1px); }
-.stButton button p,[data-testid="stBaseButton-secondary"] p,[data-testid="stBaseButton-primary"] p{ color:#FFFFFF !important; }
+[data-testid="stSegmentedControl"] button,
+.st-key-topnav [data-testid="stSegmentedControl"] button,
+.st-key-heatmap_period [data-testid="stSegmentedControl"] button{
+  border-radius:var(--pm-r-pill) !important;
+  color:var(--pm-text-2) !important;
+  font-weight:700 !important;
+  border:none !important;
+  background:transparent !important;
+}
+[data-testid="stSegmentedControl"] button[aria-checked="true"],
+[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+[data-testid="stSegmentedControl"] button[aria-selected="true"],
+.st-key-topnav [data-testid="stSegmentedControl"] button[aria-checked="true"],
+.st-key-topnav [data-testid="stSegmentedControl"] button[aria-pressed="true"],
+.st-key-heatmap_period [data-testid="stSegmentedControl"] button[aria-checked="true"],
+.st-key-heatmap_period [data-testid="stSegmentedControl"] button[aria-pressed="true"]{
+  background:linear-gradient(180deg, var(--pm-primary-2) 0%, var(--pm-primary) 100%) !important;
+  color:var(--pm-primary-ink) !important;
+  box-shadow:0 4px 12px rgba(13,40,30,.20) !important;
+}
+[data-testid="stSegmentedControl"] button[aria-checked="true"] *,
+[data-testid="stSegmentedControl"] button[aria-pressed="true"] *,
+[data-testid="stSegmentedControl"] button[aria-selected="true"] *{
+  color:#FFFDF9 !important; -webkit-text-fill-color:#FFFDF9 !important;
+}
 
-/* 입력창: 떠 있는 검색 surface 느낌 */
+/* 버튼 (CTA): 딥 포레스트 그린 Pill */
+html body .stApp .stButton button,
+html body .stApp [data-testid="stButton"] button,
+html body .stApp [data-testid="stDownloadButton"] button,
+html body .stApp [data-testid="stBaseButton-secondary"],
+html body .stApp [data-testid="stBaseButton-primary"],
+html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"],
+html body .stApp [data-testid="stBaseButton-primaryFormSubmit"]{
+  background:linear-gradient(180deg, var(--pm-primary-2) 0%, var(--pm-primary) 100%) !important;
+  color:var(--pm-primary-ink) !important;
+  border:none !important;
+  border-radius:var(--pm-r-pill) !important;
+  min-height:44px !important;
+  font-weight:700 !important;
+  box-shadow:0 8px 20px rgba(13,40,30,.20) !important;
+  transition:transform .14s ease, box-shadow .14s ease;
+}
+html body .stApp .stButton button:hover,
+html body .stApp [data-testid="stBaseButton-secondary"]:hover,
+html body .stApp [data-testid="stBaseButton-primary"]:hover,
+html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"]:hover{
+  transform:translateY(-1px);
+  box-shadow:0 12px 24px rgba(13,40,30,.26) !important;
+}
+html body .stApp .stButton button p,
+html body .stApp [data-testid="stBaseButton-secondary"] p,
+html body .stApp [data-testid="stBaseButton-primary"] p,
+html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"] p{
+  color:#FFFDF9 !important;
+}
+
+/* Hero 검색 카드 내 2번째 버튼(★ 즐겨찾기): 웜 샌드/코랄 투톤 대비 */
+.st-key-hero_search [data-testid="stHorizontalBlock"] > div:nth-child(2) button{
+  background:var(--pm-coral) !important;
+  color:#FFFFFF !important;
+  box-shadow:0 8px 18px rgba(240,100,73,.26) !important;
+}
+.st-key-hero_search [data-testid="stHorizontalBlock"] > div:nth-child(2) button:hover{
+  background:var(--pm-coral-hover) !important;
+}
+
+/* 즐겨찾기 Pills 칩 */
+.st-key-hero_search [data-testid="stPills"] button{
+  background:var(--pm-surface-soft) !important;
+  color:var(--pm-text) !important;
+  border:1px solid var(--pm-border) !important;
+  border-radius:var(--pm-r-pill) !important;
+  box-shadow:none !important;
+  min-height:36px !important;
+}
+.st-key-hero_search [data-testid="stPills"] button[aria-checked="true"],
+.st-key-hero_search [data-testid="stPills"] button[aria-pressed="true"]{
+  background:var(--pm-coral) !important;
+  color:#FFFFFF !important;
+  border-color:var(--pm-coral) !important;
+}
+.st-key-hero_search [data-testid="stPills"] button[aria-checked="true"] *{
+  color:#FFFFFF !important;
+}
+
+/* 입력창: 크림 샌드 필드 */
 [data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{
-  border-radius:14px !important; border:1px solid var(--pm-border) !important;
-  background:var(--pm-surface) !important; min-height:44px; box-shadow:var(--pm-e1);
+  border-radius:16px !important;
+  border:1px solid var(--pm-border) !important;
+  background:#F6F1EA !important;
+  color:var(--pm-text) !important;
+  min-height:46px !important;
+  box-shadow:inset 0 1px 2px rgba(13,40,30,.04) !important;
 }
-[data-testid="stTextInput"] input:focus{ border-color:var(--pm-primary) !important; box-shadow:0 0 0 3px rgba(23,59,48,.12) !important; }
+[data-testid="stTextInput"] input:focus{
+  background:#FFFDF9 !important;
+  border-color:var(--pm-primary) !important;
+  box-shadow:0 0 0 3px rgba(13,40,30,.12) !important;
+}
+
+/* 섹터 타일 & 탭 */
+.sector-cell{ border-radius:20px !important; border:1px solid var(--pm-border) !important; box-shadow:var(--pm-e1) !important; }
+.stTabs [data-baseweb="tab-highlight"]{ background:var(--pm-coral) !important; }
+.stTabs [aria-selected="true"]{ color:var(--pm-primary) !important; font-weight:800 !important; }
 
 /* 포커스 상태 (접근성) */
-button:focus-visible,a:focus-visible,input:focus-visible{ outline:2px solid var(--pm-accent); outline-offset:2px; }
+button:focus-visible,a:focus-visible,input:focus-visible{ outline:2px solid var(--pm-coral); outline-offset:2px; }
 
 /* 상태/로딩/빈 상태 */
 .status-item{ color:var(--pm-text-2) !important; }
 
-/* 모바일 */
+/* 모바일 최적화 */
 @media (max-width:640px){
   .block-container{ padding:0.9rem 0.9rem 2rem 0.9rem !important; }
+  .app-header{ padding:12px 16px !important; border-radius:20px !important; }
+  .app-header h1{ font-size:1.08rem !important; }
   .v4-score-num{ font-size:40px !important; }
-  .glass-card,.metric-card,.news-card,.v4-score{ border-radius:var(--pm-r-md) !important; }
-  .v4-score{ border-radius:var(--pm-r-lg) !important; }
+  .glass-card,.metric-card,.news-card,.social-card{ border-radius:var(--pm-r-md) !important; }
+  .v4-score,.st-key-hero_search{ border-radius:var(--pm-r-lg) !important; }
 }
 
 /* HERO 검색 블록: 상단 메인 Hero Surface (LEVEL 3) */
@@ -4289,8 +4451,8 @@ button:focus-visible,a:focus-visible,input:focus-visible{ outline:2px solid var(
   border:1px solid var(--pm-border) !important;
   border-radius:var(--pm-r-xl) !important;
   box-shadow:var(--pm-e3) !important;
-  padding:18px !important;
-  margin:6px 0 14px 0 !important;
+  padding:20px !important;
+  margin:8px 0 16px 0 !important;
 }
 .st-key-hero_search [data-testid="stForm"]{ border:none !important; padding:0 !important; background:transparent !important; }
 .st-key-hero_search [data-testid="stPills"]{ margin-top:10px; }
