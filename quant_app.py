@@ -3991,6 +3991,15 @@ MOBILE_DENSE_CSS = r"""
 .ur-parts{display:grid;grid-template-columns:repeat(3,1fr);gap:3px 8px;margin-bottom:6px;font-variant-numeric:tabular-nums;}
 .ur-parts b{color:var(--m-ink);font-weight:600;}
 .ur-wl{color:var(--m-warn);}
+.ur-sb{font-size:11.5px;font-weight:700;padding:0 8px;border-radius:99px;border:1px solid var(--m-line);line-height:1.65;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.ur-k{font-size:12.5px;color:var(--m-sub);margin-top:2px;font-variant-numeric:tabular-nums;}
+.ur-k b{font-weight:600;color:var(--m-ink);} .ur-k b.up{color:var(--m-up);} .ur-k b.dn{color:var(--m-down);}
+.ur-chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;}
+.ur-c{font-size:11px;line-height:1.6;padding:0 8px;border-radius:99px;background:var(--m-line-2);color:var(--m-sub);white-space:nowrap;}
+.ur-cw{background:var(--m-warn-bg);color:var(--m-warn);border:1px solid var(--m-warn-line);font-weight:600;}
+.ur-d summary{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.ur-d summary .ur-s{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
+.ur-d summary em{font-style:normal;flex:none;}
 .us-strip{display:flex;flex-wrap:wrap;gap:1px 10px;font-size:12px;color:var(--m-sub);padding:2px 2px 4px;font-variant-numeric:tabular-nums;}
 .us-strip b{color:var(--m-ink);font-weight:600;}
 .st-key-uni_ctrl [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;}
@@ -7868,32 +7877,38 @@ _UNI_PART_LABEL = {"catalyst": "촉매", "activity": "거래활동", "strength":
 
 
 def _uni_row_html(r: dict, sess: str) -> str:
-    """통합 스캐너 결과 한 종목을 촘촘한 리스트 행(HTML)으로 만든다. 윗부분(티커·등급·점수·가격·등락)은 눌러서 분석으로 이동하고,
-    아랫부분 '점수 구성·경고'는 눌러서 펼친다. 마크다운이 들여쓰기를 코드블록으로 오인하지 않도록 한 줄로 이어 붙인다."""
+    """통합 스캐너 결과 한 종목을 촘촘한 리스트 행(HTML)으로 만든다.
+    윗부분(티커·등급+점수 배지·가격·등락)은 눌러서 분석으로 이동하고, 그 아래는 핵심 3지표(예상량·VWAP·고점) → 신호·경고 칩 순서,
+    맨 아래 '급증·플로트·수축 … 상세'는 눌러서 펼친다. 마크다운이 들여쓰기를 코드블록으로 오인하지 않도록 한 줄로 이어 붙인다."""
     esc = _safe_html
     g = r.get("u_grade", "—")
     gcls = {"A": "g-A", "B": "g-B", "C": "g-C"}.get(g, "g-N")
-    bcls = {"B": "b-B", "C": "b-C"}.get(g, "b-N" if g not in ("A",) else "")
     sc = float(r.get("u_score") or 0)
     px, mv = r.get("u_price"), r.get("u_move")
     mvcls = "up" if (mv or 0) > 0 else ("dn" if (mv or 0) < 0 else "")
     large = (r.get("u_mode") == "large")
-    chips = []
+    _sgn = lambda v: "up" if v > 0 else ("dn" if v < 0 else "")
+    # 핵심 3지표: 진입 판단에 바로 쓰는 값 (VWAP·고점은 부호에 따라 상승/하락 색)
+    key = []
     if r.get("u_proj") is not None:
-        chips.append(f"예상량 <b>{r['u_proj'] * 100:.0f}%</b>")
+        key.append(f"예상량 <b>{r['u_proj'] * 100:.0f}%</b>")
     vw, hi = r.get("u_vwap"), r.get("u_high")
     if px and vw:
-        chips.append(f"VWAP <b>{(px / vw - 1) * 100:+.1f}%</b>")
+        v_ = (px / vw - 1) * 100
+        key.append(f'VWAP <b class="{_sgn(v_)}">{v_:+.1f}%</b>')
     if px and hi:
-        chips.append(f"고점 <b>{(px / hi - 1) * 100:+.1f}%</b>")
+        h_ = (px / hi - 1) * 100
+        key.append(f'고점 <b class="{_sgn(h_)}">{h_:+.1f}%</b>')
+    # 보조 지표: 상세 줄(접힌 상태의 요약)로 내린다
+    sec = []
     if r.get("u_vsr") is not None:
-        chips.append(f"급증 <b>{r['u_vsr']:.1f}x</b>")
+        sec.append(f"급증 {r['u_vsr']:.1f}x")
     if r.get("float_shares"):
-        chips.append(f"플로트 <b>{r['float_shares'] / 1e6:.1f}M</b>")
+        sec.append(f"플로트 {r['float_shares'] / 1e6:.1f}M")
     if sess == "after" and r.get("u_ah_pct") is not None:
-        chips.append(f"시간외 <b>{r['u_ah_pct']:+.1f}%</b>")
+        sec.append(f"시간외 {r['u_ah_pct']:+.1f}%")
     if r.get("u_daily") is not None:
-        chips.append(f"수축 <b>{r['u_daily']:.0f}</b>")
+        sec.append(f"수축 {r['u_daily']:.0f}")
     warns = [w for w in (r.get("u_warn") or "").split(" · ") if w]
     # 상세(펼침): 점수 구성 + 근거 + 촉매 + 경고
     W = UNI_WEIGHTS[sess]["large" if large else "small"]
@@ -7909,17 +7924,19 @@ def _uni_row_html(r: dict, sess: str) -> str:
         detail += "".join(f'<div class="ur-wl">⚠ {esc(w)}</div>' for w in warns)
     px_txt = f"${px:,.2f}" if px else "—"
     mv_txt = f"{mv:+.1f}%" if mv is not None else "—"
+    # 신호 태그는 칩으로, 경고는 눈에 띄는 칩 하나로
+    chips = "".join(f'<span class="ur-c">{esc(t)}</span>' for t in (r.get("u_tags") or "").split())
+    if warns:
+        chips += f'<span class="ur-c ur-cw">⚠ 경고 {len(warns)}</span>'
     return (
         '<div class="ur"><div class="ur-top"><div class="ur-l">'
-        f'<div class="ur-h"><span class="ur-tk">{esc(r["ticker"])}</span><span class="ur-g {gcls}">{esc(g)}</span>'
-        f'<span class="ur-sc">{sc:.0f}</span>{"<span class=ur-lg>대형</span>" if large else ""}</div>'
+        f'<div class="ur-h"><span class="ur-tk">{esc(r["ticker"])}</span><span class="ur-sb {gcls}">{esc(g)} · {sc:.0f}</span>'
+        f'{"<span class=ur-lg>대형</span>" if large else ""}</div>'
         f'<div class="ur-n">{esc((r.get("name") or "")[:28])}</div></div>'
         f'<div class="ur-r"><div class="ur-px">{px_txt}</div><div class="ur-mv {mvcls}">{mv_txt}</div></div></div>'
-        f'<div class="ur-bar {bcls}"><i style="width:{max(2.0, min(100.0, sc)):.0f}%"></i></div>'
-        f'<div class="ur-m">{"".join(f"<span>{c}</span>" for c in chips)}</div>'
-        f'<div class="ur-tags">{esc(r.get("u_tags", ""))}'
-        f'{f"<span class=ur-wn>⚠ {len(warns)}</span>" if warns else ""}</div>'
-        f'<details class="ur-d"><summary>점수 구성 · 경고 ▾</summary><div class="ur-dd">{detail}</div></details></div>'
+        + (f'<div class="ur-k">{" · ".join(key)}</div>' if key else "")
+        + (f'<div class="ur-chips">{chips}</div>' if chips else "")
+        + f'<details class="ur-d"><summary><span class="ur-s">{" · ".join(sec)}</span><em>상세 ▾</em></summary><div class="ur-dd">{detail}</div></details></div>'
     )
 
 
