@@ -5857,21 +5857,21 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 # 렌더링 함수 — 섹터 히트맵
 # ════════════════════════════════════════════════════════════════
 def _sector_color(pct: float) -> tuple[str, str]:
-    """등락률에 따른 배경색·텍스트색 반환"""
+    """등락률에 따른 (배경색, 글자색). 불투명 면 + 대비 4.5:1 이상. 한국식: 상승=빨강, 하락=파랑."""
     if pct >= 3.0:
-        return "rgba(52,211,153,0.30)", "#34d399"
+        return "#B71C1C", "#FFFFFF"
     elif pct >= 1.5:
-        return "rgba(52,211,153,0.18)", "#6ee7b7"
+        return "#E53935", "#FFFFFF"
     elif pct >= 0.3:
-        return "rgba(52,211,153,0.09)", "#a7f3d0"
+        return "#FFCDD2", "#7F1212"
     elif pct >= -0.3:
-        return "rgba(148,163,184,0.10)", "#94a3b8"
+        return "#E5E7EB", "#1F2937"
     elif pct >= -1.5:
-        return "rgba(248,113,113,0.09)", "#fca5a5"
+        return "#BBDEFB", "#0B3A78"
     elif pct >= -3.0:
-        return "rgba(248,113,113,0.18)", "#f87171"
+        return "#1E6FD9", "#FFFFFF"
     else:
-        return "rgba(248,113,113,0.30)", "#ef4444"
+        return "#0D47A1", "#FFFFFF"
 
 def render_sector_heatmap():
     """S&P 500 섹터 히트맵 (당일/1주/1개월 탭)"""
@@ -5893,11 +5893,11 @@ def render_sector_heatmap():
             bg, color = _sector_color(pct)
             arrow = "▲" if pct >= 0 else "▼"
             cells_html += f"""
-            <div class="sector-cell" style="background:{bg}; border-color:{color}33;">
-                <div class="sector-name">{_safe_html(s['sector'])}</div>
-                <div class="sector-ticker">{_safe_html(s['ticker'])}</div>
-                <div class="sector-pct" style="color:{color};">{arrow} {abs(pct):.2f}%</div>
-                <div class="sector-sub" style="color:{color};">${s['price']}</div>
+            <div class="sector-cell" style="background:{bg} !important; border-color:{color}55 !important;">
+                <div class="sector-name" style="color:{color} !important;font-weight:700;">{_safe_html(s['sector'])}</div>
+                <div class="sector-ticker" style="color:{color} !important;opacity:.85;">{_safe_html(s['ticker'])}</div>
+                <div class="sector-pct" style="color:{color} !important;font-weight:800;">{arrow} {abs(pct):.2f}%</div>
+                <div class="sector-sub" style="color:{color} !important;opacity:.9;">${s['price']}</div>
             </div>"""
 
         _LEG = [("≥ +3%", 3.5), ("+1.5~3%", 2.0), ("+0.3~1.5%", 0.8), ("±0.3%", 0.0),
@@ -5906,7 +5906,7 @@ def render_sector_heatmap():
         for _lb, _sv in _LEG:
             _lbg, _lc = _sector_color(_sv)
             _leg_items += (f'<div class="legend-item"><div class="legend-dot" '
-                           f'style="background:{_lbg};border:1px solid {_lc};"></div>{_lb}</div>')
+                           f'style="background:{_lbg} !important;border:1px solid rgba(0,0,0,.35);"></div>{_lb}</div>')
         legend_html = f'<div class="sector-legend"><span class="legend-title">강도</span>{_leg_items}</div>'
 
         top = sorted_data[0]
@@ -5915,10 +5915,10 @@ def render_sector_heatmap():
         bot_bg, bot_c = _sector_color(bot[key])
         def _hm_card(title, s, bg_c, txt_c, arrow):
             return (
-                f'<div class="v4-hm-card" style="background:{bg_c};border-color:{txt_c}55;">'
-                f'<div class="v4-hm-label">{title}</div>'
-                f'<div class="v4-hm-name" style="color:{txt_c};">{_safe_html(s["sector"])} ({_safe_html(s["ticker"])})</div>'
-                f'<div class="v4-hm-val" style="color:{txt_c};">{arrow} {abs(s[key]):.2f}%</div>'
+                f'<div class="v4-hm-card" style="background:{bg_c} !important;border-color:{txt_c}55 !important;margin:0 0 .6rem;">'
+                f'<div class="v4-hm-label" style="color:{txt_c} !important;opacity:.85;font-weight:600;">{title}</div>'
+                f'<div class="v4-hm-name" style="color:{txt_c} !important;font-weight:700;">{_safe_html(s["sector"])} ({_safe_html(s["ticker"])})</div>'
+                f'<div class="v4-hm-val" style="color:{txt_c} !important;font-weight:800;">{arrow} {abs(s[key]):.2f}%</div>'
                 '</div>'
             )
         _hc1, _hc2 = st.columns(2, gap="medium")
