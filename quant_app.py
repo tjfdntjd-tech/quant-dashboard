@@ -5857,21 +5857,22 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 # 렌더링 함수 — 섹터 히트맵
 # ════════════════════════════════════════════════════════════════
 def _sector_color(pct: float) -> tuple[str, str]:
-    """등락률에 따른 (배경색, 글자색). 불투명 면 + 대비 4.5:1 이상. 한국식: 상승=빨강, 하락=파랑."""
+    """등락률에 따른 (배경색, 글자색). 한국식: 상승=연한 빨강, 하락=연한 파랑.
+    등락 폭이 클수록 배경이 조금 진해지고, 글자는 항상 같은 계열의 아주 진한 색(대비 7:1 이상)."""
     if pct >= 3.0:
-        return "#B71C1C", "#FFFFFF"
+        return "#F7B2B2", "#650D0D"
     elif pct >= 1.5:
-        return "#E53935", "#FFFFFF"
+        return "#FAC9C9", "#721010"
     elif pct >= 0.3:
-        return "#FFCDD2", "#7F1212"
+        return "#FDE2E2", "#821313"
     elif pct >= -0.3:
-        return "#E5E7EB", "#1F2937"
+        return "#EEF0F3", "#2B3440"
     elif pct >= -1.5:
-        return "#BBDEFB", "#0B3A78"
+        return "#E0EDFC", "#0F3C78"
     elif pct >= -3.0:
-        return "#1E6FD9", "#FFFFFF"
+        return "#C5DDFA", "#0C3670"
     else:
-        return "#0D47A1", "#FFFFFF"
+        return "#A8CAF5", "#082C62"
 
 def render_sector_heatmap():
     """S&P 500 섹터 히트맵 (당일/1주/1개월 탭)"""
