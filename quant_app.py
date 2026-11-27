@@ -4509,20 +4509,23 @@ html body .stApp .st-key-hero_search [data-testid="stForm"] button *{
   color:#111111 !important; -webkit-text-fill-color:#111111 !important; fill:#111111 !important; font-weight:700 !important;
 }
 
-/* ── 상단 화면 탭 3개를 한 줄로 균등 배치 ── */
+/* ── 상단 화면 탭 3개: 한 줄 배치 + 글자는 절대 자르지 않고, 폭이 모자라면 글자 크기를 줄여 맞춘다 ── */
 html body .stApp .st-key-topnav [data-testid="stSegmentedControl"],
 html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] > div,
 html body .stApp .st-key-topnav [data-testid="stButtonGroup"]{
-  display:flex !important; flex-wrap:nowrap !important; width:100% !important; gap:.35rem !important;
+  display:flex !important; flex-wrap:nowrap !important; width:100% !important; gap:.3rem !important;
 }
 html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button,
 html body .stApp .st-key-topnav [data-testid="stButtonGroup"] button{
-  flex:1 1 0 !important; min-width:0 !important; padding:0 .3rem !important;
-  justify-content:center !important; white-space:nowrap !important;
+  flex:1 0 auto !important; min-width:max-content !important; max-width:none !important; width:auto !important;
+  padding:0 .45rem !important; justify-content:center !important; white-space:nowrap !important;
+  overflow:visible !important; text-overflow:clip !important;
 }
-html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button p,
-html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button [data-testid="stMarkdownContainer"]{
-  font-size:.88rem !important; white-space:nowrap !important; margin:0 !important;
+html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button *,
+html body .stApp .st-key-topnav [data-testid="stButtonGroup"] button *{
+  overflow:visible !important; text-overflow:clip !important; white-space:nowrap !important;
+  max-width:none !important; margin:0 !important;
+  font-size:clamp(.68rem, 3.6vw, .9rem) !important;
 }
 """
 
