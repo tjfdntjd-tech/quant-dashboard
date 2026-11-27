@@ -4000,6 +4000,9 @@ MOBILE_DENSE_CSS = r"""
 .ur-d summary{display:flex;justify-content:space-between;align-items:center;gap:8px;}
 .ur-d summary .ur-s{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums;}
 .ur-d summary em{font-style:normal;flex:none;}
+.ur-i{width:12px;height:12px;flex:none;margin-right:3px;}
+.ur-c{display:inline-flex;align-items:center;}
+.ur-ic{display:flex;align-items:flex-start;} .ur-ic .ur-i{margin-top:3px;margin-right:5px;}
 .us-strip{display:flex;flex-wrap:wrap;gap:1px 10px;font-size:12px;color:var(--m-sub);padding:2px 2px 4px;font-variant-numeric:tabular-nums;}
 .us-strip b{color:var(--m-ink);font-weight:600;}
 .st-key-uni_ctrl [data-testid="stHorizontalBlock"]{flex-wrap:nowrap!important;}
@@ -7876,6 +7879,36 @@ def log_unified_results(rows: list, session: str, top_n: int = 30, now_et=None) 
 _UNI_PART_LABEL = {"catalyst": "촉매", "activity": "거래활동", "strength": "강도", "move": "움직임", "accum": "매집", "struct": "수급"}
 
 
+# 스캐너 행 아이콘 — Tabler Icons(MIT, https://tabler.io/icons) outline 경로. 24x24, stroke 2, currentColor
+_UNI_ICON_PATHS = {
+    "sunrise": "M3 17h1m16 0h1m-15.4 -6.4l.7 .7m12.1 -.7l-.7 .7m-9.7 5.7a4 4 0 0 1 8 0 M3 21l18 0 M12 9v-6l3 3m-6 0l3 -3",
+    "rocket": "M4 13a8 8 0 0 1 7 7a6 6 0 0 0 3 -5a9 9 0 0 0 6 -8a3 3 0 0 0 -3 -3a9 9 0 0 0 -8 6a6 6 0 0 0 -5 3 M7 14a6 6 0 0 0 -3 6a6 6 0 0 0 6 -3 M15 9m-1 0a1 1 0 1 0 2 0a1 1 0 1 0 -2 0",
+    "trending-up": "M3 17l6 -6l4 4l8 -8 M14 7l7 0l0 7",
+    "squeeze": "M5 9l4 0l0 -4 M3 3l6 6 M5 15l4 0l0 4 M3 21l6 -6 M19 9l-4 0l0 -4 M15 9l6 -6 M19 15l-4 0l0 4 M15 15l6 6",
+    "news": "M16 6h3a1 1 0 0 1 1 1v11a2 2 0 0 1 -4 0v-13a1 1 0 0 0 -1 -1h-10a1 1 0 0 0 -1 1v12a3 3 0 0 0 3 3h11 M8 8l4 0 M8 12l4 0 M8 16l4 0",
+    "alert": "M12 9v4 M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z M12 16h.01",
+}
+# uni_tags()가 만드는 이모지 태그 → 아이콘 (데이터/표의 '신호' 열은 기존 이모지 문자열 그대로 두고, 화면에 그릴 때만 바꾼다)
+_UNI_TAG_ICON = {"🌅": "sunrise", "🚀": "rocket", "📈": "trending-up", "🧱": "squeeze", "📰": "news"}
+
+
+def _uni_icon(name: str) -> str:
+    d = _UNI_ICON_PATHS.get(name, "")
+    paths = ""
+    if d:
+        parts = ["M" + x if i else x for i, x in enumerate(d.split(" M"))]
+        paths = "".join(f'<path d="{x.strip()}"/>' for x in parts)
+    return ('<svg class="ur-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+            f'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{paths}</svg>')
+
+
+def _uni_tag_chip(tag: str) -> str:
+    """'🚀급등' 같은 태그 하나를 [아이콘 + 글자] 칩으로."""
+    ic = _UNI_TAG_ICON.get(tag[:1], "")
+    txt = tag[1:] if ic else tag
+    return f'<span class="ur-c">{_uni_icon(ic) if ic else ""}{_safe_html(txt)}</span>'
+
+
 def _uni_row_html(r: dict, sess: str) -> str:
     """통합 스캐너 결과 한 종목을 촘촘한 리스트 행(HTML)으로 만든다.
     윗부분(티커·등급+점수 배지·가격·등락)은 눌러서 분석으로 이동하고, 그 아래는 핵심 3지표(예상량·VWAP·고점) → 신호·경고 칩 순서,
@@ -7919,15 +7952,15 @@ def _uni_row_html(r: dict, sess: str) -> str:
         detail += f'<div>{esc(r["u_why"])}</div>'
     cat = r.get("catalyst")
     if cat and cat != "—":
-        detail += f'<div>📰 {esc(cat)}</div>'
+        detail += f'<div class="ur-ic">{_uni_icon("news")}{esc(cat)}</div>'
     if warns:
-        detail += "".join(f'<div class="ur-wl">⚠ {esc(w)}</div>' for w in warns)
+        detail += "".join(f'<div class="ur-wl ur-ic">{_uni_icon("alert")}{esc(w)}</div>' for w in warns)
     px_txt = f"${px:,.2f}" if px else "—"
     mv_txt = f"{mv:+.1f}%" if mv is not None else "—"
     # 신호 태그는 칩으로, 경고는 눈에 띄는 칩 하나로
-    chips = "".join(f'<span class="ur-c">{esc(t)}</span>' for t in (r.get("u_tags") or "").split())
+    chips = "".join(_uni_tag_chip(t) for t in (r.get("u_tags") or "").split())
     if warns:
-        chips += f'<span class="ur-c ur-cw">⚠ 경고 {len(warns)}</span>'
+        chips += f'<span class="ur-c ur-cw">{_uni_icon("alert")}경고 {len(warns)}</span>'
     return (
         '<div class="ur"><div class="ur-top"><div class="ur-l">'
         f'<div class="ur-h"><span class="ur-tk">{esc(r["ticker"])}</span><span class="ur-sb {gcls}">{esc(g)} · {sc:.0f}</span>'
