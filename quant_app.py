@@ -4392,15 +4392,6 @@ html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"] p{
   color:#FFFDF9 !important;
 }
 
-/* Hero 검색 카드 내 2번째 버튼(★ 즐겨찾기): 웜 샌드/코랄 투톤 대비 */
-.st-key-hero_search [data-testid="stHorizontalBlock"] > div:nth-child(2) button{
-  background:var(--pm-coral) !important;
-  color:#FFFFFF !important;
-  box-shadow:0 8px 18px rgba(240,100,73,.26) !important;
-}
-.st-key-hero_search [data-testid="stHorizontalBlock"] > div:nth-child(2) button:hover{
-  background:var(--pm-coral-hover) !important;
-}
 
 /* 즐겨찾기 Pills 칩 */
 .st-key-hero_search [data-testid="stPills"] button{
@@ -4472,6 +4463,50 @@ button:focus-visible,a:focus-visible,input:focus-visible{ outline:2px solid var(
 /* 접근성: 움직임 감소 설정 존중 */
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{ animation:none !important; transition:none !important; }
+}
+
+/* ── 버튼 글자 가독성 보정: text-fill-color·fill까지 같이 지정해야 이전 규칙(#111827)을 이긴다 ── */
+html body .stApp .stButton button,
+html body .stApp [data-testid="stButton"] button,
+html body .stApp [data-testid="stDownloadButton"] button,
+html body .stApp [data-testid="stBaseButton-secondary"],
+html body .stApp [data-testid="stBaseButton-primary"],
+html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"],
+html body .stApp [data-testid="stBaseButton-primaryFormSubmit"],
+html body .stApp [data-testid="stFormSubmitButton"] button,
+html body .stApp .stFormSubmitButton button,
+html body .stApp .stButton button *,
+html body .stApp [data-testid="stButton"] button *,
+html body .stApp [data-testid="stDownloadButton"] button *,
+html body .stApp [data-testid="stBaseButton-secondary"] *,
+html body .stApp [data-testid="stBaseButton-primary"] *,
+html body .stApp [data-testid="stBaseButton-secondaryFormSubmit"] *,
+html body .stApp [data-testid="stBaseButton-primaryFormSubmit"] *,
+html body .stApp [data-testid="stFormSubmitButton"] button *,
+html body .stApp .stFormSubmitButton button *{
+  color:#FFFDF9 !important; -webkit-text-fill-color:#FFFDF9 !important; fill:#FFFDF9 !important; opacity:1 !important;
+}
+/* 모바일에서 검증 시작/★ 버튼이 세로로 쌓이지 않고 한 줄(3:1)을 유지 */
+.st-key-hero_search [data-testid="stForm"] [data-testid="stHorizontalBlock"]{
+  flex-direction:row !important; flex-wrap:nowrap !important; gap:.5rem !important; align-items:stretch !important;
+}
+.st-key-hero_search [data-testid="stForm"] [data-testid="stHorizontalBlock"] > div:nth-child(1){flex:3 1 0 !important;min-width:0 !important;width:auto !important;}
+.st-key-hero_search [data-testid="stForm"] [data-testid="stHorizontalBlock"] > div:nth-child(2){flex:1 1 0 !important;min-width:3.2rem !important;width:auto !important;}
+
+/* ── 종목 검색 카드 버튼(검증 시작 · ★): 흰 바탕 + 굵은 검정 테두리 + 검정 글씨 ── */
+html body .stApp .st-key-hero_search [data-testid="stForm"] button,
+html body .stApp .st-key-hero_search [data-testid="stForm"] button:hover,
+html body .stApp .st-key-hero_search [data-testid="stForm"] button:focus,
+html body .stApp .st-key-hero_search [data-testid="stForm"] button:active{
+  background:#FFFFFF !important; background-image:none !important;
+  border:3px solid #111111 !important; border-radius:var(--pm-r-pill) !important;
+  box-shadow:none !important; transform:none !important;
+}
+html body .stApp .st-key-hero_search [data-testid="stForm"] button:hover,
+html body .stApp .st-key-hero_search [data-testid="stForm"] button:active{ background:#F2EFE9 !important; }
+html body .stApp .st-key-hero_search [data-testid="stForm"] button,
+html body .stApp .st-key-hero_search [data-testid="stForm"] button *{
+  color:#111111 !important; -webkit-text-fill-color:#111111 !important; fill:#111111 !important; font-weight:700 !important;
 }
 """
 
@@ -8035,7 +8070,7 @@ def render_unified_scanner():
                                      value=UNI_MIN_VSURGE_TAG, step=0.5, key="uni_vsurge", disabled=(session != "after"))
             min_score = st.slider("최소 점수", 0, 90, 45, 5, key="uni_min_score", help="45 = C등급 이상. 높일수록 후보가 줄어듭니다.")
 
-    if st.button("🔮 스캔 실행", key="run_unified", use_container_width=True, type="primary"):
+    if st.button("스캔 실행", key="run_unified", use_container_width=True, type="primary"):
         with st.spinner("후보 수집 → 제외 필터 → 일봉·촉매·증자 점수 계산 중... (1~3분 걸릴 수 있습니다)"):
             out = run_unified_scan(session, move_rng[0], move_rng[1], price_rng[0], price_rng[1], int(min_vol), int(max_cap),
                                    int(min_avg), int(max_fl) * 1_000_000, include_large=bool(incl_large), min_vsurge=float(min_vs))
@@ -8285,27 +8320,34 @@ with st.container(key="topnav"):
 
 # ── Hero 검색 블록: 입력 · 분석 CTA · 즐겨찾기를 하나의 상단 Hero surface로 묶음 ──
 # (위젯 키·콜백·세션 상태 로직은 그대로 유지, 배치만 변경)
-with st.container(key="hero_search"):
-    with st.form(key="ticker_search_form"):
-        ticker_input = st.text_input(
-            "티커명을 입력하세요 (예: NVDA, AAPL)",
-            value=st.session_state.selected_ticker
-        ).upper()
+# 종목 분석 탭에서만 검색 카드를 보여 준다 (통합 스캐너·섹터 히트맵 탭에서는 숨김)
+_cur_screen = st.session_state.get("active_screen", _SCREEN_MAIN)
+ticker_input = str(st.session_state.selected_ticker or "").upper()
+search_button = False
+fav_button_clicked = False
+is_fav = False
+if _cur_screen == _SCREEN_MAIN:
+    with st.container(key="hero_search"):
+        with st.form(key="ticker_search_form"):
+            ticker_input = st.text_input(
+                "티커명을 입력하세요 (예: NVDA, AAPL)",
+                value=st.session_state.selected_ticker
+            ).upper()
 
-        col_btn, col_star = st.columns([3, 1])
-        with col_btn:
-            search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
-        with col_star:
-            is_fav = ticker_input in st.session_state.favorites
-            fav_button_clicked = st.form_submit_button(
-                "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
+            col_btn, col_star = st.columns([3, 1])
+            with col_btn:
+                search_button = st.form_submit_button("실시간 정밀 검증 시작", use_container_width=True, on_click=_goto_main)
+            with col_star:
+                is_fav = ticker_input in st.session_state.favorites
+                fav_button_clicked = st.form_submit_button(
+                    "★" if is_fav else "☆", use_container_width=True, help="즐겨찾기 추가/제거"
+                )
+
+        if st.session_state.favorites:
+            st.pills(
+                "즐겨찾기", st.session_state.favorites, selection_mode="single",
+                key="fav_pills", on_change=_pick_fav, label_visibility="collapsed",
             )
-
-    if st.session_state.favorites:
-        st.pills(
-            "즐겨찾기", st.session_state.favorites, selection_mode="single",
-            key="fav_pills", on_change=_pick_fav, label_visibility="collapsed",
-        )
 
 if fav_button_clicked:
     if is_fav:
