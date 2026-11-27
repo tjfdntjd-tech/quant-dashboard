@@ -358,7 +358,7 @@ _defaults = {
     "favorites":        load_favorites(),   # 파일에서 복원
     "selected_ticker":  "",
     "scan_results":     [],
-    "active_screen":    "📈 종목 분석",   # 화면 선택 (한 번에 한 화면만 표시)
+    "active_screen":    "종목 분석",   # 화면 선택 (한 번에 한 화면만 표시)
     "excl_delisted":    True,           # 상장폐지 확정·청산·OTC 이전 종목 제외
     "excl_acquired":    True,           # 피인수(합병 확정) 종목 제외
     "excel_scan":       None,           # 엑셀 종목 일괄 분석 결과
@@ -465,7 +465,7 @@ def fetch_premarket_gappers(min_gap: float, min_price: float, max_price: float,
              - 어제 상승률 순 + 평균거래량 순, 두 목록을 합쳐 넉넉히 모음
       2단계) 후보마다 프리마켓 1분봉을 받아 '전일 종가 대비 갭 %'와 '프리마켓 누적 거래량'을 직접 계산
     반환 행의 pct_change = 프리마켓 갭(%), volume = 프리마켓 거래량 → 기존 표/점수 로직을 그대로 재사용.
-    ⚠️ 야후 필드/응답이 바뀌면 후보 수가 줄 수 있어, 실패 시 서버 로그에 원인을 남깁니다.
+    야후 필드/응답이 바뀌면 후보 수가 줄 수 있어, 실패 시 서버 로그에 원인을 남깁니다.
     """
     conds = [
         EquityQuery('eq', ['region', 'us']),
@@ -872,7 +872,7 @@ def detect_reverse_split_news(news_items: list) -> list:
     return results
 
 # ════════════════════════════════════════════════════════════════
-# 🤝 합병 · 🏢 인수 · 💀 파산 이벤트 신호
+# 합병 · 인수 · 파산 이벤트 신호
 #   뉴스 제목(최근 14일)과 SEC 공시 서식(최근 30일)에서 키워드·서식 종류로 자동 감지한다.
 #   키워드 기반이라 다른 회사 소식이 섞이거나 오탐이 있을 수 있어 원문 확인이 필요하다.
 # ════════════════════════════════════════════════════════════════
@@ -880,11 +880,11 @@ EVENT_NEWS_DAYS = 14
 EVENT_SEC_DAYS = 30
 EVENT_ORDER = ["bankruptcy", "distress", "target", "merger", "acquisition"]   # 심각도 순
 EVENT_LABELS = {          # (신호 토큰, 한글명)
-    "bankruptcy":  ("💀파산", "파산"),
-    "distress":    ("⚠️파산위험", "파산위험"),
-    "target":      ("🎯피인수", "피인수"),
-    "merger":      ("🤝합병", "합병"),
-    "acquisition": ("🏢인수", "인수"),
+    "bankruptcy":  ("파산", "파산"),
+    "distress":    ("파산위험", "파산위험"),
+    "target":      ("피인수", "피인수"),
+    "merger":      ("합병", "합병"),
+    "acquisition": ("인수", "인수"),
 }
 
 # 'Foo Acquisition Corp'(SPAC 이름), 'Merger Sub' 같은 상호는 합병·인수 소식이 아니므로 먼저 지운다
@@ -981,7 +981,7 @@ def _news_dt(raw):
 def detect_corporate_events(ticker: str, news_days: int = EVENT_NEWS_DAYS,
                             sec_days: int = EVENT_SEC_DAYS) -> dict:
     """최근 뉴스 제목 + SEC 공시 서식에서 합병·인수·피인수·파산·파산위험 이벤트를 감지한다.
-    반환: {"signals": ["💀파산", ...], "counts": {카테고리: 건수}, "items": [{category, date, title, source, link}]}"""
+    반환: {"signals": ["파산", ...], "counts": {카테고리: 건수}, "items": [{category, date, title, source, link}]}"""
     now = pd.Timestamp.now(tz="UTC")
     epoch = pd.Timestamp("1970-01-01", tz="UTC")
     items = []
@@ -1035,7 +1035,7 @@ def build_event_banner_html(ev: dict) -> str:
     chips = "".join(
         f'<span class="signal-chip">{_html_lib.escape(EVENT_LABELS[c][0])} {ev["counts"][c]}건</span>'
         for c in EVENT_ORDER if c in ev["counts"])
-    return (f'<div class="alert-banner"><div class="alert-icon">📰</div><div>'
+    return (f'<div class="alert-banner"><div class="alert-icon">!</div><div>'
             f'<div class="alert-title">이벤트 감지 — 합병·인수·파산</div>'
             f'<div class="alert-signals">{chips}</div></div></div>')
 
@@ -1301,13 +1301,13 @@ def fetch_beam_titles(ticker: str) -> list:
 
 
 def beam_signal_text(ticker: str) -> str:
-    """종목 하나의 빔 신호 문자열. 없으면 ''. 예: '🧨병합빔 🧨파산빔(?)'  (?)=관련 가능성"""
+    """종목 하나의 빔 신호 문자열. 없으면 ''. 예: '병합빔 파산빔(?)'  (?)=관련 가능성"""
     try:
         evs = detect_event_beams(fetch_beam_titles(ticker))
     except Exception as _e:
         _log_err("beam_signal_text:" + ticker, _e)
         return ""
-    return " ".join(f"🧨{e['kind']}" + ("" if e["strong"] else "(?)") for e in evs)
+    return " ".join(f"{e['kind']}" + ("" if e["strong"] else "(?)") for e in evs)
 
 
 def is_surge_candidate(pct: float, vol_ma20_r: float, gap_pct: float = 0.0) -> bool:
@@ -1322,7 +1322,7 @@ def attach_beams(rows: list, ticker_key: str, signal_key: str, cand_flags: list,
         return
 
     def _one(i):
-        t = str(rows[i][ticker_key]).replace("⚠️ ", "").strip()
+        t = str(rows[i][ticker_key]).strip()
         return i, beam_signal_text(t)
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -1333,22 +1333,22 @@ def attach_beams(rows: list, ticker_key: str, signal_key: str, cand_flags: list,
 # ════════════════════════════════════════════════════════════════
 # 재료(촉매) 분류 + 뉴스 신선도 — 단타는 "재료가 있는 종목"만 후보로 본다
 # 야후 뉴스 제목의 영어 키워드로 종류를 나누고, 몇 시간 전 뉴스인지 함께 계산합니다.
-# ⚠️ 키워드 기반 자동 분류라 오분류가 있을 수 있어 원문 확인이 필요합니다.
+# 키워드 기반 자동 분류라 오분류가 있을 수 있어 원문 확인이 필요합니다.
 # ════════════════════════════════════════════════════════════════
 # (분류 키, 표시 이름, 호재 여부, 정규식 목록) — 위에 있을수록 우선순위가 높다(오퍼링은 악재라 맨 앞)
 _CATALYST_RULES = [
-    ("offering", "💸오퍼링", False, [r"\boffering\b", r"\bregistered direct\b", r"\bprivate placement\b",
+    ("offering", "오퍼링", False, [r"\boffering\b", r"\bregistered direct\b", r"\bprivate placement\b",
                                     r"\bat[\s-]the[\s-]market\b", r"\bwarrants?\b.*\bpric", r"\bpricing of\b",
                                     r"\bshelf (?:registration|offering)\b"]),
-    ("fda", "🧬FDA·임상", True, [r"\bFDA\b", r"\bclinical (?:trial|data|study)\b", r"\bphase\s*(?:1|2|3|I|II|III)\b",
+    ("fda", "FDA·임상", True, [r"\bFDA\b", r"\bclinical (?:trial|data|study)\b", r"\bphase\s*(?:1|2|3|I|II|III)\b",
                                 r"\btopline\b", r"\bPDUFA\b", r"\bNDA\b", r"\bBLA\b", r"\borphan drug\b",
                                 r"\bbreakthrough therapy\b", r"\bfast track\b"]),
-    ("contract", "📝계약·수주", True, [r"\bcontracts?\b", r"\bawarded?\b", r"\bpurchase order\b", r"\bagreement\b",
+    ("contract", "계약·수주", True, [r"\bcontracts?\b", r"\bawarded?\b", r"\bpurchase order\b", r"\bagreement\b",
                                       r"\bpartnership\b", r"\bcollaborat", r"\blicens(?:e|ing) (?:deal|agreement)\b",
                                       r"\bsecures?\b", r"\bwins?\b.*\b(?:order|contract)\b"]),
-    ("earnings", "📊실적", True, [r"\bearnings\b", r"\bquarter(?:ly)? (?:results|revenue)\b", r"\bQ[1-4]\b",
+    ("earnings", "실적", True, [r"\bearnings\b", r"\bquarter(?:ly)? (?:results|revenue)\b", r"\bQ[1-4]\b",
                                 r"\bguidance\b", r"\brevenue (?:grew|rose|jumps|up)\b", r"\bEPS\b"]),
-    ("analyst", "🎯애널리스트", True, [r"\bupgrad", r"\bprice target\b", r"\binitiates? coverage\b"]),
+    ("analyst", "애널리스트", True, [r"\bupgrad", r"\bprice target\b", r"\binitiates? coverage\b"]),
 ]
 _CATALYST_COMPILED = [(k, label, good, [re.compile(p, re.I) for p in pats])
                       for k, label, good, pats in _CATALYST_RULES]
@@ -1399,15 +1399,15 @@ def detect_catalysts(ticker: str, days: int = 7) -> list:
 
 def attach_catalysts(rows: list, limit: int = 30, max_workers: int = 6) -> None:
     """검색 결과 상위 limit개에 재료 정보를 병렬로 붙인다.
-    - r["catalyst"]       : "🧬FDA·임상 3시간 전 · 📝계약·수주 1일 전" 형태 요약 (없으면 "—")
+    - r["catalyst"]       : "FDA·임상 3시간 전 · 계약·수주 1일 전" 형태 요약 (없으면 "—")
     - r["catalyst_ok"]    : 최근 48시간 안에 '호재성' 재료가 있으면 True (재료 필터용)
     - r["offering_days"]  : 가장 최근 오퍼링 관련 SEC 공시가 며칠 전인지 (없으면 None)
     - 종합점수 보정       : 오퍼링 공시가 7일 이내면 -10점, 30일 이내면 -5점 (희석 리스크)
-    ⚠️ 오퍼링 공시 일자는 SEC 서식 기반 추정이며 실제 공모 여부·규모는 원문 확인이 필요합니다."""
+    오퍼링 공시 일자는 SEC 서식 기반 추정이며 실제 공모 여부·규모는 원문 확인이 필요합니다."""
     targets = rows[:limit]
 
     def _one(r):
-        t = str(r.get("ticker", "")).replace("⚠️ ", "").strip()
+        t = str(r.get("ticker", "")).strip()
         cats = detect_catalysts(t)
         off_days = None
         try:
@@ -1444,7 +1444,7 @@ def attach_catalysts(rows: list, limit: int = 30, max_workers: int = 6) -> None:
 
 
 def catalyst_summary_text(ticker: str, top: int = 2) -> str:
-    """종목 하나의 재료 요약 문자열 (예: '🧬FDA·임상 3시간 전 · 📝계약·수주 1일 전'). 없으면 '—'.
+    """종목 하나의 재료 요약 문자열 (예: 'FDA·임상 3시간 전 · 계약·수주 1일 전'). 없으면 '—'.
     스캔(엑셀·즐겨찾기)처럼 종목별로 한 줄 요약만 필요할 때 사용합니다."""
     seen, pick = set(), []
     for c in detect_catalysts(ticker):
@@ -1591,7 +1591,7 @@ def ma20_status(m: dict) -> tuple:
     gap, ma = m["gap_pct"], m["ma20"]
     trend = "MA20 상승 중" if m["ma20_rising"] else "MA20 하락·횡보"
     vol = "거래량 동반" if m["vol_confirm"] else "거래량 부족"
-    heat = " · ⚠️ 이격 과대(추격 주의)" if gap is not None and gap >= 20 else ""
+    heat = " · 이격 과대(추격 주의)" if gap is not None and gap >= 20 else ""
     if m["breakout"]:
         return "dot-green", f"<strong>20일선 돌파!</strong> 이격 {gap:+.1f}% · {vol} · {trend}{heat}"
     if m["breakdown"]:
@@ -1607,7 +1607,7 @@ def ma20_status(m: dict) -> tuple:
     return "dot-yellow", f"20일선 아래 ({gap:+.1f}%) — 돌파까지 +{need:.1f}% 필요 (MA20 {ma:,.2f})"
 
 # ════════════════════════════════════════════════════════════════
-# 🧱 악성매물대(거래량 프로파일 기반 저항 구간) 분석
+# 악성매물대(거래량 프로파일 기반 저항 구간) 분석
 # ════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=300, show_spinner=False)
 def calc_supply_zones(hist: pd.DataFrame, current_price: float,
@@ -1752,7 +1752,7 @@ def render_supply_zones(current_price: float, supply_data: dict):
 
 
 # ════════════════════════════════════════════════════════════════
-# 🎯 실시간 악성매물대 돌파 가능성 점검
+# 실시간 악성매물대 돌파 가능성 점검
 # ════════════════════════════════════════════════════════════════
 def calc_breakout_probability(current_price: float, supply_data: dict,
                                rsi_val: float, vol_ma20_ratio: float,
@@ -1882,7 +1882,7 @@ def render_breakout_probability(calc: dict):
         </div>
         {factors_html}
         <div style="font-size:0.68rem;color:rgba(148,163,184,0.5);margin-top:0.3rem;">
-            ⚠️ 절대적 매수·매도 신호가 아닌 참고 지표이며, 매물대·거래량·RSI·MACD를 단순 가중 합산한 값입니다.
+            절대적 매수·매도 신호가 아닌 참고 지표이며, 매물대·거래량·RSI·MACD를 단순 가중 합산한 값입니다.
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -2261,14 +2261,14 @@ def render_social_section(ticker_input: str):
         <div class="sentiment-bar-wrap">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
                 <span style="font-size:0.72rem;font-weight:700;color:rgba(148,163,184,0.7);letter-spacing:0.8px;text-transform:uppercase;">{bar_label}</span>
-                <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);">총 {total}건 &nbsp;·&nbsp; 🟢 {bull} &nbsp;🔴 {bear}</span>
+                <span style="font-size:0.72rem;color:rgba(148,163,184,0.6);">총 {total}건 &nbsp;·&nbsp; Bull {bull} &nbsp;Bear {bear}</span>
             </div>
             <div class="sentiment-bar-track">
                 <div class="sentiment-bar-fill" style="width:{bull_pct}%;"></div>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:0.7rem;color:rgba(148,163,184,0.5);margin-top:0.25rem;">
-                <span>🟢 Bullish {bull_pct}%</span>
-                <span>🔴 Bearish {100 - bull_pct}%</span>
+                <span>Bullish {bull_pct}%</span>
+                <span>Bearish {100 - bull_pct}%</span>
             </div>
         </div>""", unsafe_allow_html=True)
 
@@ -2276,16 +2276,16 @@ def render_social_section(ticker_input: str):
             sent = msg["sentiment"]
             if sent == "Bullish":
                 card_cls = "social-card social-bull"
-                badge    = '<span class="bull-badge">🟢 Bullish</span>'
+                badge    = '<span class="bull-badge">Bullish</span>'
             elif sent == "Bearish":
                 card_cls = "social-card social-bear"
-                badge    = '<span class="bear-badge">🔴 Bearish</span>'
+                badge    = '<span class="bear-badge">Bearish</span>'
             else:
                 card_cls = "social-card"
                 badge    = ""
 
             likes_val  = msg.get("likes", 0)
-            likes_html = f'<span>❤️ {likes_val}</span>' if likes_val else ""
+            likes_html = f'<span>좋아요 {likes_val}</span>' if likes_val else ""
             user_name  = _safe_html(msg["user"])
             msg_date   = _safe_html(msg.get("date", ""))
             msg_body   = _safe_html(msg["body"])
@@ -2301,7 +2301,7 @@ def render_social_section(ticker_input: str):
             if src == "stocktwits":
                 source_html = f'<span class="platform-badge">StockTwits</span>{badge}<span>@{user_name}</span>{date_html}'
             else:
-                source_html = f'<span class="{src_badge_cls}" style="background:rgba(156,127,242,0.12);color:#9c7ff2;border-color:rgba(156,127,242,0.25);">Yahoo Finance</span>{badge}<span>📰 {user_name}</span>'
+                source_html = f'<span class="{src_badge_cls}" style="background:rgba(156,127,242,0.12);color:#9c7ff2;border-color:rgba(156,127,242,0.25);">Yahoo Finance</span>{badge}<span>{user_name}</span>'
 
             card_html = (
                 f'<div class="{card_cls}">' +
@@ -2336,9 +2336,9 @@ CHART_ANALYSIS_SYSTEM_PROMPT = """당신은 단타/스윙 트레이더를 돕는
 아래 3개 소제목만 이모지와 함께 사용하고, 각 항목은 글머리 기호 1~2줄로 핵심만 쓰세요.
 전체 답변은 250자를 넘기지 마세요.
 
-1. 📊 현재 상황 — 시가 대비 등락률, 5분봉·1시간봉 추세 방향(일치/불일치), 저항 구간 돌파 가능성을 한 줄로
-2. 🎯 진입 판단 — 매수 / 관망 중 하나를 고르고 핵심 근거 1가지만
-3. ⚠️ 리스크 — 가장 중요한 리스크 요인 1가지만 (5분봉 신호가 1시간봉 추세와 반대 방향이면 이를 우선 언급, 합병·인수·파산 이벤트가 있으면 최우선 언급)
+1. 현재 상황 — 시가 대비 등락률, 5분봉·1시간봉 추세 방향(일치/불일치), 저항 구간 돌파 가능성을 한 줄로
+2. 진입 판단 — 매수 / 관망 중 하나를 고르고 핵심 근거 1가지만
+3. 리스크 — 가장 중요한 리스크 요인 1가지만 (5분봉 신호가 1시간봉 추세와 반대 방향이면 이를 우선 언급, 합병·인수·파산 이벤트가 있으면 최우선 언급)
 
 숫자는 주어진 데이터 범위 안에서만 근거로 사용하고, 데이터에 없는 값은 추측하지 마세요.
 마지막 줄에 반드시 "이 분석은 참고용이며 투자 조언이 아닙니다."
@@ -2468,7 +2468,7 @@ def _trend_alignment(t5: dict, t1h: dict) -> str:
     if a == b == -1:
         return "5분봉·1시간봉 모두 하락 — 단기 방향 일치(약세)"
     if a == 1 and b == -1:
-        return "⚠️ 1시간봉은 하락 추세인데 5분봉만 반등 — 추세 역행 반등일 수 있음"
+        return "1시간봉은 하락 추세인데 5분봉만 반등 — 추세 역행 반등일 수 있음"
     if a == -1 and b == 1:
         return "1시간봉 상승 추세 중 5분봉 눌림 — 조정 구간일 수 있음"
     if b == 0:
@@ -2653,14 +2653,14 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
 
     # TradingView 열기 — 본인 계정(실시간 데이터·지표 템플릿)으로 새 탭에서 차트를 연다. API 키 없이도 사용 가능.
     _tv_url = tradingview_chart_url(ticker, (fetch_ticker_info(ticker) or {}).get("exchange", ""))
-    st.link_button(f"📈 TradingView에서 {ticker} 차트 열기", _tv_url, use_container_width=True)
+    st.link_button(f"TradingView에서 {ticker} 차트 열기", _tv_url, use_container_width=True)
 
     api_key = st.session_state.get("gemini_api_key", "")
     if not api_key:
         st.markdown(
             '''<div class="glass-card"><div class="status-row"><div class="status-item">
                 <div class="status-dot dot-yellow"></div>
-                <div class="status-text">AI 차트 해석을 사용하려면 사이드바 하단 "🤖 AI 차트 해석 설정"에서
+                <div class="status-text">AI 차트 해석을 사용하려면 사이드바 하단 "AI 차트 해석 설정"에서
                 Google AI(Gemini) API 키를 먼저 입력해주세요. (aistudio.google.com/apikey 에서 무료 발급)</div>
             </div></div></div>''',
             unsafe_allow_html=True,
@@ -2718,7 +2718,7 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
     )
 
     last_ts = candles.index[-1]
-    run_clicked = st.button("🔍 지금 진입 여부 분석하기", use_container_width=True, key="chart_analysis_run_btn")
+    run_clicked = st.button("지금 진입 여부 분석하기", use_container_width=True, key="chart_analysis_run_btn")
 
     # 결과는 티커 기준으로 보관한다 — 새 5분봉이 생기거나 질문 입력칸을 건드려도 지워지지 않는다.
     if run_clicked:
@@ -2773,7 +2773,7 @@ def render_chart_interpretation(ticker: str, hist_daily: pd.DataFrame, current_p
             base_txt = pd.Timestamp(base_ts).strftime("%H:%M")
         except Exception:
             new_n, base_txt = 0, "?"
-        note = f"🕒 {age_txt} 분석 (기준 5분봉 {base_txt})"
+        note = f"{age_txt} 분석 (기준 5분봉 {base_txt})"
         if new_n > 0:
             note += f" · 이후 새 5분봉 {new_n}개 — 최신 기준으로 보려면 다시 분석하세요"
         if meta.get("question", "") != (extra_question or "").strip():
@@ -4508,6 +4508,22 @@ html body .stApp .st-key-hero_search [data-testid="stForm"] button,
 html body .stApp .st-key-hero_search [data-testid="stForm"] button *{
   color:#111111 !important; -webkit-text-fill-color:#111111 !important; fill:#111111 !important; font-weight:700 !important;
 }
+
+/* ── 상단 화면 탭 3개를 한 줄로 균등 배치 ── */
+html body .stApp .st-key-topnav [data-testid="stSegmentedControl"],
+html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] > div,
+html body .stApp .st-key-topnav [data-testid="stButtonGroup"]{
+  display:flex !important; flex-wrap:nowrap !important; width:100% !important; gap:.35rem !important;
+}
+html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button,
+html body .stApp .st-key-topnav [data-testid="stButtonGroup"] button{
+  flex:1 1 0 !important; min-width:0 !important; padding:0 .3rem !important;
+  justify-content:center !important; white-space:nowrap !important;
+}
+html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button p,
+html body .stApp .st-key-topnav [data-testid="stSegmentedControl"] button [data-testid="stMarkdownContainer"]{
+  font-size:.88rem !important; white-space:nowrap !important; margin:0 !important;
+}
 """
 
 
@@ -4669,7 +4685,7 @@ inject_css(False)   # 미니멀 라이트 팔레트 고정
 # ════════════════════════════════════════════════════════════════
 st.markdown(f"""
 <div class="app-header">
-    <h1>🚀 급등주 실시간 검증기 V4</h1>
+    <h1>급등주 실시간 검증기 V4</h1>
     <p>야후 파이낸스 · 스톡타이탄 Rhea-AI · 기술적 지표 통합 분석 &nbsp;|&nbsp; 환율 ₩{fetch_usd_to_krw():,.0f} (실시간)</p>
 </div>
 """, unsafe_allow_html=True)
@@ -4678,26 +4694,26 @@ st.markdown(f"""
 # 즐겨찾기 일괄 스캔 결과 표시
 # ════════════════════════════════════════════════════════════════
 if st.session_state.scan_results:
-    alert_tickers = [r for r in st.session_state.scan_results if r["🔔신호"] != "—"]
+    alert_tickers = [r for r in st.session_state.scan_results if r["신호"] != "—"]
     st.markdown(f"""
     <div class="scan-header">
-        <span class="scan-title">⭐ 즐겨찾기 일괄 스캔 결과 &nbsp;·&nbsp; {len(st.session_state.scan_results)}개 종목</span>
-        {'<span style="color:#fbbf24;font-size:0.82rem;font-weight:600;">🔔 신호 ' + str(len(alert_tickers)) + '건 감지</span>' if alert_tickers else ''}
+        <span class="scan-title">즐겨찾기 일괄 스캔 결과 &nbsp;·&nbsp; {len(st.session_state.scan_results)}개 종목</span>
+        {'<span style="color:#fbbf24;font-size:0.82rem;font-weight:600;">신호 ' + str(len(alert_tickers)) + '건 감지</span>' if alert_tickers else ''}
     </div>
     """, unsafe_allow_html=True)
 
     scan_df = pd.DataFrame(st.session_state.scan_results)
     def highlight_signal(row):
-        if row["🔔신호"] != "—":
+        if row["신호"] != "—":
             return ["background-color: rgba(52,211,153,0.08); color: #34d399"] * len(row)
         return [""] * len(row)
     st.dataframe(scan_df.style.apply(highlight_signal, axis=1), use_container_width=True, hide_index=True)
 
     if alert_tickers:
-        chips = "".join([f'<span class="signal-chip">{_safe_html(r["티커"])} {_safe_html(r["🔔신호"])}</span>' for r in alert_tickers])
+        chips = "".join([f'<span class="signal-chip">{_safe_html(r["티커"])} {_safe_html(r["신호"])}</span>' for r in alert_tickers])
         st.markdown(f"""
         <div class="alert-banner">
-            <div class="alert-icon">🔔</div>
+            <div class="alert-icon">!</div>
             <div>
                 <div class="alert-title">급등 신호 감지</div>
                 <div class="alert-signals">{chips}</div>
@@ -4805,24 +4821,24 @@ def scan_ticker_for_excel(item: dict, usd_krw: float, with_events: bool = False)
         m20 = calc_ma20_breakout(h)   # 20일선이격(%) 열에도 쓰이므로 신호 표시 여부와 상관없이 계산
 
         signals = []
-        if vol_r >= 200: signals.append("🔥거래량")
-        if surge is not None and surge >= 5: signals.append("📊3일5배")
+        if vol_r >= 200: signals.append("거래량")
+        if surge is not None and surge >= 5: signals.append("3일5배")
         # 스윙용 신호(MACD·과매도·120일선·20일선)는 SHOW_SWING_SIGNALS=True일 때만 표시
         if SHOW_SWING_SIGNALS:
             if pd.notna(t["MACD"]) and pd.notna(t["MACD_SIG"]) and pd.notna(y["MACD"]) and pd.notna(y["MACD_SIG"]) \
                     and t["MACD"] > t["MACD_SIG"] and y["MACD"] <= y["MACD_SIG"]:
-                signals.append("⚡MACD")
-            if rsi is not None and rsi <= 35: signals.append("📉과매도")
+                signals.append("MACD")
+            if rsi is not None and rsi <= 35: signals.append("과매도")
             if pd.notna(t["MA120"]) and pd.notna(y["MA120"]) and close > t["MA120"] and prev <= y["MA120"]:
-                signals.append("🚀120일선")
+                signals.append("120일선")
             if m20["breakout"]:
-                signals.append("🚀20일선" + ("+량" if m20["vol_confirm"] else ""))
+                signals.append("20일선" + ("+량" if m20["vol_confirm"] else ""))
         float_turn, catalyst_txt = None, None
         if with_events:        # 뉴스·공시·유통주식수 조회가 종목당 추가되어 기본은 꺼 둠
             signals.extend(detect_corporate_events(ticker)["signals"])
             float_turn = calc_float_turnover(ticker, t["Volume"])
             catalyst_txt = catalyst_summary_text(ticker)
-        if gap >= 5: signals.append("⬆️갭업")
+        if gap >= 5: signals.append("갭업")
 
         # 급등 전 매집·돌파 임박 예측 점수 (이미 급등한 종목은 상한 30점)
         _pb = calc_prebreakout_score(h)
@@ -4862,14 +4878,14 @@ def render_excel_scan_results():
 
     st.markdown(f"""
     <div class="scan-header">
-        <span class="scan-title">📥 엑셀 종목 일괄 분석 &nbsp;·&nbsp; {len(ok)}/{len(df)}개 종목 분석 완료</span>
-        <span style="font-size:0.82rem;font-weight:700;">🔔 신호 {len(sig)}건 · 오류 {len(bad)}건</span>
+        <span class="scan-title">엑셀 종목 일괄 분석 &nbsp;·&nbsp; {len(ok)}/{len(df)}개 종목 분석 완료</span>
+        <span style="font-size:0.82rem;font-weight:700;">신호 {len(sig)}건 · 오류 {len(bad)}건</span>
     </div>
     """, unsafe_allow_html=True)
 
     if len(bad):
         _reasons = bad["상태"].value_counts()
-        st.caption("⚠️ 분석 실패 사유: " + " · ".join(f"{k} {v}건" for k, v in _reasons.items()))
+        st.caption("분석 실패 사유: " + " · ".join(f"{k} {v}건" for k, v in _reasons.items()))
 
     if data.get("skipped"):
         st.warning("티커가 비어 있어 건너뛴 종목 " + str(len(data["skipped"])) + "개: " + ", ".join(data["skipped"]))
@@ -4891,7 +4907,7 @@ def render_excel_scan_results():
         if not sig.empty:
             chips = "".join(f'<span class="signal-chip">{_safe_html(r["티커"])} {_safe_html(r["신호"])}</span>' for _, r in sig.iterrows())
             st.markdown(f"""
-            <div class="alert-banner"><div class="alert-icon">🔔</div>
+            <div class="alert-banner"><div class="alert-icon">!</div>
             <div><div class="alert-title">신호 감지 종목</div><div class="alert-signals">{chips}</div></div></div>
             """, unsafe_allow_html=True)
 
@@ -4941,14 +4957,14 @@ render_excel_scan_results()
 # ════════════════════════════════════════════════════════════════
 # 사이드바 — 티커 입력 및 파라미터
 # ════════════════════════════════════════════════════════════════
-st.sidebar.header("🔍 주식 분석 설정")
+st.sidebar.header("주식 분석 설정")
 
 # ── 즐겨찾기 목록 ────────────────────────────────────────────────
 if st.session_state.favorites:
     st.sidebar.markdown("---")
     fav_count = len(st.session_state.favorites)
     # 목록이 길어져도 사이드바 공간을 차지하지 않도록 접이식(기본 접힘)으로 표시
-    with st.sidebar.expander("⭐ 즐겨찾기", expanded=False):
+    with st.sidebar.expander("즐겨찾기", expanded=False):
         st.caption(f"총 {fav_count}개 · 티커를 누르면 입력창에 채워집니다")
         for idx, fav in enumerate(st.session_state.favorites):
             fav_col, up_col, down_col, del_col = st.columns([3, 1, 1, 1])
@@ -4982,7 +4998,7 @@ if st.session_state.favorites:
 
     # ── 즐겨찾기 일괄 스캔 ───────────────────────────────────────
     st.sidebar.markdown("")
-    if st.sidebar.button("🔍 즐겨찾기 전체 스캔", use_container_width=True,
+    if st.sidebar.button("즐겨찾기 전체 스캔", use_container_width=True,
                          help="즐겨찾기 종목을 한 번에 분석합니다"):
         scan_data  = []
         total      = len(st.session_state.favorites)
@@ -5008,19 +5024,19 @@ if st.session_state.favorites:
 
                     float_turn = calc_float_turnover(fav_ticker, t['Volume'])   # 플로트 회전율(%)
                     signals = []
-                    if vol_r  >= 200:  signals.append("🔥거래량")
+                    if vol_r  >= 200:  signals.append("거래량")
                     # 스윙용 신호는 SHOW_SWING_SIGNALS=True일 때만 표시
                     if SHOW_SWING_SIGNALS:
-                        if macd_cross:     signals.append("⚡MACD")
-                        if rsi    <= 35:   signals.append("📉과매도")
+                        if macd_cross:     signals.append("MACD")
+                        if rsi    <= 35:   signals.append("과매도")
                         if t['Close'] > t['MA120'] and y['Close'] <= y['MA120']:
-                                           signals.append("🚀120일선")
+                                           signals.append("120일선")
                         _m20 = calc_ma20_breakout(fav_hist)
                         if _m20["breakout"]:
-                            signals.append("🚀20일선" + ("+량" if _m20["vol_confirm"] else ""))
+                            signals.append("20일선" + ("+량" if _m20["vol_confirm"] else ""))
                     signals.extend(detect_corporate_events(fav_ticker)["signals"])
                     if gap_up_pct >= 5:
-                                       signals.append("⬆️갭업")
+                                       signals.append("갭업")
                     alert = " ".join(signals) if signals else "—"
 
                     _pb = calc_prebreakout_score(fav_hist)      # 급등 전 매집·돌파 임박 예측 점수
@@ -5036,16 +5052,16 @@ if st.session_state.favorites:
                         "RSI":       f"{rsi:.1f}",
                         "플로트회전": f"{float_turn:.0f}%" if float_turn is not None else "—",
                         "재료":      catalyst_summary_text(fav_ticker),
-                        "🔔신호":    alert,
+                        "신호":    alert,
                         "_pct": pct, "_volr": vol_r, "_gap": gap_up_pct,
                     }
             except Exception as _e:
                 _log_err("favorites_scan:" + fav_ticker, _e)
                 return {"티커": fav_ticker, "현재가": f"오류({_classify_error(_e)})", "등락(%)": "-",
-                        "돌파임박": "-", "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
+                        "돌파임박": "-", "거래량(MA비%)": "-", "RSI": "-", "신호": "-"}
             return {"티커": fav_ticker, "현재가": "데이터 없음", "등락(%)": "-",
                     "돌파임박": "-",
-                    "거래량(MA비%)": "-", "RSI": "-", "🔔신호": "-"}
+                    "거래량(MA비%)": "-", "RSI": "-", "신호": "-"}
 
         with ThreadPoolExecutor(max_workers=6) as executor:
             futures = {executor.submit(_scan_one, t): t for t in st.session_state.favorites}
@@ -5065,7 +5081,7 @@ if st.session_state.favorites:
                 flags.append(is_surge_candidate(r.get("_pct", 0), r.get("_volr", 0), r.get("_gap", 0)))
             except Exception:
                 flags.append(False)
-        attach_beams(scan_data, "티커", "🔔신호", flags)
+        attach_beams(scan_data, "티커", "신호", flags)
         for r in scan_data:
             for k in ("_pct", "_volr", "_gap"):
                 r.pop(k, None)   # 표에 나오지 않게 제거
@@ -5081,9 +5097,9 @@ else:
 # 키는 st.secrets 또는 세션 입력으로만 사용하며 서버 파일에 저장하지 않는다.
 # ════════════════════════════════════════════════════════════════
 st.sidebar.markdown("---")
-_settings = st.sidebar.expander("⚙️ 설정 · 제외 필터 · 엑셀 · AI 키 · 매물대", expanded=False)
+_settings = st.sidebar.expander("설정 · 제외 필터 · 엑셀 · AI 키 · 매물대", expanded=False)
 with _settings:
-    st.markdown("**📖 용어 설명**")
+    st.markdown("**용어 설명**")
     st.markdown(
         "- **플로트**: 실제로 거래될 수 있는 유통 주식 수. 적을수록 작은 호재에도 가격이 크게 움직입니다.\n"
         "- **프리마켓 갭**: 전일 종가 대비 프리마켓(오전 4시~9시 30분) 가격의 변동률.\n"
@@ -5095,19 +5111,19 @@ with _settings:
         "- **매물대**: 과거에 거래가 많이 몰렸던 가격대. 가격이 다시 오를 때 매도 물량이 나올 수 있는 구간으로 참고합니다."
     )
 with _settings:
-    st.markdown("**🚫 제외 필터**")
+    st.markdown("**제외 필터**")
     st.checkbox(
-        "🚫 상장폐지 확정 종목 제외", key="excl_delisted",
+        "상장폐지 확정 종목 제외", key="excl_delisted",
         help="Form 25·15 공시, 상장폐지 확정 뉴스, 청산, OTC 이전 종목을 검색기·스캐너 순위에서 뺍니다 (뉴스·공시 키워드 기반)")
     st.checkbox(
-        "🚫 피인수(합병 확정) 종목 제외", key="excl_acquired",
+        "피인수(합병 확정) 종목 제외", key="excl_acquired",
         help="'to be acquired / all-cash deal' 등 인수가 확정돼 가격이 고정된 종목을 순위에서 뺍니다 (변동성이 낮고 거래량이 몰려 '급등 전' 패턴처럼 보이는 오탐 방지)")
 with _settings:
-    st.markdown("**📂 엑셀 종목 일괄 분석**")
+    st.markdown("**엑셀 종목 일괄 분석**")
     st.caption("섹터·티커가 들어 있는 엑셀(.xlsx)을 올리면 전 종목을 한 번에 분석해 섹터별로 정리합니다. "
                "('종목' 시트의 섹터/티커 열을 사용, 티커가 빈 줄은 건너뜀)")
     _xl_file = st.file_uploader("엑셀 파일", type=["xlsx"], key="excel_watchlist_upload")
-    _xl_events = st.checkbox("📰 합병·인수·파산 이벤트 포함 (느림)", value=False, key="excel_scan_events",
+    _xl_events = st.checkbox("합병·인수·파산 이벤트 포함 (느림)", value=False, key="excel_scan_events",
                              help="종목마다 뉴스·SEC 공시를 추가로 조회합니다. 종목이 많으면 시간이 오래 걸리고 요청 제한에 걸릴 수 있습니다.")
     if _xl_file is not None and st.button("엑셀 종목 전체 분석", key="run_excel_scan", use_container_width=True):
         try:
@@ -5131,7 +5147,7 @@ with _settings:
             st.rerun()
 
 with _settings:
-    st.markdown("**🤖 AI 차트 해석 설정**")
+    st.markdown("**AI 차트 해석 설정**")
     _secret_key = ""
     try:
         _secret_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -5139,7 +5155,7 @@ with _settings:
         _secret_key = ""
     if _secret_key:
         st.session_state["gemini_api_key"] = _secret_key
-        st.caption("✅ API 키가 앱 설정(secrets)에 등록되어 있습니다.")
+        st.caption("API 키가 앱 설정(secrets)에 등록되어 있습니다.")
     else:
         st.text_input(
             "Google AI (Gemini) API 키",
@@ -5149,7 +5165,7 @@ with _settings:
                  "입력한 키는 저장되지 않고 현재 세션에서만 사용됩니다.",
             placeholder="AIza...",
         )
-        st.caption("🔒 이 브라우저 세션에서만 사용되며 서버에 저장되지 않습니다. "
+        st.caption("이 브라우저 세션에서만 사용되며 서버에 저장되지 않습니다. "
                    "무료 티어(분당 요청 제한)로 충분히 사용 가능합니다.")
 
 # ════════════════════════════════════════════════════════════════
@@ -5157,7 +5173,7 @@ with _settings:
 # ════════════════════════════════════════════════════════════════
 st.sidebar.markdown("---")
 with _settings:
-    st.markdown("**⚙️ 매물대 분석 설정**")
+    st.markdown("**매물대 분석 설정**")
     supply_lookback_days = st.slider(
         "분석 기간 (거래일)", min_value=60, max_value=504, value=120, step=6,
         help="최근 몇 거래일의 거래량을 매물대 계산에 반영할지 설정합니다. "
@@ -5222,7 +5238,7 @@ def build_top_summary_cards_html(today_data, yesterday_data, df_calculated, vol_
         f'<div class="metric-label">거래량 (MA20 대비)</div>'
         f'<div class="metric-value">{vol_ma20_ratio:.0f}%</div>'
         f'<div class="metric-delta {"delta-up" if vol_ma20_ratio >= 200 else "delta-neu"}">'
-        f'{"🔥 폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}</div>'
+        f'{"폭증" if vol_ma20_ratio >= 200 else ("보통" if vol_ma20_ratio >= 80 else "저조")}</div>'
         f'</div>'
         f'<div class="metric-card mc-rose" style="grid-column: span 4;">'
         f'<div class="metric-label">당일 거래량</div>'
@@ -5479,7 +5495,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     if is_china:
         china_banner_html = f"""
         <div class="china-banner">
-            <div class="china-banner-icon">🇨🇳⚠️</div>
+            <div class="china-banner-icon">CN</div>
             <div>
                 <div class="china-banner-text">중국 기업 (China-based Company)</div>
                 <div class="china-banner-sub">본사 소재지: {_safe_html(country)} — VIE 구조, 회계 투명성, 규제 리스크 등을 반드시 확인하세요</div>
@@ -5502,22 +5518,22 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     _ma20        = calc_ma20_breakout(hist)
     _events      = detect_corporate_events(ticker_input)
 
-    # ── 🔔 급등 신호 배너 ────────────────────────────────────────
+    # ── 급등 신호 배너 ────────────────────────────────────────
     alert_signals = []
-    if vol_ma20_ratio >= 200:    alert_signals.append(f"🔥 거래량 MA20 대비 {vol_ma20_ratio:.0f}%")
+    if vol_ma20_ratio >= 200:    alert_signals.append(f"거래량 MA20 대비 {vol_ma20_ratio:.0f}%")
     # 아래 4개는 스윙용(느린) 신호라 SHOW_SWING_SIGNALS=True일 때만 칩에 표시한다
     if SHOW_SWING_SIGNALS and macd_cross:
-        alert_signals.append("⚡ MACD 골든크로스")
+        alert_signals.append("MACD 골든크로스")
     if SHOW_SWING_SIGNALS and rsi_val <= 35:
-        alert_signals.append("📉 RSI 과매도")
+        alert_signals.append("RSI 과매도")
     if SHOW_SWING_SIGNALS and today['Close'] > today['MA120'] and yesterday['Close'] <= yesterday['MA120']:
-        alert_signals.append("🚀 120일선 돌파")
+        alert_signals.append("120일선 돌파")
     if SHOW_SWING_SIGNALS and _ma20["breakout"]:
-        alert_signals.append("🚀 20일선 돌파" + (" (거래량 동반)" if _ma20["vol_confirm"] else ""))
-    if pct_chg >= 5:             alert_signals.append(f"📈 당일 +{pct_chg:.1f}%")
-    if gap_up_pct >= 5:          alert_signals.append(f"⬆️ 갭업 시초가 +{gap_up_pct:.1f}%")
+        alert_signals.append("20일선 돌파" + (" (거래량 동반)" if _ma20["vol_confirm"] else ""))
+    if pct_chg >= 5:             alert_signals.append(f"당일 +{pct_chg:.1f}%")
+    if gap_up_pct >= 5:          alert_signals.append(f"갭업 시초가 +{gap_up_pct:.1f}%")
 
-    # ── 🧨 이벤트 빔 (병합/인수/파산) ──────────────────────────────
+    # ── 이벤트 빔 (병합/인수/파산) ──────────────────────────────
     try:
         beam_events = detect_event_beams(get_beam_news(ticker_input))
     except Exception as _e:
@@ -5527,14 +5543,14 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     for ev in beam_events:
         if is_surging:
             tag = "" if ev["strong"] else " (관련 가능성)"
-            alert_signals.append(f"🧨 {ev['kind']} 가능성{tag} — 뉴스+급등 동반")
+            alert_signals.append(f"{ev['kind']} 가능성{tag} — 뉴스+급등 동반")
 
     alert_banner_html = ""
     if alert_signals:
         chips = "".join([f'<span class="signal-chip">{_safe_html(s)}</span>' for s in alert_signals])
         alert_banner_html = f"""
         <div class="alert-banner">
-            <div class="alert-icon">🔔</div>
+            <div class="alert-icon">!</div>
             <div>
                 <div class="alert-title">급등 신호 감지!</div>
                 <div class="alert-signals">{chips}</div>
@@ -5581,8 +5597,8 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         mc_star        = False
         shares_star    = False
 
-    mc_star_html     = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="소형주 최적 구간 ($4M~$500M)">⭐</span>' if mc_star else ""
-    shares_star_html = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">⭐</span>' if shares_star else ""
+    mc_star_html     = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="소형주 최적 구간 ($4M~$500M)">★</span>' if mc_star else ""
+    shares_star_html = ' <span style="color:#e0943a;font-size:1rem;vertical-align:middle;" title="저부동주 조건 (20M주 이하)">★</span>' if shares_star else ""
 
     st.markdown(f"""
     <div class="metric-grid metric-grid-12">
@@ -5617,7 +5633,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
         if alert_banner_html:
             st.markdown(alert_banner_html, unsafe_allow_html=True)
 
-    # ── ⚠️ 나스닥 $1 최소 호가 규정 준수 체크 ───────────────────────
+    # ── 나스닥 $1 최소 호가 규정 준수 체크 ───────────────────────
     if nasdaq_compliance and nasdaq_compliance.get("applicable"):
         if nasdaq_compliance["phase"] == "notice_issued_est":
             days_left = nasdaq_compliance["days_left"]
@@ -5643,7 +5659,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                     <div class="status-item"><div class="status-dot {dl_dot}"></div><div class="status-text">{dl_text}</div></div>
                 </div>
                 <div style="font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;">
-                    ⚠️ 실제 결핍통지 발송일은 공개 시세 데이터로 확인할 수 없어 30영업일 연속 미달 시점을 기준으로 추정한 값입니다. 참고용으로만 사용하세요.
+                    실제 결핍통지 발송일은 공개 시세 데이터로 확인할 수 없어 30영업일 연속 미달 시점을 기준으로 추정한 값입니다. 참고용으로만 사용하세요.
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -5657,12 +5673,12 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                     나스닥 결핍통지 기준(연속 30영업일)까지 <strong>약 {days_to_notice}영업일</strong> 남음</div></div>
                 </div>
                 <div style="font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;">
-                    ⚠️ Nasdaq Listing Rule 5550(a)(2) 기준 추정치이며, 실제 결핍통지 여부는 공식 공시를 확인하세요.
+                    Nasdaq Listing Rule 5550(a)(2) 기준 추정치이며, 실제 결핍통지 여부는 공식 공시를 확인하세요.
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-    # ── 🧱 악성매물대 분석 + 🎯 돌파 가능성 점검 (좌우 배열) ──────────
+    # ── 악성매물대 분석 + 돌파 가능성 점검 (좌우 배열) ──────────
     supply_data = calc_supply_zones(
         hist, float(today['Close']),
         n_bins=supply_n_bins,
@@ -5756,19 +5772,19 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
     with col_breakout:
         render_breakout_probability(breakout_calc)
 
-    # ── 🚫 상장폐지 확정·청산·피인수 확정 경고 ──
+    # ── 상장폐지 확정·청산·피인수 확정 경고 ──
     render_delist_banner(ticker_input)
 
-    # ── 🔮 급등 전 매집 · 돌파 임박 (변동성 축소 · 거래량 선행 · 20일선 직전) ──
+    # ── 급등 전 매집 · 돌파 임박 (변동성 축소 · 거래량 선행 · 20일선 직전) ──
     render_prebreakout_panel(hist)
 
-    # ── 🎯 단타 보조 분석 (시간보정 RVOL · 플로트 회전율 · 저항 · ATR 손절) ──
+    # ── 단타 보조 분석 (시간보정 RVOL · 플로트 회전율 · 저항 · ATR 손절) ──
     render_daytrade_panel(ticker_input, hist, today, yesterday, info)
 
-    # ── 📰 합병·인수·파산 이벤트 신호 ─────────────────────────────
+    # ── 합병·인수·파산 이벤트 신호 ─────────────────────────────
     render_event_signals(_events)
 
-    # ── 🚀 급등 이력 / 📜 오퍼링 이력 (좌우 배치) ─────────────────
+    # ── 급등 이력 / 오퍼링 이력 (좌우 배치) ─────────────────
     col_spike, col_offering = st.columns(2, gap="medium")
 
     with col_spike:
@@ -5811,7 +5827,7 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
                 link_html = f"<a class='news-link' href='{_ou}' target='_blank'>공시 원문 →</a>" if _ou else ""
                 rows_html += (
                     f"<div class='status-item'><div class='status-dot dot-yellow'></div>"
-                    f"<div class='status-text'>📅 {_safe_html(o['date'])} &nbsp;<strong>{_safe_html(o['type'])}</strong> — {_safe_html(o['title'])} {link_html}</div></div>"
+                    f"<div class='status-text'>{_safe_html(o['date'])} &nbsp;<strong>{_safe_html(o['type'])}</strong> — {_safe_html(o['title'])} {link_html}</div></div>"
                 )
             more_note = (f"<div style='font-size:0.7rem;color:rgba(148,163,184,0.55);margin-top:0.35rem;'>"
                           f"총 {len(offering_list)}건 중 최근 3건 표시</div>" if len(offering_list) > 3 else "")
@@ -5930,7 +5946,7 @@ def render_sector_heatmap():
 #  1) 게이트(상한): 오퍼링·나스닥 경고·재료 없음·스프레드 과대·유통주식 불명이면 점수 상한을 건다 (감점이 아님)
 #  2) 셋업 점수(곱셈형): 재료 × 수급 × 진입위치 × 손익비 × 거래 가능성 — 하나라도 약하면 전체가 낮아진다
 #  3) 출력: 등급 + 이유 태그 + 경고 태그
-# ⚠️ 가중치(0.30/0.25/0.25/0.10/0.10)와 구간은 경험칙입니다. 아래 '결과 기록'으로 실제 성과를 쌓아 보정하세요.
+# 가중치(0.30/0.25/0.25/0.10/0.10)와 구간은 경험칙입니다. 아래 '결과 기록'으로 실제 성과를 쌓아 보정하세요.
 # ════════════════════════════════════════════════════════════════
 import math as _math
 
@@ -5943,7 +5959,7 @@ def _clamp01(x: float) -> float:
 
 
 def _clean_ticker(r: dict) -> str:
-    return str(r.get("ticker", "")).replace("⚠️ ", "").strip()
+    return str(r.get("ticker", "")).strip()
 
 
 def _extension_factor(pct: float) -> float:
@@ -6224,7 +6240,7 @@ def compute_setup_for_ticker(ticker: str) -> dict:
 # ════════════════════════════════════════════════════════════════
 # 결과 기록 — 검색 후보와 점수 구성요소를 CSV로 남기고, 장 마감 후 실제 성과를 채워 등급별로 비교
 # 저장 위치: 환경변수 SCREEN_LOG_PATH (기본 screen_log.csv).
-# ⚠️ Streamlit Cloud 등은 재시작 시 파일이 초기화되므로 아래 '📥 기록 CSV 다운로드'로 정기 백업하세요.
+# Streamlit Cloud 등은 재시작 시 파일이 초기화되므로 아래 '기록 CSV 다운로드'로 정기 백업하세요.
 # ════════════════════════════════════════════════════════════════
 SCREEN_LOG_PATH = os.environ.get("SCREEN_LOG_PATH", "screen_log.csv")
 _SCREEN_LOG_LOCK = threading.Lock()
@@ -6392,13 +6408,13 @@ def _summarize_log(df: pd.DataFrame, by: str) -> pd.DataFrame:
 
 
 # ════════════════════════════════════════════════════════════════
-# 🚫 상장폐지 확정 · 피인수(합병 확정) 종목 제외
+# 상장폐지 확정 · 피인수(합병 확정) 종목 제외
 #   상장폐지가 확정됐거나 인수가 확정돼 가격이 고정된 종목은 변동성이 줄고 거래량이 몰려서
 #   '급등 전 매집' 패턴처럼 보이므로 순위에서 걸러낸다. (사이드바 체크박스로 켜고 끔)
 #   판정 근거: ① 거래소가 OTC/핑크시트 ② 최근 6개월 SEC Form 25·15(상장폐지·등록말소)
 #             ③ 최근 뉴스 제목의 확정 표현(delisting determination, will be delisted, 거래정지, 청산 등)
 #   '결손 통지(deficiency notice)'·'규정 준수 기간 부여'처럼 아직 확정이 아닌 소식은 제외하지 않고 경고만 한다.
-#   ⚠️ 키워드 기반이라 오탐이 있을 수 있어, 제외된 종목은 화면의 '🚫 제외된 종목'에서 사유·원문을 확인할 수 있다.
+#   키워드 기반이라 오탐이 있을 수 있어, 제외된 종목은 화면의 '제외된 종목'에서 사유·원문을 확인할 수 있다.
 # ════════════════════════════════════════════════════════════════
 DELIST_NEWS_DAYS = 120
 DELIST_SEC_DAYS = 180
@@ -6493,7 +6509,7 @@ def filter_delisted(rows: list, limit: int = 60, max_workers: int = 6) -> tuple:
     otc_re = re.compile(r"otc|pink|pnk|grey|gray", re.I)
 
     def _clean(r):
-        return str(r.get("ticker", "")).replace("⚠️ ", "").strip()
+        return str(r.get("ticker", "")).strip()
 
     to_check = []
     for r in rows[:limit]:
@@ -6522,7 +6538,7 @@ def render_excluded_expander(state_key: str):
     ex = st.session_state.get(state_key) or []
     if not ex:
         return
-    with st.expander(f"🚫 제외된 종목 {len(ex)}개 (상장폐지 확정·피인수·청산 등)", expanded=False):
+    with st.expander(f"제외된 종목 {len(ex)}개 (상장폐지 확정·피인수·청산 등)", expanded=False):
         st.dataframe(pd.DataFrame(ex), use_container_width=True, hide_index=True,
                      column_config={"링크": st.column_config.LinkColumn("링크", display_text="원문")})
         st.caption("키워드 기반 판정이라 오탐이 있을 수 있습니다. 잘못 제외된 종목이 있으면 사이드바 설정을 끄거나 원문을 확인하세요.")
@@ -6535,7 +6551,7 @@ def render_delist_banner(ticker: str):
         link = _safe_url(res.get("link", ""))
         link_html = f' · <a href="{link}" target="_blank" rel="noopener">원문 →</a>' if link else ""
         st.markdown(
-            f'<div class="split-banner"><div class="split-banner-title">🚫 {_safe_html(res["label"])} 감지 '
+            f'<div class="split-banner"><div class="split-banner-title">{_safe_html(res["label"])} 감지 '
             f'({_safe_html(res["source"])} · {_safe_html(res["date"])})</div>'
             f'<div>{_safe_html(res["title"])}{link_html}</div>'
             f'<div style="font-size:0.8rem;opacity:0.7;margin-top:0.3rem;">키워드 기반 자동 판정이라 원문 확인이 필요합니다. '
@@ -6556,7 +6572,7 @@ def render_delist_banner(ticker: str):
 #   → 가중 기하평균(곱셈형): 한 요소라도 약하면 전체가 낮아집니다.
 #   게이트: 이미 급등(당일 +10% 또는 5일 +25% 이상)이면 상한 30점, 20일 평균 거래대금 $30만 미만이면 상한 40점
 #   단계: 75↑ 임박 / 60↑ 준비 / 45↑ 관찰 / 미만 해당없음
-# ⚠️ 구간·가중치는 경험칙입니다. '급등 전 스캐너' 하단의 기록으로 단계별 5일 내 +10% 적중률을 확인하며 보정하세요.
+# 구간·가중치는 경험칙입니다. '급등 전 스캐너' 하단의 기록으로 단계별 5일 내 +10% 적중률을 확인하며 보정하세요.
 # ════════════════════════════════════════════════════════════════
 PREBREAK_WEIGHTS = {"contraction": 0.30, "accumulation": 0.30, "ma20": 0.25, "notext": 0.15}
 PREBREAK_CUTS = (("임박", 75), ("준비", 60), ("관찰", 45))
@@ -6731,7 +6747,7 @@ def prebreakout_enrich(tickers: tuple) -> dict:
 #   [등급 상한] 1달러 미만 · 증자 공시 14일 이내 · 갭 과대 · 프리마켓 고점 대비 -10%↓ · 07:00 ET 이전 · 체결 듬성듬성 · 24시간 넘은 촉매 → 최대 B
 #               촉매 미확인 → 최대 C
 #   [시장 보정] 소형: IWM이 20일선 아래+5일 하락(일봉) 또는 프리마켓 -1%↓ / 대형: QQQ 프리마켓 -1%↓ → 등급 한 단계 하향
-# ⚠️ 가중치·구간은 초안입니다. 하단 '예측 검증' 기록(등급·모드·스캔 시간대별 적중률)으로 보정하세요.
+# 가중치·구간은 초안입니다. 하단 '예측 검증' 기록(등급·모드·스캔 시간대별 적중률)으로 보정하세요.
 # ════════════════════════════════════════════════════════════════
 GAPGO_WEIGHTS = {
     "small": {"catalyst": 25, "pm_volume": 25, "strength": 20, "gap": 10, "float": 10, "daily": 10},
@@ -7330,7 +7346,7 @@ def _summarize_gapgo(df: pd.DataFrame, by: str = "grade", dedupe: bool = True) -
 
 
 def render_gapgo_log_panel():
-    with st.expander("📊 예측 검증 (점수 기록 · 당일/익일 결과 추적)", expanded=False):
+    with st.expander("예측 검증 (점수 기록 · 당일/익일 결과 추적)", expanded=False):
         df = _read_gapgo_log()
         done = int((df["out_status"] == "done").sum()) if not df.empty else 0
         st.caption(f"기록 {len(df)}건 · 결과 확정 {done}건. 각 시간대(프리마켓·정규장·마감 후) 시간에 스캔하면 상위 후보가 자동 기록됩니다. "
@@ -7338,14 +7354,14 @@ def render_gapgo_log_panel():
                    "해당 시간대가 아닌 시각의 스캔(예: 주말에 프리마켓 선택)은 기록하지 않습니다.")
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("🔄 결과 업데이트", key="update_gapgo", use_container_width=True):
+            if st.button("결과 업데이트", key="update_gapgo", use_container_width=True):
                 with st.spinner("당일/익일 결과 계산 중..."):
                     u, w = update_gapgo_outcomes()
                 st.success(f"{u}건 갱신 · 장 미종료/데이터 대기 {w}건")
                 df = _read_gapgo_log()
         with c2:
             if not df.empty:
-                st.download_button("📥 기록 CSV 다운로드", df.to_csv(index=False).encode("utf-8-sig"),
+                st.download_button("기록 CSV 다운로드", df.to_csv(index=False).encode("utf-8-sig"),
                                    file_name="gapgo_log.csv", mime="text/csv", use_container_width=True)
         up = st.file_uploader("이전 기록 CSV 병합", type=["csv"], key="gapgo_upload")
         if up is not None and st.button("업로드한 기록 병합", key="merge_gapgo"):
@@ -7388,10 +7404,10 @@ def render_gapgo_log_panel():
 # 통합 스캐너 v1.0 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 '종목별 점수 하나'로 합친 스캐너
 #
 # 후보 풀(합집합·중복 제거, 어디서 잡혔는지 태그):
-#   프리마켓: 프리마켓 갭 종목                          🌅갭
-#   정규장  : 정규장 급등 종목(등락률 상위)              🚀급등
-#   마감 후 : 당일 급등 종목 + 거래량 급증 상위 종목     🚀급등 · 📈거래량급증  (내일 후보)
-#   모든 시간대 공통 태그: 📈거래량급증(3일/3개월 평균 ≥3배) · 🧱수축(일봉 돌파임박 점수 ≥50) · 📰촉매
+#   프리마켓: 프리마켓 갭 종목                          갭
+#   정규장  : 정규장 급등 종목(등락률 상위)              급등
+#   마감 후 : 당일 급등 종목 + 거래량 급증 상위 종목     급등 · 거래량급증  (내일 후보)
+#   모든 시간대 공통 태그: 거래량급증(3일/3개월 평균 ≥3배) · 수축(일봉 돌파임박 점수 ≥50) · 촉매
 #
 # 점수 100 = 촉매 + 거래 활동 + 강도 + 움직임 크기 + 매집 흔적 + 수급 구조 (시간대별 가중치가 다름)
 #   · 거래 활동: 프리마켓·정규장은 '시간 보정'한 예상 마감 거래량 ÷ 평균 (이른 시각의 적은 거래량을 불리하게 보지 않음)
@@ -7399,7 +7415,7 @@ def render_gapgo_log_panel():
 #   · 매집 흔적: 거래량 급증 배율(3일/3개월)과 일봉 수축·돌파임박 점수 — 마감 후(내일 준비)에서 비중이 가장 큼
 #   · 수급 구조: 소형=플로트·회전율, 대형·중형(시총 20억$↑ 또는 플로트 상한 초과)=시장(QQQ) 동조
 # 제외·등급 상한·시장 보정은 v0.4와 같은 규칙(증자·역분할·인수확정·상장폐지 제외, 1달러 미만·고점 꺾임 등은 최대 B).
-# ⚠️ 가중치·곡선·임계값은 모두 초안입니다. 하단 '예측 검증'(세션·시간대·등급별 적중률)로 보정하세요.
+# 가중치·곡선·임계값은 모두 초안입니다. 하단 '예측 검증'(세션·시간대·등급별 적중률)로 보정하세요.
 # ════════════════════════════════════════════════════════════════
 UNI_SESSION_LABEL = {"pre": "프리마켓", "regular": "정규장", "after": "마감 후(내일 준비)"}
 UNI_WEIGHTS = {
@@ -7413,7 +7429,7 @@ UNI_WEIGHTS = {
 # 정규장 시작(09:30 ET=570분)부터 해당 시각(ET 하루 중 분)까지 거래량이 하루 전체의 몇 %쯤 쌓이는지 '가정' 곡선(U자형)
 UNI_REG_CURVE = ((570, 0.00), (600, 0.13), (630, 0.22), (690, 0.35), (750, 0.46), (810, 0.57),
                  (870, 0.70), (900, 0.78), (930, 0.88), (960, 1.00))
-UNI_MIN_VSURGE_TAG = 3.0     # 이 배율 이상이면 📈거래량급증 태그
+UNI_MIN_VSURGE_TAG = 3.0     # 이 배율 이상이면 거래량급증 태그
 UNI_VSURGE_FULL = 5.0        # 이 배율에서 매집 점수 만점
 
 
@@ -7512,17 +7528,17 @@ def uni_tags(session: str, move, vol_surge_ratio, daily_score, catalyst_score, l
     """어떤 신호에서 잡혔는지 보여주는 태그."""
     tags = []
     if session == "pre" and move is not None and move >= 3:
-        tags.append("🌅갭")
+        tags.append("갭")
     if session in ("regular", "after") and move is not None and move >= 5:
-        tags.append("🚀급등")
+        tags.append("급등")
     if session == "pre" and last_pct is not None and last_pct >= 10:
-        tags.append("🚀전일급등")
+        tags.append("전일급등")
     if vol_surge_ratio is not None and vol_surge_ratio >= UNI_MIN_VSURGE_TAG:
-        tags.append("📈거래량급증")
+        tags.append("거래량급증")
     if daily_score is not None and daily_score >= 50:
-        tags.append("🧱수축")
+        tags.append("수축")
     if catalyst_score and catalyst_score > 0:
-        tags.append("📰촉매")
+        tags.append("촉매")
     return tags
 
 
@@ -7924,7 +7940,7 @@ _UNI_ICON_PATHS = {
     "alert": "M12 9v4 M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z M12 16h.01",
 }
 # uni_tags()가 만드는 이모지 태그 → 아이콘 (데이터/표의 '신호' 열은 기존 이모지 문자열 그대로 두고, 화면에 그릴 때만 바꾼다)
-_UNI_TAG_ICON = {"🌅": "sunrise", "🚀": "rocket", "📈": "trending-up", "🧱": "squeeze", "📰": "news"}
+_UNI_TAG_ICON = {"갭": "sunrise", "급등": "rocket", "전일급등": "rocket", "거래량급증": "trending-up", "수축": "squeeze", "촉매": "news"}
 
 
 def _uni_icon(name: str) -> str:
@@ -7938,10 +7954,9 @@ def _uni_icon(name: str) -> str:
 
 
 def _uni_tag_chip(tag: str) -> str:
-    """'🚀급등' 같은 태그 하나를 [아이콘 + 글자] 칩으로."""
-    ic = _UNI_TAG_ICON.get(tag[:1], "")
-    txt = tag[1:] if ic else tag
-    return f'<span class="ur-c">{_uni_icon(ic) if ic else ""}{_safe_html(txt)}</span>'
+    """'급등' 같은 태그 하나를 [아이콘 + 글자] 칩으로."""
+    ic = _UNI_TAG_ICON.get(tag, "")
+    return f'<span class="ur-c">{_uni_icon(ic) if ic else ""}{_safe_html(tag)}</span>'
 
 
 def _uni_row_html(r: dict, sess: str) -> str:
@@ -8023,7 +8038,7 @@ def render_unified_scanner():
     """통합 스캐너 — 급등주 검색기 + 거래량 급증 + 급등 전 매집을 종목별 점수 하나로 합친 화면 (모바일: 촘촘한 리스트).
     시간대(프리마켓/정규장/마감 후)를 자동으로 감지하고, 직접 바꿀 수도 있다."""
     ui_section_header(mono_icon_badge("target", color="var(--c-violet)"), "통합 스캐너", "icon-violet", "title-violet")
-    with st.expander("ℹ️ 이 화면은 무엇인가요?", expanded=False):
+    with st.expander("ℹ 이 화면은 무엇인가요?", expanded=False):
         st.caption("급등 신호(갭·등락률), 거래량 급증, 매집 흔적(일봉 수축·돌파 임박)을 종목별 점수 하나로 합쳤습니다. "
                    "프리마켓·정규장·마감 후(내일 준비)에 따라 점수 가중치가 달라지고, 증자·역분할·인수확정·상장폐지 종목은 먼저 제외합니다. "
                    "점수는 후보 선별용이며, 진입은 프리마켓 고점·VWAP 같은 가격 반응을 확인한 뒤에 판단하세요. "
@@ -8040,7 +8055,7 @@ def render_unified_scanner():
         st.info("지금 시각과 다른 시간대를 선택했습니다. 해당 시간대의 가장 최근 데이터 기준으로 계산되고, 예측 검증 기록은 남지 않을 수 있습니다.")
 
     pre = (session == "pre")
-    with st.expander("⚙️ 필터 (기본값으로도 충분해요)", expanded=False):
+    with st.expander("필터 (기본값으로도 충분해요)", expanded=False):
         with st.container(key="uni_filters"):
             c1, c2 = st.columns(2)
             with c1:
@@ -8081,7 +8096,7 @@ def render_unified_scanner():
 
     out = st.session_state.get("uni_out")
     if out is None:
-        st.info("조건을 설정하고 '🔮 스캔 실행'을 눌러 주세요.")
+        st.info("조건을 설정하고 '스캔 실행'을 눌러 주세요.")
         render_gapgo_log_panel()
         return
     sess = out["session"]
@@ -8118,7 +8133,7 @@ def render_unified_scanner():
     st.session_state["gg_excluded_delist"] = out["delist_excluded"]
     render_excluded_expander("gg_excluded_delist")
     if out["excluded"]:
-        with st.expander(f"🚫 제외된 종목 {len(out['excluded'])}개 (거래량·플로트·증자·역분할)", expanded=False):
+        with st.expander(f"제외된 종목 {len(out['excluded'])}개 (거래량·플로트·증자·역분할)", expanded=False):
             st.dataframe(pd.DataFrame(out["excluded"]), use_container_width=True, hide_index=True)
             st.caption("뉴스·공시 키워드 기반이라 오탐이 있을 수 있습니다. 증자 공시는 야후가 제공하는 SEC 서식 목록 기준이며 8-K 5.03(정관 변경) 같은 항목은 감지하지 못합니다.")
     if not filtered:
@@ -8132,7 +8147,7 @@ def render_unified_scanner():
             fl = r.get("float_shares")
             hi_, vw_, px_ = r.get("u_high"), r.get("u_vwap"), r.get("u_price")
             row = {
-                "⭐": "★" if r["ticker"] in st.session_state.favorites else "",
+                "★": "★" if r["ticker"] in st.session_state.favorites else "",
                 "신호": r.get("u_tags", ""), "티커": r["ticker"], "종목명": (r.get("name") or "")[:24],
                 "모드": "대형·중형" if r.get("u_mode") == "large" else "소형", "등급": r["u_grade"], "점수": r["u_score"],
                 "가격": px_, "갭/등락(%)": r.get("u_move"),
@@ -8215,7 +8230,7 @@ def _render_reverse_split_banner(splits: list):
         link_html = f"<br><a class='news-link' href='{_su}' target='_blank'>관련 뉴스 원문 보기 →</a>" if _su else ""
         st.markdown(f"""
         <div class="split-banner">
-            <div class="split-banner-title">⚠️ 주식병합(리버스 스플릿) 관련 뉴스 감지{pub_html}</div>
+            <div class="split-banner-title">주식병합(리버스 스플릿) 관련 뉴스 감지{pub_html}</div>
             <div class="split-banner-body">{date_html}{ratio_html}<br>{_safe_html(s['title'])}{link_html}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -8252,7 +8267,7 @@ def render_news_section(ticker_input):
         for news_item, title_ko in zip(parsed_list, translated):
             st.markdown(f"""
             <div class="news-card">
-                <div class="news-meta">📰 {_safe_html(news_item['publisher'])}</div>
+                <div class="news-meta">{_safe_html(news_item['publisher'])}</div>
                 <div class="news-title">{_safe_html(title_ko)}</div>
                 <a class="news-link" href="{_safe_url(news_item['link'])}" target="_blank">기사 원문 보기 →</a>
             </div>
@@ -8263,22 +8278,22 @@ def render_news_section(ticker_input):
         for n in news_data:
             if n['sentiment'] == "Positive":
                 card_cls  = "news-card pos-card"
-                sent_html = '<span class="sentiment-badge sent-pos">🟢 호재</span>'
+                sent_html = '<span class="sentiment-badge sent-pos">호재</span>'
             elif n['sentiment'] == "Negative":
                 card_cls  = "news-card neg-card"
-                sent_html = '<span class="sentiment-badge sent-neg">🔴 악재</span>'
+                sent_html = '<span class="sentiment-badge sent-neg">악재</span>'
             elif n['sentiment'] == "Neutral":
                 card_cls  = "news-card neu-card"
-                sent_html = '<span class="sentiment-badge sent-neu">🟡 중립</span>'
+                sent_html = '<span class="sentiment-badge sent-neu">중립</span>'
             else:
                 card_cls  = "news-card"
                 sent_html = '<span style="color:rgba(148,163,184,0.6);font-size:0.72rem;">⚪ 분석 대기</span>'
 
-            impact_html = ' <span class="impact-badge">⚡ HIGH IMPACT</span>' if n['impact'] == "High Impact" else ""
+            impact_html = ' <span class="impact-badge">HIGH IMPACT</span>' if n['impact'] == "High Impact" else ""
 
             st.markdown(f"""
             <div class="{card_cls}">
-                <div class="news-meta">📅 {_safe_html(n['date'])} &nbsp;{sent_html}{impact_html}</div>
+                <div class="news-meta">{_safe_html(n['date'])} &nbsp;{sent_html}{impact_html}</div>
                 <div class="news-title">{_safe_html(n['title'])}</div>
                 <div class="news-orig">{_safe_html(n['title_en'])}</div>
                 <a class="news-link" href="{_safe_url(n['link'])}" target="_blank">스톡타이탄 원문 보기 →</a>
@@ -8292,7 +8307,9 @@ def render_news_section(ticker_input):
 # 본문 상단 — 화면 선택 · 종목 검색 · 즐겨찾기 칩
 # 사이드바는 모바일에서 햄버거 메뉴 뒤로 숨으므로, 핵심 조작은 본문에 둔다.
 # ════════════════════════════════════════════════════════════════
-_SCREEN_MAIN = "📈 종목 분석"
+_SCREEN_MAIN = "종목 분석"
+_SCREEN_SCAN = "통합 스캐너"
+_SCREEN_HEAT = "섹터 히트맵"
 
 def _goto_main():
     st.session_state["active_screen"] = _SCREEN_MAIN
@@ -8312,9 +8329,12 @@ def _pick_fav():
         st.session_state["has_searched"] = True
         st.session_state["active_screen"] = _SCREEN_MAIN
 
+if st.session_state.get("active_screen") not in (_SCREEN_MAIN, _SCREEN_SCAN, _SCREEN_HEAT):
+    st.session_state["active_screen"] = _SCREEN_MAIN
+
 with st.container(key="topnav"):
     st.segmented_control(
-        "화면", [_SCREEN_MAIN, "🎯 통합 스캐너", "🌡️ 섹터 히트맵"],
+        "화면", [_SCREEN_MAIN, _SCREEN_SCAN, _SCREEN_HEAT],
         key="active_screen", required=True, label_visibility="collapsed",
     )
 
@@ -8362,10 +8382,10 @@ if fav_button_clicked:
 # 화면 전환 — 한 번에 한 화면만 렌더링 (통합 스캐너 · 섹터 히트맵 · 종목 분석)
 # ════════════════════════════════════════════════════════════════
 _cur_screen = st.session_state.get("active_screen", _SCREEN_MAIN)
-if _cur_screen == "🎯 통합 스캐너":
+if _cur_screen == _SCREEN_SCAN:
     render_unified_scanner()
     st.stop()
-elif _cur_screen == "🌡️ 섹터 히트맵":
+elif _cur_screen == _SCREEN_HEAT:
     render_sector_heatmap()
     st.stop()
 
@@ -8397,12 +8417,12 @@ if st.session_state.get("has_searched"):
             usd_krw       = _fut_fx.result()
 
         if hist.empty:
-            st.error("❌ 올바르지 않은 티커명이거나 데이터를 불러올 수 없습니다. 영문 티커를 확인해 주세요.")
+            st.error("올바르지 않은 티커명이거나 데이터를 불러올 수 없습니다. 영문 티커를 확인해 주세요.")
         else:
             hist = hist.dropna()
 
             if len(hist) < 2:
-                st.error("❌ 데이터가 너무 적습니다. 상장된 지 얼마 안 된 종목이거나 거래 정지 상태일 수 있습니다.")
+                st.error("데이터가 너무 적습니다. 상장된 지 얼마 안 된 종목이거나 거래 정지 상태일 수 있습니다.")
                 st.stop()
 
             hist      = calc_indicators(hist)
@@ -8481,15 +8501,15 @@ if st.session_state.get("has_searched"):
             st.markdown("---")
             info_view = st.segmented_control(
                 "정보 보기",
-                ["📰 뉴스 & 호재", "💬 소셜 미디어", "📷 차트 해석"],
-                default="📰 뉴스 & 호재",
+                ["뉴스 & 호재", "소셜 미디어", "차트 해석"],
+                default="뉴스 & 호재",
                 required=True,
                 key="info_view",
                 label_visibility="collapsed",
             )
-            if info_view == "📰 뉴스 & 호재":
+            if info_view == "뉴스 & 호재":
                 render_news_section(active_ticker)
-            elif info_view == "💬 소셜 미디어":
+            elif info_view == "소셜 미디어":
                 render_social_section(active_ticker)
             else:
                 render_chart_interpretation(active_ticker, hist, float(today['Close']))
