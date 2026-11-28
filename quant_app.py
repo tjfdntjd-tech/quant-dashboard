@@ -6172,22 +6172,22 @@ def render_technical_analysis(ticker_input, hist, today, yesterday, vol_ratio,
 # 렌더링 함수 — 섹터 히트맵
 # ════════════════════════════════════════════════════════════════
 def _sector_color(pct: float) -> tuple[str, str]:
-    """등락률에 따른 (배경색, 글자색). 한국식: 상승=연한 빨강, 하락=연한 파랑.
-    등락 폭이 클수록 배경이 조금 진해지고, 글자는 항상 같은 계열의 아주 진한 색(대비 7:1 이상)."""
+    """등락률에 따른 (배경색, 글자색). 한국식: 상승=빨강, 하락=파랑. 폭이 클수록 색이 진해진다.
+    모든 구간의 글자 대비를 WCAG AAA 기준(7:1 이상)으로 맞췄다: 진한 배경은 흰 글자, 연한 배경은 아주 진한 같은 계열 글자."""
     if pct >= 3.0:
-        return "#F7B2B2", "#650D0D"
+        return "#7F1212", "#FFFFFF"
     elif pct >= 1.5:
-        return "#FAC9C9", "#721010"
+        return "#A61B1B", "#FFFFFF"
     elif pct >= 0.3:
-        return "#FDE2E2", "#821313"
+        return "#F6B1AB", "#3D0707"
     elif pct >= -0.3:
         return "#EEF0F3", "#2B3440"
     elif pct >= -1.5:
-        return "#E0EDFC", "#0F3C78"
+        return "#B9D3FA", "#08244D"
     elif pct >= -3.0:
-        return "#C5DDFA", "#0C3670"
+        return "#1350B0", "#FFFFFF"
     else:
-        return "#A8CAF5", "#082C62"
+        return "#0A3480", "#FFFFFF"
 
 def render_sector_heatmap():
     """S&P 500 섹터 히트맵 (당일/1주/1개월 탭)"""
@@ -6211,9 +6211,9 @@ def render_sector_heatmap():
             cells_html += f"""
             <div class="sector-cell" style="background:{bg} !important; border-color:{color}55 !important;">
                 <div class="sector-name" style="color:{color} !important;font-weight:700;">{_safe_html(s['sector'])}</div>
-                <div class="sector-ticker" style="color:{color} !important;opacity:.85;">{_safe_html(s['ticker'])}</div>
+                <div class="sector-ticker" style="color:{color} !important;font-weight:600;">{_safe_html(s['ticker'])}</div>
                 <div class="sector-pct" style="color:{color} !important;font-weight:800;">{arrow} {abs(pct):.2f}%</div>
-                <div class="sector-sub" style="color:{color} !important;opacity:.9;">${s['price']}</div>
+                <div class="sector-sub" style="color:{color} !important;font-weight:600;">${s['price']}</div>
             </div>"""
 
         _LEG = [("≥ +3%", 3.5), ("+1.5~3%", 2.0), ("+0.3~1.5%", 0.8), ("±0.3%", 0.0),
@@ -6232,7 +6232,7 @@ def render_sector_heatmap():
         def _hm_card(title, s, bg_c, txt_c, arrow):
             return (
                 f'<div class="v4-hm-card" style="background:{bg_c} !important;border-color:{txt_c}55 !important;margin:0 0 .6rem;">'
-                f'<div class="v4-hm-label" style="color:{txt_c} !important;opacity:.85;font-weight:600;">{title}</div>'
+                f'<div class="v4-hm-label" style="color:{txt_c} !important;font-weight:600;">{title}</div>'
                 f'<div class="v4-hm-name" style="color:{txt_c} !important;font-weight:700;">{_safe_html(s["sector"])} ({_safe_html(s["ticker"])})</div>'
                 f'<div class="v4-hm-val" style="color:{txt_c} !important;font-weight:800;">{arrow} {abs(s[key]):.2f}%</div>'
                 '</div>'
