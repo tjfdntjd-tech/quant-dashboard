@@ -396,7 +396,9 @@ def fetch_top_gainers(min_pct: float, min_price: float, max_price: float,
             EquityQuery('eq',  ['region',          'us']),
         ])
         result = yf.screen(query, sortField='percentchange', sortAsc=False, size=limit)
-        quotes = (result or {}).get('quotes', [])
+        if not isinstance(result, dict) or 'quotes' not in result:
+            raise RuntimeError("야후 스크리너 응답 없음(요청 제한 또는 필드 변경 가능성)")
+        quotes = result.get('quotes') or []
         out = []
         for q in quotes:
             out.append({
@@ -411,7 +413,7 @@ def fetch_top_gainers(min_pct: float, min_price: float, max_price: float,
         return out
     except Exception as _e:
         _log_err("fetch_top_gainers", _e)
-        return []
+        raise       # 예외는 st.cache_data가 저장하지 않으므로, 실패한 빈 결과가 2분간 재사용되지 않는다
 
 def compute_pm_stats(raw):
     """1분봉(prepost 포함, 인덱스는 미국 동부 시간)에서 가장 최근 거래일의 프리마켓(04:00~09:30 ET) 통계를 계산한다.
@@ -479,6 +481,7 @@ def fetch_premarket_gappers(min_gap: float, min_price: float, max_price: float,
     query = EquityQuery('and', conds)
 
     cand = {}
+    _screen_errs = []
     for sort_field in ('percentchange', 'avgdailyvol3m'):
         try:
             res = yf.screen(query, sortField=sort_field, sortAsc=False, size=100)
@@ -487,21 +490,29 @@ def fetch_premarket_gappers(min_gap: float, min_price: float, max_price: float,
                 if sym and sym not in cand:
                     cand[sym] = q
         except Exception as _e:
+            _screen_errs.append(_e)
             _log_err("fetch_premarket_gappers:screen:" + sort_field, _e)
     if not cand:
+        if _screen_errs:
+            raise RuntimeError("프리마켓 후보 스크리너 실패: " + _redact(_screen_errs[0]))
         return []
+
+    _pm_errs = []
 
     def _pm_stats(sym: str):
         """한 종목의 프리마켓 통계(compute_pm_stats). 프리마켓 거래가 없으면 None."""
         try:
             return compute_pm_stats(yf.Ticker(sym).history(period="5d", interval="1m", prepost=True))
         except Exception as _e:
+            _pm_errs.append(_e)
             _log_err("fetch_premarket_gappers:" + sym, _e)
             return None
 
     syms = list(cand.keys())[:limit * 2]
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=8) as ex:
         stats = list(ex.map(_pm_stats, syms))
+    if syms and len(_pm_errs) >= max(3, len(syms) * 0.5):      # 절반 이상 조회 실패 = 요청 제한 등. 빈 결과를 캐시하지 않는다
+        raise RuntimeError(f"프리마켓 1분봉 조회 {len(_pm_errs)}/{len(syms)}건 실패(야후 요청 제한 가능성): " + _redact(_pm_errs[0]))
 
     out = []
     for sym, st_ in zip(syms, stats):
@@ -552,7 +563,9 @@ def fetch_volume_surge_candidates(min_price: float, max_price: float,
             EquityQuery('gt',  ['dayvolume',     min_day_volume]),
         ])
         result = yf.screen(query, sortField='dayvolume', sortAsc=False, size=limit)
-        quotes = (result or {}).get('quotes', [])
+        if not isinstance(result, dict) or 'quotes' not in result:
+            raise RuntimeError("야후 스크리너 응답 없음(요청 제한 또는 필드 변경 가능성)")
+        quotes = result.get('quotes') or []
         out = []
         for q in quotes:
             out.append({
@@ -567,7 +580,7 @@ def fetch_volume_surge_candidates(min_price: float, max_price: float,
         return out
     except Exception as _e:
         _log_err("fetch_volume_surge_candidates", _e)
-        return []
+        raise
 
 @st.cache_data(ttl=120, show_spinner=False)
 def enrich_screener_results(tickers: tuple) -> dict:
@@ -696,10 +709,14 @@ def fetch_sector_data() -> list:
     return [r for r in results if r is not None]
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_yahoo_news_cached(ticker: str) -> list:
+    return yf.Ticker(ticker).news or []      # 실패하면 예외 → 캐시되지 않음
+
+
 def fetch_yahoo_news(ticker: str) -> list:
-    """yfinance 뉴스 목록 캐싱 — #14 try/except 추가"""
+    """yfinance 뉴스 목록. 실패(요청 제한 등)는 [] 로 돌려주되 캐시에는 남기지 않는다."""
     try:
-        return yf.Ticker(ticker).news or []
+        return _fetch_yahoo_news_cached(ticker)
     except Exception as _e:
         _log_err("fetch_yahoo_news", _e)
         return []
@@ -1372,27 +1389,325 @@ def _age_text(hours: float) -> str:
     return f"{hours / 24:.0f}일 전"
 
 
-def detect_catalysts(ticker: str, days: int = 7) -> list:
-    """최근 days일 야후 뉴스에서 재료를 분류해 최신순으로 반환.
-    각 항목: {key, label, good, hours(몇 시간 전), age(문자열), title, link}"""
-    now = pd.Timestamp.now(tz="UTC")
+def _titan_headline_dt(link_tag):
+    """StockTitan 목록의 게재 시각(UTC Timestamp). datetime 속성이 있으면 시각까지, 날짜만 있으면 그날 ET 0시로 본다."""
+    parent = link_tag.parent
+    for _ in range(4):
+        if parent is None:
+            break
+        el = parent.find(attrs={"datetime": True}) or parent.find(class_=lambda x: x and any(
+            kw in x.lower() for kw in ("date", "time", "published", "when")))
+        if el:
+            raw = (el.get("datetime") or el.text or "").strip()
+            dt = pd.to_datetime(raw, errors="coerce")
+            if pd.notna(dt):
+                return dt.tz_convert("UTC") if dt.tzinfo else dt.tz_localize("America/New_York").tz_convert("UTC")
+        parent = parent.parent
+    return None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _fetch_titan_headlines_cached(ticker: str) -> list:
+    url = f"https://www.stocktitan.net/overview/{ticker}/"
+    resp = get_http_session().get(url, headers=_random_headers(), timeout=6)
+    if resp.status_code != 200:
+        raise RuntimeError(f"StockTitan HTTP {resp.status_code}")       # 실패는 캐시하지 않는다
+    soup = BeautifulSoup(resp.text, "html.parser")
+    pat = re.compile(rf"/news/{re.escape(ticker)}/(?!page-)[^/]+\.html$", re.IGNORECASE)
+    out, seen = [], set()
+    for a in soup.find_all("a", href=pat):
+        title, href = a.text.strip(), a["href"]
+        link = href if href.startswith("http") else "https://www.stocktitan.net" + href
+        if not title or link in seen:
+            continue
+        seen.add(link)
+        dt = _titan_headline_dt(a)
+        out.append({"title": title, "link": link, "dt": dt})
+        if len(out) >= 10:
+            break
+    return out
+
+
+def fetch_titan_headlines(ticker: str) -> list:
+    """StockTitan 헤드라인 [{title, link, dt}] — 번역·상세 조회 없이 목록만 (스캐너용, 가볍다). 실패하면 []."""
+    try:
+        return _fetch_titan_headlines_cached(ticker)
+    except Exception as _e:
+        _log_err("fetch_titan_headlines:" + ticker, _e)
+        return []
+
+
+
+# ════════════════════════════════════════════════════════════════
+# 보도자료 와이어 RSS + SEC 8-K 피드 (재료 판정 보조 소스)
+#  · 와이어: GlobeNewswire·PR Newswire 공개 RSS. 피드 하나에 최근 20건 안팎만 있어서 앱이 켜져 있는 동안
+#    계속 모아 두고(7일 보관), 본문의 "(NASDAQ: XXXX)" 표기로 종목에 연결한다. 앱을 재시작하면 모은 기록은 비워진다.
+#  · SEC: 종목별 8-K Atom 피드. 공시 항목 번호(Item 2.02 등)로 재료 종류를 가른다.
+#    SEC 정책상 연락처가 든 User-Agent 가 필요하다 → 환경변수/Secrets 의 SEC_USER_AGENT 에 "이름 이메일" 설정.
+# ════════════════════════════════════════════════════════════════
+import xml.etree.ElementTree as _ET
+
+# Business Wire 는 고정 공개 주소를 확인하지 못해 뺐다. 주소를 알면 이 목록에 추가하면 된다.
+_WIRE_FEEDS = [
+    ("GlobeNewswire", "https://www.globenewswire.com/RssFeed/orgclass/1"),            # 상장사 뉴스
+    ("GlobeNewswire", "https://www.globenewswire.com/RssFeed"),                       # 전체
+    ("GlobeNewswire", "https://www.globenewswire.com/RssFeed/subjectcode/90"),        # 임상 시험
+    ("PR Newswire", "https://www.prnewswire.com/rss/news-releases-list.rss"),
+    ("PR Newswire", "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss"),
+    ("PR Newswire", "https://www.prnewswire.com/rss/health-latest-news/health-latest-news-list.rss"),
+]
+_WIRE_KEEP_DAYS = 8
+_WIRE_MIN_INTERVAL = 120          # 초 — 이보다 자주 피드를 다시 받지 않는다
+_WIRE_TICKER_RE = re.compile(
+    r"(?i:\b(?:NASDAQ(?:\s*(?:CM|GM|GS|Capital Market|Global Market|Global Select Market))?|NYSE(?:\s*(?:American|MKT|Arca))?"
+    r"|NYSEAMERICAN|AMEX|OTCQB|OTCQX|OTC\s*(?:Pink|Markets)?))\s*[:：]\s*([A-Z]{1,5}(?:[.\-][A-Z])?)\b")
+
+
+@st.cache_resource
+def _wire_store() -> dict:
+    return {"lock": threading.Lock(), "items": {}, "last": 0.0, "fail": [], "ok": 0}
+
+
+def _xml_local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower() if isinstance(tag, str) else ""
+
+
+def _norm_ticker(t: str) -> str:
+    return str(t or "").upper().replace("-", ".").strip()
+
+
+def parse_feed_entries(xml_bytes: bytes) -> list:
+    """RSS(<item>)·Atom(<entry>) 공통 파서 → [{title, link, desc, cats, date}]. XML 이 아니면 ParseError."""
+    root = _ET.fromstring(xml_bytes)
     out = []
+    for el in root.iter():
+        if _xml_local(el.tag) not in ("item", "entry"):
+            continue
+        d = {"title": "", "link": "", "desc": "", "cats": [], "date": ""}
+        for ch in el:
+            k = _xml_local(ch.tag)
+            txt = (ch.text or "").strip()
+            if k == "title":
+                d["title"] = txt
+            elif k == "link":
+                d["link"] = (ch.get("href") or txt).strip()
+            elif k in ("description", "summary", "content"):
+                d["desc"] = d["desc"] or txt
+            elif k == "category":
+                d["cats"].append(txt or ch.get("term") or "")
+            elif k in ("pubdate", "published", "updated", "date") and not d["date"]:
+                d["date"] = txt
+        if d["title"]:
+            out.append(d)
+    return out
+
+
+def extract_wire_tickers(title: str, desc: str, cats: list) -> set:
+    """제목·카테고리에서 찾은 티커를 우선 쓰고, 없으면 본문 첫 번째 표기(보통 발행사)만 쓴다."""
+    head = " ".join([title] + [c for c in cats if c])
+    found = {_norm_ticker(m) for m in _WIRE_TICKER_RE.findall(head)}
+    if not found:
+        body = re.sub(r"<[^>]+>", " ", _html_lib.unescape(desc or ""))
+        m = _WIRE_TICKER_RE.search(body)
+        if m:
+            found = {_norm_ticker(m.group(1))}
+    return found
+
+
+def _wire_fetch_one(name: str, url: str) -> list:
+    resp = get_http_session().get(url, headers=_random_headers(), timeout=8)
+    if resp.status_code != 200:
+        raise RuntimeError(f"{name} HTTP {resp.status_code}")
+    out = []
+    for e in parse_feed_entries(resp.content):
+        dt = pd.to_datetime(e["date"], errors="coerce", utc=True) if e["date"] else None
+        if dt is None or pd.isna(dt):
+            continue
+        tks = extract_wire_tickers(e["title"], e["desc"], e["cats"])
+        if tks:
+            out.append({"title": _html_lib.unescape(e["title"]), "link": e["link"], "dt": dt,
+                        "tickers": tks, "src": name})
+    return out
+
+
+def _wire_refresh() -> None:
+    """피드를 (최대 2분에 한 번) 받아 저장소에 누적한다. 여러 스레드가 불러도 한 번만 받는다."""
+    stt = _wire_store()
+    with stt["lock"]:
+        if time.time() - stt["last"] < _WIRE_MIN_INTERVAL:
+            return
+        stt["last"] = time.time()          # 실패해도 곧바로 재시도하지 않는다
+        fails, ok = [], 0
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futs = {ex.submit(_wire_fetch_one, n, u): (n, u) for n, u in _WIRE_FEEDS}
+            for fu in as_completed(futs):
+                n, u = futs[fu]
+                try:
+                    for it in fu.result():
+                        stt["items"][it["link"] or it["title"]] = it
+                    ok += 1
+                except Exception as _e:
+                    fails.append(f"{n}({u.rsplit('/', 1)[-1] or 'RssFeed'})")
+                    _log_err("wire_feed:" + u, _e)
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=_WIRE_KEEP_DAYS)
+        stt["items"] = {k: v for k, v in stt["items"].items() if v["dt"] >= cutoff}
+        stt["fail"], stt["ok"] = fails, ok
+
+
+def fetch_wire_items(ticker: str) -> list:
+    """보도자료 와이어에서 모아 둔 이 종목의 헤드라인 [{title, link, dt, src}]."""
+    try:
+        _wire_refresh()
+        t = _norm_ticker(ticker)
+        return [v for v in _wire_store()["items"].values() if t in v["tickers"]]
+    except Exception as _e:
+        _log_err("fetch_wire_items:" + str(ticker), _e)
+        return []
+
+
+def wire_status_text() -> str:
+    """피드 일부/전체가 실패했을 때 화면에 보여 줄 한 줄 안내(정상이면 빈 문자열)."""
+    stt = _wire_store()
+    if not stt["fail"]:
+        return ""
+    return ("보도자료 피드 " + ("전체" if stt["ok"] == 0 else "일부") + " 조회 실패: " + ", ".join(stt["fail"][:4])
+            + " — 재료 판정에서 이 소스는 빠졌습니다.")
+
+
+# ── SEC 8-K ──────────────────────────────────────────────
+def _sec_headers() -> dict:
+    ua = os.environ.get("SEC_USER_AGENT", "")
+    if not ua:
+        try:
+            ua = str(st.secrets.get("SEC_USER_AGENT", ""))
+        except Exception:
+            ua = ""
+    return {"User-Agent": ua or "QuantApp/1.0 (set SEC_USER_AGENT: name email)", "Accept": "application/atom+xml,text/xml,*/*"}
+
+
+_SEC_THROTTLE = {"lock": threading.Lock(), "t": 0.0}
+
+
+def _sec_throttle(gap: float = 0.15) -> None:
+    """SEC 공정 이용 한도(초당 10회)를 지키기 위해 요청 사이에 간격을 둔다."""
+    with _SEC_THROTTLE["lock"]:
+        wait = _SEC_THROTTLE["t"] + gap - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        _SEC_THROTTLE["t"] = time.time()
+
+
+# 8-K 항목 번호 → (분류 키, 표시 이름, 호재 여부). 7.01·8.01·9.01·5.xx 는 내용을 알 수 없어 제외(본문은 와이어·뉴스가 담당).
+_SEC_ITEM_RULES = {
+    "2.02": ("earnings", "실적(8-K 2.02)", True),
+    "1.01": ("contract", "계약(8-K 1.01)", True),
+    "2.01": ("contract", "인수완료(8-K 2.01)", True),
+    "3.02": ("offering", "지분 발행(8-K 3.02)", False),
+    "2.03": ("offering", "채무·자금조달(8-K 2.03)", False),
+    "3.03": ("offering", "주주권리 변경(8-K 3.03)", False),
+    "3.01": ("negative", "상장유지 통보(8-K 3.01)", False),
+    "1.03": ("negative", "파산(8-K 1.03)", False),
+    "1.02": ("negative", "계약 해지(8-K 1.02)", False),
+    "4.02": ("negative", "재무제표 정정(8-K 4.02)", False),
+    "2.06": ("negative", "손상차손(8-K 2.06)", False),
+}
+
+
+def classify_8k_items(items: list):
+    """8-K 항목 번호 목록 → (키, 라벨, 호재) 또는 None. 자금조달 성격 항목이 하나라도 있으면 계약(1.01)도 악재로 본다."""
+    codes = [c for c in items if c in _SEC_ITEM_RULES]
+    if not codes:
+        return None
+    for c in ("3.02", "2.03", "3.03", "3.01", "1.03", "4.02", "2.06", "1.02"):      # 악재 우선
+        if c in codes:
+            return _SEC_ITEM_RULES[c]
+    for c in ("2.02", "1.01", "2.01"):
+        if c in codes:
+            return _SEC_ITEM_RULES[c]
+    return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fetch_sec_8k_cached(ticker: str) -> list:
+    url = ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=" + requests.utils.quote(ticker)
+           + "&type=8-K&dateb=&owner=include&count=20&output=atom")
+    _sec_throttle()
+    resp = get_http_session().get(url, headers=_sec_headers(), timeout=8)
+    if resp.status_code != 200:
+        raise RuntimeError(f"SEC HTTP {resp.status_code}")           # 429·403 등은 캐시하지 않는다
+    try:
+        entries = parse_feed_entries(resp.content)
+    except _ET.ParseError:
+        return []                                                     # 없는 티커 등은 HTML 안내 페이지 → 공시 없음으로 처리
+    out = []
+    for e in entries:
+        body = re.sub(r"<[^>]+>", "\n", _html_lib.unescape(e["desc"] or ""))
+        items = re.findall(r"Item\s+(\d\.\d{2})", body)
+        cls = classify_8k_items(items)
+        dt = pd.to_datetime(e["date"], errors="coerce", utc=True) if e["date"] else None
+        if not cls or dt is None or pd.isna(dt):
+            continue
+        out.append({"title": "8-K " + ", ".join(f"Item {c}" for c in items if c in _SEC_ITEM_RULES),
+                    "link": e["link"], "dt": dt, "cls": cls})
+    return out
+
+
+def fetch_sec_8k_catalysts(ticker: str) -> list:
+    """종목의 최근 8-K 중 재료로 볼 수 있는 항목 [{title, link, dt, cls}]. 실패하면 []."""
+    try:
+        return _fetch_sec_8k_cached(_norm_ticker(ticker).replace(".", "-"))
+    except Exception as _e:
+        _log_err("fetch_sec_8k_catalysts:" + str(ticker), _e)
+        return []
+
+
+def _norm_title(t: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(t or "").lower())[:60]
+
+
+def detect_catalysts(ticker: str, days: int = 7) -> list:
+    """최근 days일 야후 뉴스 + StockTitan 헤드라인에서 재료를 분류해 최신순으로 반환(같은 제목은 1건으로).
+    각 항목: {key, label, good, hours(몇 시간 전), age(문자열), title, link, src}"""
+    now = pd.Timestamp.now(tz="UTC")
+    out, seen = [], set()
+
+    def _add(title, link, dt, src, cls=None):
+        if dt is None or not title:
+            return
+        hours = (now - dt).total_seconds() / 3600
+        if hours < 0:                       # 날짜만 있는 항목이 '오늘'로 해석돼 미래가 되는 경우
+            hours = 0.5
+        if hours > days * 24:
+            return
+        c = cls or classify_catalyst(title)
+        k = _norm_title(title)
+        if not c or k in seen:
+            return
+        seen.add(k)
+        out.append({"key": c[0], "label": c[1], "good": c[2], "hours": hours,
+                    "age": _age_text(hours), "title": title, "link": link, "src": src})
+
     try:
         for raw in fetch_yahoo_news(ticker) or []:
             p = parse_yahoo_news_item(raw)
-            dt = _news_dt(raw)
-            if dt is None:
-                continue
-            hours = (now - dt).total_seconds() / 3600
-            if hours < 0 or hours > days * 24:
-                continue
-            c = classify_catalyst(p.get("title", ""))
-            if not c:
-                continue
-            out.append({"key": c[0], "label": c[1], "good": c[2], "hours": hours,
-                        "age": _age_text(hours), "title": p.get("title", ""), "link": p.get("link", "")})
+            _add(p.get("title", ""), p.get("link", ""), _news_dt(raw), "Yahoo")
     except Exception as _e:
-        _log_err("detect_catalysts:" + ticker, _e)
+        _log_err("detect_catalysts:yahoo:" + ticker, _e)
+    try:
+        for h in fetch_wire_items(ticker) or []:
+            _add(h["title"], h["link"], h["dt"], h["src"])
+    except Exception as _e:
+        _log_err("detect_catalysts:wire:" + ticker, _e)
+    try:
+        for h in fetch_sec_8k_catalysts(ticker) or []:
+            _add(h["title"], h["link"], h["dt"], "SEC 8-K", cls=h["cls"])
+    except Exception as _e:
+        _log_err("detect_catalysts:sec:" + ticker, _e)
+    try:
+        for h in fetch_titan_headlines(ticker) or []:
+            _add(h["title"], h["link"], h["dt"], "StockTitan")
+    except Exception as _e:
+        _log_err("detect_catalysts:titan:" + ticker, _e)
     out.sort(key=lambda x: x["hours"])
     return out
 
@@ -7085,7 +7400,12 @@ def run_gapgo_scan(min_gap: float, max_gap: float, price_lo: float, price_hi: fl
     반환: {rows(점수순), excluded(사유 목록), delist_excluded, regime, idx_pm, n_base, data_min(마지막 체결 ET 분)}"""
     regime = fetch_market_regime()
     idx_pm = fetch_index_premarket()
-    base = fetch_premarket_gappers(min_gap, price_lo, price_hi, int(min_pm_vol), 0 if include_large else int(max_cap_m))
+    try:
+        base = fetch_premarket_gappers(min_gap, price_lo, price_hi, int(min_pm_vol), 0 if include_large else int(max_cap_m))
+    except Exception as _e:
+        _log_err("run_gapgo_scan:candidates", _e)
+        st.error("프리마켓 후보 조회 실패: " + _safe_error_text(_e))
+        base = []
     base = [dict(r) for r in base if r.get("pm_gap", 0) <= max_gap]
     mins_seen = [r["pm_last_min"] for r in base if r.get("pm_last_min") is not None]
     result = {"rows": [], "excluded": [], "delist_excluded": [], "regime": regime, "idx_pm": idx_pm,
@@ -7748,6 +8068,7 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
     idx = fetch_index_session(session)
     cap_arg = 0 if include_large else int(max_cap_m)
     pool = {}                       # 티커 → 행 (중복 제거)
+    errors, funnel, notices = [], [], []   # 화면에 보여 줄 조회 오류 · 단계별 통과 수 · 부분 실패 안내
 
     def _add(r, src):
         t = r.get("ticker")
@@ -7760,13 +8081,25 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
 
     # ── ① 후보 수집 ─────────────────────────────────────
     if session == "pre":
-        for r in fetch_premarket_gappers(move_lo, price_lo, price_hi, int(min_volume), cap_arg):
+        try:
+            _gap_rows = fetch_premarket_gappers(move_lo, price_lo, price_hi, int(min_volume), cap_arg)
+        except Exception as _e:
+            _log_err("run_unified_scan:premarket", _e)
+            errors.append("프리마켓 후보 조회 실패 — " + _safe_error_text(_e))
+            _gap_rows = []
+        for r in _gap_rows:
             if r.get("pm_gap", 0) <= move_hi:
                 _add({**r, "u_move": r["pm_gap"], "u_volume": r["pm_volume"], "u_high": r.get("pm_high"),
                       "u_vwap": r.get("pm_vwap"), "u_last_min": r.get("pm_last_min"), "u_vol30": r.get("pm_vol_30"),
                       "u_active60": r.get("pm_active60"), "u_price": r["price"]}, "gap")
     else:
-        gainers = fetch_top_gainers(move_lo, price_lo, price_hi, int(min_volume), limit=60) or []
+        try:
+            gainers = fetch_top_gainers(move_lo, price_lo, price_hi, int(min_volume), limit=60) or []
+        except Exception as _e:
+            _log_err("run_unified_scan:gainers", _e)
+            errors.append("급등주 스크리너 조회 실패 — " + _safe_error_text(_e))
+            gainers = []
+        funnel.append(("야후 급등주 스크리너", len(gainers)))
         for r in gainers:
             if r.get("pct_change", 0) > move_hi:
                 continue
@@ -7774,7 +8107,13 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
                 continue
             _add(r, "gainer")
         if session == "after":
-            vs_base = fetch_volume_surge_candidates(price_lo, price_hi, int(min_volume)) or []
+            try:
+                vs_base = fetch_volume_surge_candidates(price_lo, price_hi, int(min_volume)) or []
+            except Exception as _e:
+                _log_err("run_unified_scan:vsurge", _e)
+                errors.append("거래량 급증 후보 조회 실패 — " + _safe_error_text(_e))
+                vs_base = []
+            funnel.append(("거래량 상위 후보(마감 후)", len(vs_base)))
             tick = tuple(x["ticker"] for x in vs_base if x.get("ticker"))
             enr0 = enrich_screener_results(tick) if tick else {}
             vs_hits = [x for x in vs_base if (enr0.get(x["ticker"]) or {}).get("vol_surge_ratio", 0) >= min_vsurge]
@@ -7784,8 +8123,9 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
                     continue
                 _add(x, "vsurge")
     base = list(pool.values())
+    funnel.append(("후보 풀(중복 제거 후)" if session != "pre" else "프리마켓 갭 후보(갭·거래량 통과)", len(base)))
     result = {"rows": [], "excluded": [], "delist_excluded": [], "regime": regime, "idx": idx,
-              "n_base": len(base), "session": session, "data_min": None}
+              "n_base": len(base), "session": session, "data_min": None, "errors": errors, "funnel": funnel, "notices": notices}
     if not base:
         return result
 
@@ -7825,10 +8165,12 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
                 kept.append(r)
 
     # ── ④ 상장폐지·피인수 확정·OTC 제외 ────────────────────
+    funnel.append(("평균거래량·플로트 통과", len(kept)))
     kept.sort(key=lambda r: abs(r.get("u_move") or 0), reverse=True)
     kept, delist_ex = filter_delisted(kept, limit=60)
     result["delist_excluded"] = delist_ex
     kept = kept[:60]
+    funnel.append(("상장폐지·피인수 제외 후", len(kept)))
     if not kept:
         return result
 
@@ -7837,6 +8179,9 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
     enriched = enrich_screener_results(tickers) or {}
     daily = prebreakout_enrich(tickers) or {}
     attach_catalysts(kept, limit=len(kept))
+    _ws = wire_status_text()
+    if _ws:
+        notices.append(_ws)
     with ThreadPoolExecutor(max_workers=8) as ex:
         splits = list(ex.map(lambda r: _recent_reverse_split(r["ticker"]), kept))
 
@@ -7876,6 +8221,7 @@ def run_unified_scan(session: str, move_lo: float, move_hi: float, price_lo: flo
                      "u_warn": res["warn"], "u_tags": " ".join(tags), "u_mode": res["mode"], "u_proj": res["proj_ratio"],
                      "u_vsr": vsr, "u_daily": d.get("score"), "u_hi20": hi20, "u_regime": regime.get("label")})
     rows.sort(key=lambda x: x["u_score"], reverse=True)
+    funnel.append(("증자·역분할 제외 후 점수 계산", len(rows)))
     result["rows"] = rows
     return result
 
@@ -8140,8 +8486,23 @@ def render_unified_scanner():
         with st.expander(f"제외된 종목 {len(out['excluded'])}개 (거래량·플로트·증자·역분할)", expanded=False):
             st.dataframe(pd.DataFrame(out["excluded"]), use_container_width=True, hide_index=True)
             st.caption("뉴스·공시 키워드 기반이라 오탐이 있을 수 있습니다. 증자 공시는 야후가 제공하는 SEC 서식 목록 기준이며 8-K 5.03(정관 변경) 같은 항목은 감지하지 못합니다.")
+    for _note in out.get("notices") or []:
+        st.caption("ℹ️ " + _note)
+    for _msg in out.get("errors") or []:
+        st.error(_msg + " (잠시 후 다시 실행하세요. 같은 오류가 계속되면 Manage app → Logs를 확인하세요.)")
+    _fun = out.get("funnel") or []
+    if _fun and (not filtered or out.get("errors")):
+        with st.expander("단계별 통과 수 (어디서 0이 되는지 확인)", expanded=not filtered):
+            st.dataframe(pd.DataFrame(_fun, columns=["단계", "종목 수"]), use_container_width=True, hide_index=True)
+            _hidden = len(rows) - len(filtered)
+            if rows and _hidden > 0:
+                _low = sum(1 for r in rows if r["u_score"] < min_score)
+                st.caption(f"점수 계산까지 통과한 {len(rows)}개 중 {_hidden}개가 보기 필터에 가려졌습니다 "
+                           f"(최소 점수 {min_score} 미만 {_low}개 · 선택하지 않은 등급 포함). "
+                           "'최소 점수'를 낮추거나 등급에 '—'를 추가해 보세요.")
     if not filtered:
-        st.warning("조건에 맞는 종목이 없습니다. 하루 0~5개가 정상 범위입니다. 등급 선택을 넓히거나 조건을 완화해 보세요.")
+        if not out.get("errors"):
+            st.warning("조건에 맞는 종목이 없습니다. 위 '단계별 통과 수'에서 0이 되는 단계를 확인하고, 해당 단계의 필터(거래량·평균거래량·플로트·시총)를 완화해 보세요.")
         render_gapgo_log_panel()
         return
 
